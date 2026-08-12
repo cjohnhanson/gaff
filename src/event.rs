@@ -1,36 +1,38 @@
-//! Event envelope and per-event capability table.
+//! The event envelope and the per-event capability table.
 //!
-//! The envelope is the stable contract handlers see: a small versioned core
-//! plus the verbatim upstream payload under `raw` (unstable, adapter-owned).
+//! The envelope is the stable contract that a handler sees. It holds a
+//! small versioned core and the verbatim upstream payload under `raw`.
+//! The `raw` payload is unstable, and the adapter owns it.
 //!
-//! The capability table encodes what each hook event actually supports —
-//! whether it can block, where injected context lands, and any upstream
-//! timeout ceiling. Entries are added only once verified against the live
-//! hook reference; unknown events get `Capability::UNVERIFIED`, which
-//! permits nothing.
+//! The capability table records what each hook event supports: whether
+//! the event can block, where the injected context lands, and the
+//! upstream timeout ceiling. Add an entry only after you verify it
+//! against the live hook reference. An unknown event gets
+//! `Capability::UNVERIFIED`, which permits nothing.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Schema version stamped on every envelope this binary emits.
+/// The schema version stamped on every envelope this binary emits.
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// Where a hook event's injected output lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextSink {
-    /// No context channel: output is discarded by the harness.
+    /// No context channel. The harness discards the output.
     None,
-    /// Context is delivered to the model as session/system framing.
-    /// The only sink safe for prime sections and reminders.
+    /// The harness delivers the context to the model as session framing.
+    /// This is the only sink that is safe for a section or a reminder.
     AgentContext,
-    /// Context is attached to a tool result and is indistinguishable from
-    /// tool output to the model. Never decorate (the qei8 bug class).
+    /// The harness attaches the context to a tool result. The model reads
+    /// it as tool output. Never inject here (the qei8 bug class).
     ToolResult,
-    /// Stdout *replaces* the event's payload (e.g. prompt expansion).
+    /// Stdout replaces the payload of the event. Prompt expansion uses
+    /// this sink.
     ReplacesPayload,
-    /// Stdout is structured data the harness consumes (e.g. a worktree
-    /// path). Any injected byte is corruption.
+    /// Stdout is structured data that the harness reads, such as a
+    /// worktree path. An injected byte corrupts that data.
     StdoutIsData,
 }
 
@@ -39,17 +41,17 @@ pub enum ContextSink {
 pub struct Capability {
     pub can_block: bool,
     pub context_sink: ContextSink,
-    /// Upstream timeout ceiling in milliseconds, where the reference
-    /// documents one. Configured handler timeouts must clamp to this.
+    /// The upstream timeout ceiling in milliseconds, where the reference
+    /// documents one. Clamp a configured handler timeout to this value.
     pub timeout_ceiling_ms: Option<u64>,
     /// Whether this entry was verified against the live hook reference.
-    /// Unverified entries permit nothing.
+    /// An unverified entry permits nothing.
     pub verified: bool,
 }
 
 impl Capability {
-    /// The conservative default for events not (yet) in the table:
-    /// cannot block, no context sink, unverified.
+    /// The safe default for an event that is not yet in the table. It
+    /// cannot block, it has no context sink, and it is unverified.
     pub const UNVERIFIED: Self = Self {
         can_block: false,
         context_sink: ContextSink::None,
@@ -66,23 +68,28 @@ impl Capability {
         }
     }
 
-    /// True when injecting context into this event is safe: the sink is
-    /// the model's session framing, not a tool result or a data channel.
+    /// True when it is safe to inject context into this event. The sink
+    /// must be the model's session framing. A tool result and a data
+    /// channel are not safe.
     #[must_use]
     pub fn injection_safe(&self) -> bool {
         self.verified && self.context_sink == ContextSink::AgentContext
     }
 }
 
-/// Capability lookup for a Claude Code hook event name.
+/// Look up the capability of a Claude Code hook event name.
 ///
-/// Sources: entries reflect the hook reference as verified during design
-/// review (2026-08). `PostToolUse` context rides the tool result;
-/// `PostToolBatch` fires after a parallel batch resolves, before the next
-/// model call, and is attached to no tool result; `WorktreeCreate` stdout
-/// is the worktree path; `UserPromptExpansion` stdout replaces the
-/// expansion; `Notification`/`StopFailure`/`InstructionsLoaded`/
-/// `DirectoryAdded` discard output; `SessionEnd` shares a 1.5s budget.
+/// The entries follow the hook reference, as verified during the design
+/// review of 2026-08:
+///
+/// - `PostToolUse` context rides the tool result.
+/// - `PostToolBatch` fires after a parallel batch resolves, before the
+///   next model call. It attaches to no tool result.
+/// - `WorktreeCreate` stdout is the worktree path.
+/// - `UserPromptExpansion` stdout replaces the expansion.
+/// - `Notification`, `StopFailure`, `InstructionsLoaded`, and
+///   `DirectoryAdded` discard the output.
+/// - `SessionEnd` shares a budget of 1.5 seconds.
 #[must_use]
 pub fn capability(event_name: &str) -> Capability {
     match event_name {
@@ -105,13 +112,14 @@ pub fn capability(event_name: &str) -> Capability {
     }
 }
 
-/// The stable core every handler payload carries. Everything else lives
-/// under `raw`, verbatim from upstream, documented as unstable.
+/// The stable core that every handler payload carries. Everything else
+/// lives under `raw`. The `raw` value comes verbatim from upstream, and
+/// it is unstable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
     pub gaff_schema: u32,
-    /// Upstream event name, forwarded verbatim — unknown events are
-    /// first-class, never dropped.
+    /// The upstream event name, forwarded verbatim. An unknown event is
+    /// first-class, and gaff never drops it.
     pub event: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -119,7 +127,8 @@ pub struct Envelope {
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
-    /// Verbatim upstream payload. Unstable; adapter-owned.
+    /// The verbatim upstream payload. It is unstable, and the adapter
+    /// owns it.
     pub raw: Value,
 }
 
@@ -142,7 +151,7 @@ impl Envelope {
         }
     }
 
-    /// Capability profile for this envelope's event.
+    /// The capability of this envelope's event.
     #[must_use]
     pub fn capability(&self) -> Capability {
         capability(&self.event)
@@ -229,7 +238,7 @@ mod tests {
         assert_eq!(env.event, "SomeFutureEvent");
         assert_eq!(
             env.raw["novel_field"]["x"], 1,
-            "raw payload forwarded verbatim"
+            "gaff forwards the raw payload verbatim"
         );
     }
 

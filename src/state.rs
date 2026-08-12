@@ -1,8 +1,8 @@
-//! Session state: append-only ledger, pending/cursor files, one-shots,
-//! and fired markers.
+//! The session state: an append-only ledger, the pending and cursor
+//! files, the one-shots, and the fired markers.
 //!
-//! Layout (flat — empty directories are unrepresentable in fixtures and
-//! participate in byte diffs):
+//! The layout is flat. A test fixture cannot represent an empty
+//! directory, and every file below takes part in a byte diff.
 //!
 //! ```text
 //! <root>/degraded                    marker: config failed to parse
@@ -13,10 +13,12 @@
 //! <root>/<session>/fired-<id>        one-shot consumed (O_EXCL claim)
 //! ```
 //!
-//! The root resolves from `GAFF_STATE_DIR` (relative paths join the
-//! process cwd) or falls back to a user-scoped path keyed by cwd —
-//! never inside the repo, where `git clean -xdf` would erase it
-//! mid-session. Absent state always reads as zero, never as an error.
+//! `GAFF_STATE_DIR` sets the root. A relative path joins the process
+//! working directory. Without that variable, the root falls back to a
+//! user-scoped path keyed by the working directory. The root is never
+//! inside the repo, where `git clean -xdf` would erase it mid-session.
+//!
+//! Absent state always reads as zero. It never reads as an error.
 
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -41,8 +43,8 @@ pub struct Oneshot {
     pub text: String,
 }
 
-/// Resolve the state root from explicit inputs. Pure so it can be tested
-/// without mutating the process environment.
+/// Resolve the state root from explicit inputs. This function is pure,
+/// so a test can call it without a change to the process environment.
 #[must_use]
 pub fn resolve_root(
     gaff_state_dir: Option<&str>,
@@ -62,8 +64,8 @@ pub fn resolve_root(
     Some(base.join("gaff").join(cwd_key(cwd)))
 }
 
-/// Stable key for a working directory (FNV-1a, not `DefaultHasher`,
-/// which is unstable across Rust releases).
+/// Make a stable key for a working directory. This uses FNV-1a, not
+/// `DefaultHasher`, which changes between Rust releases.
 fn cwd_key(cwd: &Path) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in cwd.to_string_lossy().as_bytes() {
@@ -106,10 +108,12 @@ impl Store {
         writeln!(f, "{line}")
     }
 
-    /// Record a tool call, deduplicating on `tool_use_id` (`PreToolUse`,
-    /// `PostToolUse`, and `PostToolUseFailure` all carry the same id; the
-    /// call counts once). Returns the new tool-call count, or `None` if
-    /// this id was already counted.
+    /// Record a tool call. The `tool_use_id` deduplicates it, because
+    /// `PreToolUse`, `PostToolUse`, and `PostToolUseFailure` carry the
+    /// same id. One tool call counts once.
+    ///
+    /// Returns the new tool-call count. Returns `None` when this id was
+    /// already counted.
     pub fn record_tool_call(
         &self,
         session: &str,
@@ -163,8 +167,8 @@ impl Store {
             .and_then(|s| s.trim().parse().ok())
     }
 
-    /// Consume a pending recurring reminder: delete the pending file and
-    /// record the flushed multiple as the cursor.
+    /// Consume a pending recurring entry. This deletes the pending file
+    /// and records the flushed multiple as the cursor.
     pub fn consume_pending(&self, session: &str, name: &str, multiple: u64) -> std::io::Result<()> {
         std::fs::write(
             self.session_dir(session).join(format!("cursor-{name}")),
@@ -190,7 +194,8 @@ impl Store {
         )
     }
 
-    /// One-shots for a session, sorted by id for deterministic merge order.
+    /// The one-shots of a session, sorted by id. The sort keeps the
+    /// merge order deterministic.
     #[must_use]
     pub fn oneshots(&self, session: &str) -> Vec<Oneshot> {
         let Ok(entries) = std::fs::read_dir(self.session_dir(session)) else {
@@ -217,7 +222,7 @@ impl Store {
         out
     }
 
-    /// Names of all armed (pending) recurring entries, sorted.
+    /// The names of all armed recurring entries, sorted.
     #[must_use]
     pub fn pendings(&self, session: &str) -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(self.session_dir(session)) else {
@@ -243,8 +248,9 @@ impl Store {
             .exists()
     }
 
-    /// Claim a one-shot for firing. `O_EXCL` create: exactly one racing
-    /// invocation wins; everyone else sees `false`.
+    /// Claim a one-shot before it fires. The create uses `O_EXCL`, so
+    /// exactly one racing invocation wins. Every other invocation gets
+    /// `false`.
     #[must_use]
     pub fn claim_fired(&self, session: &str, id: &str) -> bool {
         std::fs::create_dir_all(self.session_dir(session)).is_ok()
@@ -255,8 +261,9 @@ impl Store {
                 .is_ok()
     }
 
-    /// Compaction re-arm: delete every fired marker so consumed one-shots
-    /// become eligible again (their content was erased from context).
+    /// Re-arm after a compaction. This deletes every fired marker, so a
+    /// consumed one-shot becomes eligible again. The compaction erased
+    /// the content of that one-shot from the context.
     pub fn clear_fired(&self, session: &str) {
         let Ok(entries) = std::fs::read_dir(self.session_dir(session)) else {
             return;
@@ -278,7 +285,8 @@ impl Store {
         self.root.join("degraded").exists()
     }
 
-    /// Loud-degradation marker: config failed to parse this session.
+    /// Write the loud-degradation marker. The config failed to parse in
+    /// this session.
     pub fn mark_degraded(&self) {
         if std::fs::create_dir_all(&self.root).is_ok() {
             std::fs::write(self.root.join("degraded"), "").ok();

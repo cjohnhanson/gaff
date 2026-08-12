@@ -2,7 +2,7 @@
 name = "gaff"
 version = "0.1.0"
 edition = "2024"
-description = "Context-lifecycle handler for coding agents: counters, cadenced re-injection, prime sections, profiles"
+description = "A context-lifecycle handler for coding agents: counters, cadenced re-injection, prime sections, and profiles"
 license = "MIT"
 
 [lints.rust]

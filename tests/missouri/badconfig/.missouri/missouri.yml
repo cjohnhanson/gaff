@@ -1,6 +1,6 @@
 doc: |
-  Malformed repo config degrades loudly: stderr warning, degraded marker,
-  counting still works, exit 0, never 2.
+  A malformed repo config degrades loudly. gaff warns on stderr and writes
+  the degraded marker. The counting still works. gaff exits 0, never 2.
 transitions:
   - name: "broken yaml warns and passes through"
     command: |

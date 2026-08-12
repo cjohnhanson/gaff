@@ -1,4 +1,5 @@
-//! Bundled documentation, compiled into the binary — `gaff docs [topic]`.
+//! The bundled documentation, compiled into the binary. Read it with
+//! `gaff docs [topic]`.
 
 pub const TOPICS: [(&str, &str); 3] = [
     (

@@ -1,6 +1,7 @@
 doc: |
-  gaff init registers hooks idempotently; --uninstall removes exactly
-  what init added, leaving foreign entries and unknown keys intact.
+  gaff init registers the hooks idempotently. gaff init --uninstall
+  removes exactly what gaff init added. It leaves the foreign entries and
+  the unknown keys intact.
 transitions:
   - name: "init registers five events idempotently"
     command: |

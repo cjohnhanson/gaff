@@ -3,59 +3,66 @@
 > A gaff is a pole with a sharp hook on the end — used to land what's
 > drifting past.
 
-Context-lifecycle handler for coding agents. Counters over the hook event
-stream, cadence-driven context re-injection, prime sections, and advisory
-profiles.
+gaff is a context-lifecycle handler for coding agents. It counts the hook
+events of a session. It re-injects context on a cadence. It delivers
+prime sections and advisory profiles.
 
 ## The problem
 
-Context injected at session start decays as the conversation grows — it
-slides into the low-attention middle of the context window. Decay is a
-function of messages and tool calls, not wall clock time. Nothing in the
-agent harness re-delivers context on a *cadence*: rules and skills load on
-conditions, reminders don't exist, and a 300-tool-call session ends with
-its opening instructions effectively invisible.
+Context injected at session start decays as the conversation grows. It
+moves into the low-attention middle of the context window. The decay
+follows the number of messages and tool calls, not the wall clock.
+
+The agent harness re-delivers no context on a cadence. Rules and skills
+load on conditions. Reminders do not exist. A session of 300 tool calls
+ends with its opening instructions effectively invisible.
 
 ## What gaff does
 
-- **Counters** — per-session tallies over hook events (prompts, turns,
-  tool calls filtered by name), kept as an append-only ledger.
-- **Cadences** — "every 20 tool calls, re-inject X"; one-shot "after N"
-  reminders an agent can schedule into its own future; re-armed after
-  context compaction.
-- **Prime sections** — session-start context decomposed into sections,
-  each individually refreshable on its own cadence.
-- **Profiles** — named overlays (which sections, which cadences) with a
-  transition policy for which switches an agent may perform on itself.
-  Advisory by design; real enforcement belongs to managed settings.
+- **Counters** — per-session tallies over the hook events: prompts,
+  turns, and tool calls filtered by name. gaff keeps them in an
+  append-only ledger.
+- **Cadences** — re-inject a text every 20 tool calls. An agent can also
+  schedule a one-shot reminder N tool calls into its own future. gaff
+  re-arms a one-shot after a context compaction.
+- **Prime sections** — the session-start context, split into sections.
+  Each section refreshes on its own cadence.
+- **Profiles** — named overlays that select the sections and the
+  cadences. A transition policy states which switches an agent may make
+  on itself. Profiles are advisory. Managed settings do the real
+  enforcement.
 
-## What gaff deliberately is not
+## What gaff is not
 
-- **Not a hook dispatcher.** The harness's native hook system owns
-  matching, timeouts, and parallelism; gaff registers as one handler.
-- **Not a git-hook manager.** lefthook and pre-commit exist and are good.
+- **Not a hook dispatcher.** The harness's own hook system owns the
+  matching, the timeouts, and the parallelism. gaff registers as one
+  handler.
+- **Not a git-hook manager.** lefthook and pre-commit already do that
+  work well.
 - **Not an enforcement layer.** gaff blocks nothing. It injects context
-  on exactly the events whose output channel is the model's session
-  framing, and never decorates tool results.
-- **Not configured to execute repo code.** Repo-level config is data
-  (sections, text, cadences). Anything executable lives in user-scoped
-  config.
+  only on the events whose output channel is the model's session
+  framing. It never decorates a tool result.
+- **Not a way to run repo code.** The repo-level config is data:
+  sections, text, and cadences. Anything executable lives in the
+  user-scoped config.
 
 ## Using it
 
 ```
-gaff init                          # register hooks (.claude/settings.local.json)
+gaff init                          # register the hooks (.claude/settings.local.json)
 gaff remind "check CI" --after 10  # one-shot, N tool calls into the future
-gaff status --session <id>         # counters, pending, one-shots
+gaff status --session <id>         # counters, pending entries, one-shots
 gaff check                         # validate .gaff/gaff.yml
-gaff doctor                        # what's live in this clone
-gaff docs getting-started          # bundled documentation
+gaff doctor                        # what is live in this clone
+gaff docs getting-started          # the bundled documentation
 ```
 
 ## Status
 
-Working: counters (deduped by tool_use_id), cadence reminders, one-shot
-reminders with compaction re-arm, prime sections with mid-session
-refresh, byte-capped injection with attribution prefixes, init/check/
-doctor, bundled docs. Tested by a missouri state-graph suite (15 paths)
-plus cargo unit tests; the never-exit-2 invariant is enforced by both.
+These parts work: counters deduped by `tool_use_id`, cadence reminders,
+one-shot reminders with a compaction re-arm, prime sections with a
+mid-session refresh, byte-capped injection with attribution prefixes,
+the `init`, `check`, and `doctor` commands, and the bundled docs.
+
+A missouri state-graph suite of 15 paths and the cargo unit tests cover
+this. Both enforce the never-exit-2 rule.

@@ -1,10 +1,12 @@
-//! gaff — context-lifecycle handler for coding agents.
+//! gaff — a context-lifecycle handler for coding agents.
 //!
-//! Exit-code invariant: every gaff invocation exits 0 or 1, never 2.
-//! Exit 2 is the blocking code on the agent side, and no gaff failure —
-//! config typo, unwritable state, bad flags — may ever block a session.
-//! Argument parsing is by hand for exactly this reason: clap exits 2 on
-//! usage errors.
+//! The exit-code rule: every gaff invocation exits 0 or 1. It never
+//! exits 2. The agent side treats exit 2 as the blocking code, and no
+//! gaff failure may block a session. This covers a config typo, an
+//! unwritable state directory, and a bad flag.
+//!
+//! This file parses the arguments by hand for that reason. clap exits 2
+//! on a usage error.
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -56,14 +58,15 @@ fn session_from(flag: Option<&str>) -> Option<String> {
         .or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())
 }
 
-/// Read one hook payload from stdin, emit a response on stdout.
-/// Failure semantics: unreadable/unparseable stdin exits 1 (Claude Code
-/// treats 1 as a non-blocking error); everything downstream degrades to
+/// Read one hook payload from stdin. Write the response to stdout.
+///
+/// Unreadable stdin and unparseable stdin exit 1. Claude Code treats
+/// exit 1 as a non-blocking error. Every later failure degrades to a
 /// silent passthrough at exit 0.
 fn run_hook() -> ExitCode {
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
-        return fail("could not read stdin");
+        return fail("cannot read stdin");
     }
     let Ok(payload) = serde_json::from_str::<serde_json::Value>(&input) else {
         return fail("invalid JSON on stdin");
@@ -71,7 +74,7 @@ fn run_hook() -> ExitCode {
     let envelope = Envelope::from_claude_code(payload);
 
     let Some(store) = resolve_store() else {
-        eprintln!("gaff: no state dir (set GAFF_STATE_DIR or HOME); passing through");
+        eprintln!("gaff: no state directory. Set GAFF_STATE_DIR or HOME. Passing through.");
         return ExitCode::SUCCESS;
     };
 
@@ -81,7 +84,7 @@ fn run_hook() -> ExitCode {
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => {
             eprintln!(
-                "gaff: config error in {}: {err}; continuing without reminders",
+                "gaff: the config {} is not valid: {err}. Continuing without reminders.",
                 config::CONFIG_PATH
             );
             store.mark_degraded();
@@ -104,7 +107,8 @@ fn run_hook() -> ExitCode {
 }
 
 /// `gaff remind <text> --after <N> [--id <id>] [--session <sid>]`
-/// Schedules a one-shot N tool calls into the session's future.
+///
+/// Schedule a one-shot reminder N tool calls into the session's future.
 fn run_remind(args: &[String]) -> ExitCode {
     let mut text: Option<String> = None;
     let mut after: Option<u64> = None;
@@ -138,10 +142,10 @@ fn run_remind(args: &[String]) -> ExitCode {
         return fail("--after is required");
     };
     let Some(session) = session_from(session_flag.as_deref()) else {
-        return fail("no session: pass --session or set CLAUDE_CODE_SESSION_ID");
+        return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID.");
     };
     let Some(store) = resolve_store() else {
-        return fail("no state dir (set GAFF_STATE_DIR or HOME)");
+        return fail("no state directory. Set GAFF_STATE_DIR or HOME.");
     };
 
     let counts = store.counts(&session);
@@ -149,11 +153,11 @@ fn run_remind(args: &[String]) -> ExitCode {
     let at = counts.tool_calls + after;
     match store.write_oneshot(&session, &id, after, at, &text) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => fail(&format!("could not write reminder: {e}")),
+        Err(e) => fail(&format!("cannot write the reminder: {e}")),
     }
 }
 
-/// `gaff status [--session <sid>]` — read-side counters as JSON.
+/// `gaff status [--session <sid>]` — print the session counters as JSON.
 fn run_status(args: &[String]) -> ExitCode {
     let mut session_flag: Option<String> = None;
     let mut it = args.iter();
@@ -167,10 +171,10 @@ fn run_status(args: &[String]) -> ExitCode {
         }
     }
     let Some(session) = session_from(session_flag.as_deref()) else {
-        return fail("no session: pass --session or set CLAUDE_CODE_SESSION_ID");
+        return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID.");
     };
     let Some(store) = resolve_store() else {
-        return fail("no state dir (set GAFF_STATE_DIR or HOME)");
+        return fail("no state directory. Set GAFF_STATE_DIR or HOME.");
     };
     let counts = store.counts(&session);
     let oneshots: Vec<_> = store
@@ -190,8 +194,8 @@ fn run_status(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `gaff init [--uninstall] [--command <cmd>]` — register or remove the
-/// hook entries in `.claude/settings.local.json`.
+/// `gaff init [--uninstall] [--command <cmd>]` — register the hook
+/// entries in `.claude/settings.local.json`, or remove them.
 fn run_init(args: &[String]) -> ExitCode {
     let mut uninstall = false;
     let mut command = "gaff hook".to_string();
@@ -207,7 +211,7 @@ fn run_init(args: &[String]) -> ExitCode {
         }
     }
     let Ok(cwd) = std::env::current_dir() else {
-        return fail("cannot resolve working directory");
+        return fail("cannot resolve the working directory");
     };
     let result = if uninstall {
         init::uninstall(&cwd, &command)
@@ -232,15 +236,15 @@ fn run_init(args: &[String]) -> ExitCode {
     }
 }
 
-/// `gaff check` — validate `.gaff/gaff.yml`. Exit 1 on an invalid
-/// config (this is the one place loud failure is the job).
+/// `gaff check` — validate `.gaff/gaff.yml`. Exit 1 for an invalid
+/// config. This command is the one place where a loud failure is correct.
 fn run_check() -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
-        return fail("cannot resolve working directory");
+        return fail("cannot resolve the working directory");
     };
     let cfg = match config::load(&cwd) {
         Loaded::Absent => {
-            println!("no config ({}); nothing to validate", config::CONFIG_PATH);
+            println!("no config at {}. Nothing to validate.", config::CONFIG_PATH);
             return ExitCode::SUCCESS;
         }
         Loaded::Broken(err) => return fail(&format!("{}: {err}", config::CONFIG_PATH)),
@@ -290,11 +294,11 @@ fn run_check() -> ExitCode {
     }
 }
 
-/// `gaff doctor` — report what is live in this clone. Always exits 0;
-/// it reports problems, it is not one.
+/// `gaff doctor` — report what is live in this clone. This command
+/// always exits 0. It reports a problem; it never becomes one.
 fn run_doctor() -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
-        return fail("cannot resolve working directory");
+        return fail("cannot resolve the working directory");
     };
 
     match config::load(&cwd) {
@@ -311,7 +315,7 @@ fn run_doctor() -> ExitCode {
         Some(store) => {
             println!("state:   {}", store.root_path().display());
             if store.is_degraded() {
-                println!("         DEGRADED marker present (a session hit a broken config)");
+                println!("         DEGRADED marker present (a session found a broken config)");
             }
         }
         None => println!("state:   UNRESOLVABLE (set GAFF_STATE_DIR or HOME)"),
@@ -327,7 +331,7 @@ fn run_doctor() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `gaff docs [topic]` — bundled documentation.
+/// `gaff docs [topic]` — print the bundled documentation.
 fn run_docs(args: &[String]) -> ExitCode {
     args.first().map(String::as_str).map_or_else(
         || {

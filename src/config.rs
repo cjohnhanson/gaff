@@ -1,9 +1,12 @@
-//! Repo-level configuration: `.gaff/gaff.yml`, data only.
+//! The repo-level config: `.gaff/gaff.yml`. It holds data only.
 //!
-//! Nothing in this file is executable. A repo declares reminder text and
-//! cadences; anything that runs code lives in user-scoped config (none in
-//! v0). A malformed config degrades loudly and never blocks: the caller
-//! warns on stderr, drops a marker, and continues without reminders.
+//! gaff executes nothing that a repo declares. A repo declares the
+//! reminder text and the cadences. Anything that runs code lives in the
+//! user-scoped config. Version 0 has no such config.
+//!
+//! A malformed config degrades loudly, and it never blocks. The caller
+//! prints a warning on stderr, writes a marker, and continues without
+//! reminders.
 
 use std::path::Path;
 
@@ -16,18 +19,20 @@ const DEFAULT_MAX_INJECT_BYTES: usize = 4096;
 pub struct Config {
     #[serde(default)]
     pub reminders: Vec<Reminder>,
-    /// Prime sections: files injected at session start and refreshable
-    /// mid-session on their own cadences.
+    /// The prime sections. gaff injects each file at session start. Each
+    /// section refreshes mid-session on its own cadence.
     #[serde(default)]
     pub sections: Vec<Section>,
-    /// Hard cap on the bytes injected per flush, truncation marker included.
+    /// The hard cap on the bytes injected per flush. The cap includes
+    /// the truncation marker.
     #[serde(default = "default_max_inject_bytes")]
     pub max_inject_bytes: usize,
 }
 
-/// The derived `Default` would zero the cap and silently suppress every
-/// flush on the no-config path — the manual impl keeps the serde default
-/// and the absent-config default identical.
+/// A derived `Default` would set the cap to zero. That silently
+/// suppresses every flush on the no-config path. This manual
+/// implementation keeps the serde default and the absent-config default
+/// the same.
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -49,21 +54,23 @@ pub struct Reminder {
     pub text: String,
 }
 
-/// A prime section: a markdown file under `.gaff/`, injected in full at
-/// `SessionStart` and re-injected on its refresh cadence.
+/// A prime section: a markdown file under `.gaff/`. gaff injects the
+/// whole file at `SessionStart`. gaff injects it again on its refresh
+/// cadence.
 ///
-/// Names share a namespace with reminders (pending/cursor state
-/// is keyed by name) and must be unique across both.
+/// Sections and reminders share one namespace, because the pending state
+/// and the cursor state use the name as the key. A name must be unique
+/// across both.
 #[derive(Debug, Deserialize)]
 pub struct Section {
     pub name: String,
-    /// Path to the section body, relative to `.gaff/`.
+    /// The path to the section body, relative to `.gaff/`.
     pub file: String,
     #[serde(default)]
     pub refresh: Every,
 }
 
-/// Cadence spec: fire every N counted events of the given unit.
+/// A cadence: fire every N counted events of the given unit.
 #[derive(Debug, Default, Deserialize)]
 pub struct Every {
     #[serde(default)]
@@ -72,8 +79,9 @@ pub struct Every {
     pub prompts: Option<u64>,
 }
 
-/// Outcome of a config load. `Broken` carries the parse error so the
-/// caller can warn; it must never escalate past a warning.
+/// The outcome of a config load. `Broken` carries the parse error, so
+/// the caller can print a warning. A broken config never does more than
+/// warn.
 #[derive(Debug)]
 pub enum Loaded {
     Absent,

@@ -1,5 +1,6 @@
 doc: |
-  Threshold crossed, injection pending, nothing emitted yet.
+  The threshold crossed. The injection is pending. gaff emitted nothing
+  yet.
 transitions:
   - name: "user prompt flushes with attribution"
     command: |

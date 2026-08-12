@@ -1,11 +1,12 @@
-//! `gaff init`: register gaff as a handler in the harness's native hook
-//! config, atomically and idempotently. `gaff init --uninstall` removes
-//! exactly what init added and nothing else.
+//! `gaff init` registers gaff as a handler in the harness's own hook
+//! config. The write is atomic and idempotent. `gaff init --uninstall`
+//! removes exactly what `gaff init` added, and nothing else.
 //!
-//! gaff owns no dispatch — this writes ordinary entries into
-//! `.claude/settings.local.json` (local, gitignored) alongside whatever
-//! else is there. Unknown keys are preserved; the file is rewritten via
-//! temp-file-then-rename so a crash never leaves it truncated.
+//! gaff owns no dispatch. This module writes ordinary entries into
+//! `.claude/settings.local.json`, a local file that git ignores. The
+//! entries sit beside whatever else the file holds, and gaff keeps every
+//! unknown key. The rewrite writes a temporary file and renames it, so a
+//! crash never leaves a truncated file.
 
 use std::path::Path;
 
@@ -13,7 +14,8 @@ use serde_json::{json, Map, Value};
 
 pub const SETTINGS_PATH: &str = ".claude/settings.local.json";
 
-/// The events gaff needs: prime + flush points and the counted events.
+/// The events that gaff needs: the prime and flush points, plus the
+/// counted events.
 pub const HOOK_EVENTS: [&str; 5] = [
     "PostToolBatch",
     "PostToolUse",
@@ -28,8 +30,9 @@ pub enum Outcome {
     Unchanged,
 }
 
-/// Install hook entries for `command` (default `gaff hook`) into the
-/// settings file under `root`, creating it if absent.
+/// Install the hook entries for `command` into the settings file under
+/// `root`. The default command is `gaff hook`. This creates the file
+/// when the file is absent.
 pub fn install(root: &Path, command: &str) -> std::io::Result<Outcome> {
     edit_settings(root, |settings| {
         let hooks = hooks_map(settings);
@@ -39,7 +42,7 @@ pub fn install(root: &Path, command: &str) -> std::io::Result<Outcome> {
                 .entry(event.to_string())
                 .or_insert_with(|| Value::Array(Vec::new()));
             let Value::Array(entries) = entries else {
-                continue; // unrecognized shape: leave the user's config alone
+                continue; // An unknown shape: leave the user's config alone.
             };
             if !entries.iter().any(|e| has_command(e, command)) {
                 entries.push(json!({"hooks": [{"type": "command", "command": command}]}));
@@ -50,8 +53,8 @@ pub fn install(root: &Path, command: &str) -> std::io::Result<Outcome> {
     })
 }
 
-/// Remove every hook entry whose command matches `command`. Empty event
-/// arrays and an empty `hooks` map are dropped rather than left behind.
+/// Remove every hook entry whose command matches `command`. This also
+/// drops an empty event array and an empty `hooks` map.
 pub fn uninstall(root: &Path, command: &str) -> std::io::Result<Outcome> {
     edit_settings(root, |settings| {
         let hooks = hooks_map(settings);
@@ -83,15 +86,17 @@ fn hooks_map(settings: &mut Map<String, Value>) -> &mut Map<String, Value> {
     hooks.as_object_mut().expect("just ensured object")
 }
 
-/// Does a matcher-group entry contain a hook with exactly this command?
+/// True when a matcher-group entry holds a hook with exactly this
+/// command.
 fn has_command(entry: &Value, command: &str) -> bool {
     entry["hooks"]
         .as_array()
         .is_some_and(|hooks| hooks.iter().any(|h| h["command"] == command))
 }
 
-/// Load → mutate → write-temp-then-rename. The mutator returns whether
-/// anything changed; unchanged files are not rewritten.
+/// Load the settings, mutate them, write a temporary file, and rename
+/// it. The mutator returns whether anything changed. gaff does not
+/// rewrite an unchanged file.
 fn edit_settings(
     root: &Path,
     mutate: impl FnOnce(&mut Map<String, Value>) -> bool,
@@ -102,7 +107,7 @@ fn edit_settings(
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "{}: not valid JSON ({e}); refusing to rewrite it",
+                    "{}: not valid JSON ({e}). Refusing to rewrite the file.",
                     path.display()
                 ),
             )
@@ -169,7 +174,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             v["permissions"]["allow"][0], "Read",
-            "foreign keys preserved"
+            "gaff keeps the foreign keys"
         );
         assert_eq!(v["hooks"]["SessionStart"].as_array().unwrap().len(), 2);
 
@@ -184,7 +189,7 @@ mod tests {
         );
         assert!(
             v["hooks"].get("PostToolBatch").is_none(),
-            "empty arrays dropped"
+            "gaff drops the empty arrays"
         );
     }
 
@@ -204,7 +209,7 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join(SETTINGS_PATH)).unwrap(),
             "not json",
-            "original preserved"
+            "gaff keeps the original file"
         );
     }
 }

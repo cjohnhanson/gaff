@@ -1,1 +1,1 @@
-doc: "Terminal: identical to armed — unsafe events neither flush nor count."
+doc: "Terminal: identical to armed. An unsafe event does not flush and does not count."

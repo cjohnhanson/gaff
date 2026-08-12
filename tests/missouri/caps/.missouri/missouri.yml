@@ -1,7 +1,7 @@
 doc: |
-  Two reminders cross together under a small byte cap: config order wins,
-  the entry that does not fit is skipped (stays pending, retried later),
-  and the truncation marker is appended.
+  Two reminders cross together under a small byte cap. The config order
+  wins. gaff skips the entry that does not fit, and that entry stays
+  pending for a later flush. gaff appends the truncation marker.
 transitions:
   - name: "merge order and byte cap"
     command: |

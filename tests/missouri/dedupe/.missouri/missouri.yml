@@ -1,6 +1,6 @@
 doc: |
-  One tool_use_id seen as PreToolUse, PostToolUse, and PostToolUseFailure
-  counts exactly once.
+  One tool_use_id arrives as PreToolUse, PostToolUse, and
+  PostToolUseFailure. It counts exactly once.
 transitions:
   - name: "pre, post, and failure with one id count once"
     command: |

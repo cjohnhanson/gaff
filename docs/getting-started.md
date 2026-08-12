@@ -1,21 +1,22 @@
 # Getting started
 
-gaff keeps context alive in long coding-agent sessions. Context injected
-at session start decays as the conversation grows — it slides into the
+gaff keeps context alive in a long coding-agent session. Context injected
+at session start decays as the conversation grows. It moves into the
 low-attention middle of the model's context window. gaff counts what
-actually causes that decay (tool calls, prompts) and re-injects what
-matters on a cadence.
+causes that decay — the tool calls and the prompts — and re-injects the
+important text on a cadence.
 
 ## Install the hooks
 
-From your repo root:
+Run this from the repo root:
 
     gaff init
 
-This registers `gaff hook` for five events in `.claude/settings.local.json`
-(local, gitignored): SessionStart, UserPromptSubmit, PostToolUse,
-PostToolUseFailure, and PostToolBatch. Run `gaff init --uninstall` to
-remove exactly those entries.
+The command registers `gaff hook` for five events in
+`.claude/settings.local.json`, a local file that git ignores. The events
+are SessionStart, UserPromptSubmit, PostToolUse, PostToolUseFailure, and
+PostToolBatch. Run `gaff init --uninstall` to remove exactly those
+entries.
 
 ## Declare what to keep alive
 
@@ -33,24 +34,24 @@ Create `.gaff/gaff.yml`:
           tool_calls: 20
         text: "Update your working notes before they go stale."
 
-Sections are files under `.gaff/` injected in full at session start and
-re-injected when their refresh cadence crosses. Reminders are one-liners
-on a cadence. Everything in this file is data — gaff never executes
-anything a repo declares.
+A section is a file under `.gaff/`. gaff injects the whole file at
+session start. gaff injects it again when its refresh cadence crosses. A
+reminder is one line of text on a cadence. Everything in this file is
+data. gaff never runs anything that a repo declares.
 
 ## Schedule a one-shot from inside a session
 
-An agent (or you) can reach forward in time:
+An agent, or you, can reach forward in time:
 
     gaff remind "check whether the CI run finished" --after 10
 
-Ten counted tool calls later, at the next safe injection point, the
-reminder appears prefixed `[gaff:remind]`. It fires exactly once — and
-re-arms after a context compaction, because compaction erases whatever
+Ten counted tool calls later, the reminder appears at the next safe
+injection point. It carries the prefix `[gaff:remind]`. It fires once. It
+re-arms after a context compaction, because the compaction erases what
 the reminder already delivered.
 
 ## Inspect
 
-    gaff status --session <id>    # counters, pending, one-shots
+    gaff status --session <id>    # counters, pending entries, one-shots
     gaff check                    # validate .gaff/gaff.yml
-    gaff doctor                   # what's live in this clone
+    gaff doctor                   # what is live in this clone

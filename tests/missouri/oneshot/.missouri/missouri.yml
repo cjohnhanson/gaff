@@ -1,6 +1,6 @@
 doc: |
-  Agent schedules a reminder 2 tool calls into its future; it fires once
-  on the next safe event and never again.
+  An agent schedules a reminder 2 tool calls into its future. The
+  reminder fires once on the next safe event, and never again.
 transitions:
   - name: "schedule, cross, flush once, never twice"
     command: |

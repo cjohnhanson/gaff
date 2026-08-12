@@ -1,1 +1,1 @@
-doc: "Terminal: per-session ledgers plus correctly-routed one-shots."
+doc: "Terminal: one ledger per session, and the one-shots route to the correct session."

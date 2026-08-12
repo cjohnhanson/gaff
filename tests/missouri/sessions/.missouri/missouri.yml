@@ -1,7 +1,7 @@
 doc: |
-  Sessions isolate: same tool_use_id in two sessions counts in each;
-  gaff remind resolves its session from --session or CLAUDE_CODE_SESSION_ID
-  and refuses when neither exists.
+  Sessions isolate. The same tool_use_id counts in each of two sessions.
+  gaff remind resolves its session from --session or
+  CLAUDE_CODE_SESSION_ID. It refuses when neither exists.
 transitions:
   - name: "two sessions, two ledgers, remind targets the right one"
     command: |

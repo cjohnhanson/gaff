@@ -1,6 +1,7 @@
 doc: |
-  One-shot consumed. Compaction erases delivered context, so a compact
-  SessionStart re-arms and re-primes in the same response.
+  gaff consumed the one-shot. A compaction erases the delivered context.
+  A compact SessionStart re-arms the one-shot and primes it again in the
+  same response.
 transitions:
   - name: "compact re-arms and re-primes immediately"
     command: |

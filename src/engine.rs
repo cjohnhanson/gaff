@@ -1,10 +1,12 @@
-//! The event → context engine: counting, arming, and flushing.
+//! The engine that turns an event into context: count, arm, and flush.
 //!
-//! Counting happens on any event that carries a counted unit. Arming
-//! (writing a pending marker when a cadence threshold is crossed) happens
-//! at count time. Flushing — actually emitting text — happens only at
-//! flush points: events whose context sink is the model's session framing.
-//! `PostToolUse` is deliberately not one, whatever its payload says: its
+//! gaff counts any event that carries a counted unit. gaff arms an entry
+//! at count time: it writes a pending marker when a cadence threshold is
+//! crossed. gaff flushes — emits the text — only at a flush point. A
+//! flush point is an event whose context sink is the model's session
+//! framing.
+//!
+//! `PostToolUse` is not a flush point, whatever its payload says. Its
 //! context lands in the tool result (the qei8 bug class).
 
 use crate::config::Config;
@@ -12,20 +14,21 @@ use crate::event::Envelope;
 use crate::state::Store;
 use std::path::Path;
 
-/// Events at which pending context is delivered. `Stop` has a safe sink
-/// but is excluded: decorating the stop decision is not re-priming.
+/// The events that deliver the pending context. `Stop` has a safe sink,
+/// but gaff excludes it. A decorated stop decision does not re-prime the
+/// context.
 const FLUSH_EVENTS: [&str; 3] = ["SessionStart", "UserPromptSubmit", "PostToolBatch"];
 
-/// Fixed attribution prefix for agent-scheduled one-shots.
+/// The fixed attribution prefix for an agent-scheduled one-shot.
 const ONESHOT_PREFIX: &str = "[gaff:remind]";
 const TRUNCATION_MARKER: &str = "[gaff:truncated]";
 const SEPARATOR: &str = "\n\n";
 
 /// Handle one event end to end. Returns the context to inject, if any.
 ///
-/// `gaff_dir` is the repo's `.gaff/` directory, the base for section
-/// file paths. Every error path inside degrades to `None` — the engine
-/// never turns an IO problem into a blocked session.
+/// `gaff_dir` is the repo's `.gaff/` directory. A section file path is
+/// relative to it. Every error path returns `None`. The engine never
+/// turns an IO problem into a blocked session.
 #[must_use]
 pub fn handle(
     envelope: &Envelope,
@@ -65,15 +68,16 @@ pub fn is_flush_event(event: &str) -> bool {
     FLUSH_EVENTS.contains(&event)
 }
 
-/// `SessionStart`'s origin field: the live reference documents
-/// `startup_mode`; the predecessor parsed `source`. Accept either.
+/// Read the origin field of a `SessionStart` event. The live reference
+/// documents `startup_mode`. The predecessor parsed `source`. gaff
+/// accepts either field.
 fn compaction_source(envelope: &Envelope) -> bool {
     ["startup_mode", "source"]
         .iter()
         .any(|k| envelope.raw.get(k).and_then(|v| v.as_str()) == Some("compact"))
 }
 
-/// Write pending markers for every reminder and section whose cadence
+/// Write a pending marker for every reminder and section whose cadence
 /// divides the new count.
 fn arm_crossings(
     config: &Config,
@@ -97,33 +101,36 @@ fn arm_crossings(
     }
 }
 
-/// An entry eligible for delivery at a flush point.
+/// An entry that gaff can deliver at a flush point.
 struct Entry {
     text: String,
     kind: EntryKind,
 }
 
 enum EntryKind {
-    /// Nothing to consume: emitted whenever selected (session-start
-    /// section delivery with no pending refresh).
+    /// Nothing to consume. gaff emits this entry whenever it selects
+    /// the entry. A session-start section with no pending refresh is one.
     Unconditional,
     Recurring { name: String, multiple: u64 },
     Oneshot { id: String },
 }
 
-/// Whether a flush delivers every section (session start: prime the
-/// context) or only sections whose refresh cadence crossed.
+/// Which sections a flush delivers. `All` primes the context at session
+/// start. `PendingOnly` delivers only the sections whose refresh cadence
+/// crossed.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SectionMode {
     All,
     PendingOnly,
 }
 
-/// Deliver pending context: sections first (they are the prime text),
-/// then recurring reminders in config order, then one-shots by id.
-/// Entries are consumed only when actually emitted; an entry that would
-/// overflow the byte cap stays pending and the truncation marker is
-/// appended instead.
+/// Deliver the pending context. The sections come first, because they
+/// are the prime text. The recurring reminders follow in config order.
+/// The one-shots come last, sorted by id.
+///
+/// gaff consumes an entry only when it emits the entry. An entry that
+/// overflows the byte cap stays pending, and gaff appends the truncation
+/// marker instead.
 fn flush(
     config: &Config,
     store: &Store,
@@ -140,7 +147,7 @@ fn flush(
         }
         let Ok(body) = std::fs::read_to_string(gaff_dir.join(&section.file)) else {
             eprintln!(
-                "gaff: section `{}`: could not read {}; skipping",
+                "gaff: section `{}`: cannot read {}. Skipping the section.",
                 section.name, section.file
             );
             continue;
@@ -187,7 +194,8 @@ fn flush(
             truncated = true;
             continue;
         }
-        // Consume before emitting; a one-shot lost to a race stays silent.
+        // Consume the entry before you emit it. A one-shot that loses a
+        // race stays silent.
         let consumed = match &entry.kind {
             EntryKind::Unconditional => true,
             EntryKind::Recurring { name, multiple } => {
@@ -279,7 +287,7 @@ mod tests {
                 &store,
                 gd(),
             );
-            assert_eq!(out, None, "PostToolUse must never speak");
+            assert_eq!(out, None, "PostToolUse must never emit context");
         }
         assert_eq!(store.pending_multiple("s", "r"), Some(1));
     }
@@ -305,7 +313,7 @@ mod tests {
             gd(),
         );
         assert_eq!(out.as_deref(), Some("[gaff:r] hello"));
-        assert_eq!(store.pending_multiple("s", "r"), None, "pending consumed");
+        assert_eq!(store.pending_multiple("s", "r"), None, "gaff consumed the pending marker");
     }
 
     #[test]
@@ -336,7 +344,7 @@ mod tests {
         )
         .unwrap();
         assert!(out.contains("[gaff:a] short"));
-        assert!(!out.contains("xxx"), "oversized entry must not leak");
+        assert!(!out.contains("xxx"), "an oversized entry must not leak");
         assert!(out.contains(TRUNCATION_MARKER));
         assert!(out.len() <= 40);
         assert_eq!(store.pending_multiple("s", "b"), Some(1), "b stays pending");
@@ -363,7 +371,7 @@ mod tests {
         assert_eq!(
             out.as_deref(),
             Some("[gaff:remind] check CI"),
-            "compact re-primes"
+            "a compaction re-primes the context"
         );
         let plain = json!({"hook_event_name": "SessionStart", "session_id": "s", "startup_mode": "startup"});
         assert_eq!(handle(&event(plain), &config, &store, gd()), None);
@@ -416,11 +424,12 @@ mod tests {
         let out = handle(&event(start), &config, &store, &dir);
         assert_eq!(out.as_deref(), Some("[gaff:conv]\nUse tabs."));
 
-        // Mid-session: nothing pending, prompts stay quiet.
+        // Mid-session: nothing is pending, so a prompt emits nothing.
         let prompt = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "x"});
         assert_eq!(handle(&event(prompt.clone()), &config, &store, &dir), None);
 
-        // Two tool calls cross the refresh cadence; next prompt re-injects.
+        // Two tool calls cross the refresh cadence. The next prompt
+        // re-injects the section.
         for id in ["t1", "t2"] {
             let _ = handle(
                 &event(json!({"hook_event_name": "PostToolUse", "session_id": "s", "tool_use_id": id})),
@@ -431,7 +440,7 @@ mod tests {
         }
         let out = handle(&event(prompt.clone()), &config, &store, &dir);
         assert_eq!(out.as_deref(), Some("[gaff:conv]\nUse tabs."));
-        assert_eq!(handle(&event(prompt), &config, &store, &dir), None, "refresh consumed");
+        assert_eq!(handle(&event(prompt), &config, &store, &dir), None, "gaff consumed the refresh");
     }
 
     #[test]
@@ -465,8 +474,9 @@ mod tests {
     }
 }
 
-/// Regression: `Config::default()` once zeroed `max_inject_bytes`, so the
-/// no-config path suppressed every flush. Caught by the missouri suite.
+/// A regression test. `Config::default()` once set `max_inject_bytes` to
+/// zero, so the no-config path suppressed every flush. The missouri
+/// suite found the bug.
 #[cfg(test)]
 mod regression {
     use super::*;

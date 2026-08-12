@@ -1,5 +1,5 @@
 doc: |
-  Repo config declares one recurring reminder: every 3 tool calls.
+  The repo config declares one recurring reminder, every 3 tool calls.
 transitions:
   - name: "third tool call arms but never decorates the tool result"
     command: |

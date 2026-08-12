@@ -43,8 +43,8 @@
           toolchain = pkgs.rust-bin.stable.latest.default;
           craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
 
-          # cleanCargoSource strips non-Rust files; the bundled docs and
-          # missouri fixtures must survive the filter.
+          # cleanCargoSource removes the non-Rust files. The bundled docs
+          # and the missouri fixtures must survive the filter.
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter =
@@ -75,9 +75,9 @@
             commonArgs
             // {
               inherit cargoArtifacts;
-              # Unit tests only in the nix check; the missouri suite runs in
-              # development (it needs the missouri binary, which lives in its
-              # own derivation).
+              # The nix check runs the unit tests only. The missouri suite
+              # runs in development, because it needs the missouri binary,
+              # which lives in its own derivation.
               checkPhase = ''
                 tmpHome="$(mktemp -d)"
                 export HOME="$tmpHome"

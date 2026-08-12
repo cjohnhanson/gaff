@@ -1,6 +1,6 @@
 doc: |
-  Empty repo, no gaff config, no state. Error surface, passthrough
-  silence, and configless counting.
+  An empty repo: no gaff config and no state. This covers the error
+  surface, the silent passthrough, and counting without a config.
 transitions:
   - name: "error surface: internal errors exit 1, never 2"
     command: |

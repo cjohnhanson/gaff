@@ -1,10 +1,11 @@
-//! gaff — context-lifecycle handler for coding agents.
+//! gaff — a context-lifecycle handler for coding agents.
 //!
-//! Counters over the hook event stream, cadence-driven context
-//! re-injection, prime sections, and advisory profiles. Registers as a
-//! handler in the agent harness's native hook config; owns no dispatch,
-//! blocks nothing, and injects only on events whose context sink is the
-//! model's session framing.
+//! gaff counts the hook events of a session. It re-injects context on a
+//! cadence. It delivers prime sections and advisory profiles.
+//!
+//! gaff registers as one handler in the harness's own hook config. It
+//! owns no dispatch. It blocks nothing. It injects context only on the
+//! events whose context sink is the model's session framing.
 
 pub mod config;
 pub mod docs;
