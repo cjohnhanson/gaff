@@ -1,0 +1,9 @@
+env:
+  GAFF_STATE_DIR: ".gaff-state"
+setup:
+  - name: "build gaff"
+    command: "cargo build --quiet --manifest-path ../../Cargo.toml"
+  - name: "link binary"
+    command: "mkdir -p .missouri/bin && ln -sf $(cd ../.. && pwd)/target/debug/gaff .missouri/bin/gaff"
+packages:
+  - jq

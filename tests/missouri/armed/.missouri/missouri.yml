@@ -1,0 +1,35 @@
+doc: |
+  Threshold crossed, injection pending, nothing emitted yet.
+transitions:
+  - name: "user prompt flushes with attribution"
+    command: |
+      OUT=$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s-1","prompt":"hi"}' | gaff hook)
+      CTX=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')
+      printf '%s' "$CTX" | grep -qF '[gaff:tisket] Check tisket scratch is current.' \
+        || { echo "FAIL: context was: $CTX"; exit 1; }
+      EV=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName')
+      [ "$EV" = "UserPromptSubmit" ] || { echo "FAIL: hookEventName $EV"; exit 1; }
+      echo FLUSHED_OK
+    target: ../flushed
+    stdout: "FLUSHED_OK\n"
+  - name: "post-tool batch flushes too"
+    command: |
+      OUT=$(printf '%s' '{"hook_event_name":"PostToolBatch","session_id":"s-1"}' | gaff hook)
+      printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext' | grep -qF '[gaff:tisket]' \
+        || { echo "FAIL: no flush on batch: $OUT"; exit 1; }
+      echo BATCH_FLUSHED_OK
+    target: ../flushed-batch
+    stdout: "BATCH_FLUSHED_OK\n"
+  - name: "unsafe and unknown events do not flush"
+    command: |
+      for ev in '{"hook_event_name":"PreToolUse","session_id":"s-1","tool_name":"Bash","tool_use_id":"t9"}' \
+                '{"hook_event_name":"Stop","session_id":"s-1"}' \
+                '{"hook_event_name":"FutureThing","session_id":"s-1"}' \
+                '{"hook_event_name":"WorktreeCreate","session_id":"s-1"}'; do
+        OUT=$(printf '%s' "$ev" | gaff hook)
+        [ -z "$OUT" ] || { echo "FAIL: flushed on unsafe event: $ev -> $OUT"; exit 1; }
+      done
+      [ -f .gaff-state/s-1/pending-tisket ] || { echo "FAIL: pending lost"; exit 1; }
+      echo STILL_ARMED_OK
+    target: ../armed-still
+    stdout: "STILL_ARMED_OK\n"

@@ -1,0 +1,43 @@
+doc: |
+  Empty repo, no gaff config, no state. Error surface, passthrough
+  silence, and configless counting.
+transitions:
+  - name: "error surface: internal errors exit 1, never 2"
+    command: |
+      printf 'not json' | gaff hook >/dev/null 2>&1; c=$?
+      [ "$c" -eq 1 ] || { echo "FAIL: bad json exit $c"; exit 1; }
+      printf '' | gaff hook >/dev/null 2>&1; c=$?
+      [ "$c" -eq 1 ] || { echo "FAIL: empty stdin exit $c"; exit 1; }
+      printf '"just a string"' | gaff hook >/dev/null 2>&1; c=$?
+      [ "$c" -eq 0 ] || { echo "FAIL: non-object json exit $c"; exit 1; }
+      gaff bogus >/dev/null 2>&1; c=$?
+      [ "$c" -eq 1 ] || { echo "FAIL: unknown subcommand exit $c"; exit 1; }
+      gaff >/dev/null 2>&1; c=$?
+      [ "$c" -eq 1 ] || { echo "FAIL: no subcommand exit $c"; exit 1; }
+      [ "$c" -ne 2 ] || { echo "FAIL: exit 2 observed"; exit 1; }
+      echo ERROR_SURFACE_OK
+    target: ../fresh-noop
+    stdout: "ERROR_SURFACE_OK\n"
+  - name: "unknown and session-less events pass through with no output and no state"
+    command: |
+      OUT=$(printf '%s' '{"hook_event_name":"FutureThing","session_id":"s-1"}' | gaff hook); c=$?
+      [ "$c" -eq 0 ] || { echo "FAIL: unknown event exit $c"; exit 1; }
+      [ -z "$OUT" ] || { echo "FAIL: unknown event spoke: $OUT"; exit 1; }
+      OUT=$(printf '%s' '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"tx"}' | gaff hook); c=$?
+      [ "$c" -eq 0 ] || { echo "FAIL: sessionless exit $c"; exit 1; }
+      [ -z "$OUT" ] || { echo "FAIL: sessionless spoke: $OUT"; exit 1; }
+      [ ! -e .gaff-state ] || { echo "FAIL: state created"; exit 1; }
+      echo PASSTHROUGH_OK
+    target: ../fresh-noop
+    stdout: "PASSTHROUGH_OK\n"
+  - name: "tool calls accumulate a ledger without config"
+    command: |
+      OUT=$(printf '%s' '{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"Bash","tool_use_id":"t1"}' | gaff hook)
+      [ -z "$OUT" ] || { echo "FAIL: spoke on PostToolUse: $OUT"; exit 1; }
+      OUT=$(printf '%s' '{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"Read","tool_use_id":"t2"}' | gaff hook)
+      [ -z "$OUT" ] || { echo "FAIL: spoke on PostToolUse: $OUT"; exit 1; }
+      N=$(gaff status --session s-1 | jq -r '.tool_calls')
+      [ "$N" = "2" ] || { echo "FAIL: status tool_calls=$N"; exit 1; }
+      echo COUNTED_OK
+    target: ../counted
+    stdout: "COUNTED_OK\n"

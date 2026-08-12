@@ -1,0 +1,14 @@
+doc: |
+  One-shot consumed. Compaction erases delivered context, so a compact
+  SessionStart re-arms and re-primes in the same response.
+transitions:
+  - name: "compact re-arms and re-primes immediately"
+    command: |
+      OUT=$(printf '%s' '{"hook_event_name":"SessionStart","session_id":"s-1","source":"compact"}' | gaff hook)
+      printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext' | grep -qF '[gaff:remind] check CI' \
+        || { echo "FAIL: no re-prime: $OUT"; exit 1; }
+      OUT=$(printf '%s' '{"hook_event_name":"SessionStart","session_id":"s-1","source":"startup"}' | gaff hook)
+      [ -z "$OUT" ] || { echo "FAIL: plain startup spoke: $OUT"; exit 1; }
+      echo REARM_OK
+    target: ../oneshot-rearmed
+    stdout: "REARM_OK\n"

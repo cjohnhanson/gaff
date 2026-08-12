@@ -1,0 +1,22 @@
+doc: |
+  A section primes at session start and refreshes on its cadence.
+transitions:
+  - name: "session start injects all sections"
+    command: |
+      CTX=$(printf '%s' '{"hook_event_name":"SessionStart","session_id":"s-1","source":"startup"}' | gaff hook | jq -r '.hookSpecificOutput.additionalContext')
+      printf '%s' "$CTX" | grep -qF '[gaff:conventions]' || { echo "FAIL: no section header: $CTX"; exit 1; }
+      printf '%s' "$CTX" | grep -qF 'Use tabs. Stage files individually.' || { echo "FAIL: no body: $CTX"; exit 1; }
+      echo PRIMED_OK
+    target: ../primed-started
+    stdout: "PRIMED_OK\n"
+  - name: "refresh cadence re-injects mid-session"
+    command: |
+      for id in t1 t2; do
+        OUT=$(printf '{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"Bash","tool_use_id":"%s"}' "$id" | gaff hook)
+        [ -z "$OUT" ] || { echo "FAIL: spoke on $id"; exit 1; }
+      done
+      CTX=$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s-1","prompt":"hi"}' | gaff hook | jq -r '.hookSpecificOutput.additionalContext')
+      printf '%s' "$CTX" | grep -qF '[gaff:conventions]' || { echo "FAIL: no refresh: $CTX"; exit 1; }
+      echo REFRESHED_OK
+    target: ../primed-refreshed
+    stdout: "REFRESHED_OK\n"

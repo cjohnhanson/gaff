@@ -1,0 +1,22 @@
+doc: |
+  Sessions isolate: same tool_use_id in two sessions counts in each;
+  gaff remind resolves its session from --session or CLAUDE_CODE_SESSION_ID
+  and refuses when neither exists.
+transitions:
+  - name: "two sessions, two ledgers, remind targets the right one"
+    command: |
+      gaff hook >/dev/null <<'JSON'
+      {"hook_event_name":"PostToolUse","session_id":"s-a","tool_name":"Bash","tool_use_id":"t1"}
+      JSON
+      gaff hook >/dev/null <<'JSON'
+      {"hook_event_name":"PostToolUse","session_id":"s-b","tool_name":"Bash","tool_use_id":"t1"}
+      JSON
+      gaff remind "no home" --after 1 >/dev/null 2>&1; c=$?
+      [ "$c" -eq 1 ] || { echo "FAIL: sessionless remind exit $c"; exit 1; }
+      gaff remind "check the deploy" --after 1 --id deploy --session s-b || { echo "FAIL: remind s-b"; exit 1; }
+      CLAUDE_CODE_SESSION_ID=s-a gaff remind "env resolved" --after 5 --id envtest || { echo "FAIL: remind env"; exit 1; }
+      A=$(gaff status --session s-a | jq -r '.tool_calls'); B=$(gaff status --session s-b | jq -r '.tool_calls')
+      [ "$A" = "1" ] && [ "$B" = "1" ] || { echo "FAIL: counts a=$A b=$B"; exit 1; }
+      echo SESSIONS_OK
+    target: ../sessions-isolated
+    stdout: "SESSIONS_OK\n"

@@ -1,0 +1,13 @@
+doc: |
+  Repo config declares one recurring reminder: every 3 tool calls.
+transitions:
+  - name: "third tool call arms but never decorates the tool result"
+    command: |
+      for id in t1 t2 t3; do
+        OUT=$(printf '{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"Bash","tool_use_id":"%s"}' "$id" | gaff hook)
+        [ -z "$OUT" ] || { echo "FAIL: spoke on PostToolUse $id: $OUT"; exit 1; }
+      done
+      [ -f .gaff-state/s-1/pending-tisket ] || { echo "FAIL: not armed"; exit 1; }
+      echo ARMED_OK
+    target: ../armed
+    stdout: "ARMED_OK\n"

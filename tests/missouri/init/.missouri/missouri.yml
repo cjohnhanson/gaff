@@ -1,0 +1,50 @@
+doc: |
+  gaff init registers hooks idempotently; --uninstall removes exactly
+  what init added, leaving foreign entries and unknown keys intact.
+transitions:
+  - name: "init registers five events idempotently"
+    command: |
+      gaff init >/dev/null || { echo "FAIL: init"; exit 1; }
+      cp .claude/settings.local.json first.json
+      gaff init >/dev/null || { echo "FAIL: rerun"; exit 1; }
+      cmp -s first.json .claude/settings.local.json || { echo "FAIL: not idempotent"; exit 1; }
+      rm first.json
+      for ev in PostToolBatch PostToolUse PostToolUseFailure SessionStart UserPromptSubmit; do
+        jq -e --arg ev "$ev" '.hooks[$ev][0].hooks[0].command == "gaff hook"' .claude/settings.local.json >/dev/null \
+          || { echo "FAIL: $ev not registered"; exit 1; }
+      done
+      echo INIT_OK
+    target: ../init-done
+    stdout: "INIT_OK\n"
+  - name: "uninstall removes only gaff entries"
+    command: |
+      mkdir -p .claude
+      cat > .claude/settings.local.json <<'EOF'
+      {
+        "hooks": {
+          "SessionStart": [
+            {
+              "hooks": [
+                {
+                  "command": "other-tool hook",
+                  "type": "command"
+                }
+              ]
+            }
+          ]
+        },
+        "permissions": {
+          "allow": [
+            "Read"
+          ]
+        }
+      }
+      EOF
+      gaff init >/dev/null || { echo "FAIL: init"; exit 1; }
+      jq -e '.hooks.SessionStart | length == 2' .claude/settings.local.json >/dev/null || { echo "FAIL: not added alongside"; exit 1; }
+      gaff init --uninstall >/dev/null || { echo "FAIL: uninstall"; exit 1; }
+      jq -e '.hooks.SessionStart | length == 1' .claude/settings.local.json >/dev/null || { echo "FAIL: foreign entry lost"; exit 1; }
+      jq -e '.permissions.allow[0] == "Read"' .claude/settings.local.json >/dev/null || { echo "FAIL: permissions lost"; exit 1; }
+      echo UNINSTALL_OK
+    target: ../init-removed
+    stdout: "UNINSTALL_OK\n"

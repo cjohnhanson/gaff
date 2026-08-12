@@ -1,0 +1,17 @@
+doc: |
+  Two reminders cross together under a small byte cap: config order wins,
+  the entry that does not fit is skipped (stays pending, retried later),
+  and the truncation marker is appended.
+transitions:
+  - name: "merge order and byte cap"
+    command: |
+      OUT=$(printf '%s' '{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"Bash","tool_use_id":"t1"}' | gaff hook)
+      [ -z "$OUT" ] || { echo "FAIL: spoke on PostToolUse: $OUT"; exit 1; }
+      CTX=$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s-1","prompt":"hi"}' | gaff hook | jq -r '.hookSpecificOutput.additionalContext')
+      printf '%s' "$CTX" | grep -qF '[gaff:alpha] alpha section refresh body 123' || { echo "FAIL: alpha missing: $CTX"; exit 1; }
+      printf '%s' "$CTX" | grep -qF 'beta' && { echo "FAIL: beta leaked past cap: $CTX"; exit 1; }
+      printf '%s' "$CTX" | grep -qF '[gaff:truncated]' || { echo "FAIL: no truncation marker: $CTX"; exit 1; }
+      [ "${#CTX}" -le 64 ] || { echo "FAIL: context ${#CTX} bytes"; exit 1; }
+      echo CAPS_OK
+    target: ../caps-flushed
+    stdout: "CAPS_OK\n"

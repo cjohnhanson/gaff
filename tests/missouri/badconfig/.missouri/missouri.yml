@@ -1,0 +1,15 @@
+doc: |
+  Malformed repo config degrades loudly: stderr warning, degraded marker,
+  counting still works, exit 0, never 2.
+transitions:
+  - name: "broken yaml warns and passes through"
+    command: |
+      OUT=$(printf '%s' '{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"Bash","tool_use_id":"t1"}' | gaff hook 2>err.txt); c=$?
+      [ "$c" -eq 0 ] || { echo "FAIL: exit $c"; exit 1; }
+      [ -z "$OUT" ] || { echo "FAIL: spoke: $OUT"; exit 1; }
+      grep -q "config" err.txt || { echo "FAIL: no warning on stderr"; exit 1; }
+      rm err.txt
+      [ -f .gaff-state/degraded ] || { echo "FAIL: no degraded marker"; exit 1; }
+      echo BADCONFIG_OK
+    target: ../badconfig-degraded
+    stdout: "BADCONFIG_OK\n"

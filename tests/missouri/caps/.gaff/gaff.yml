@@ -1,0 +1,10 @@
+max_inject_bytes: 64
+reminders:
+  - name: alpha
+    every:
+      tool_calls: 1
+    text: "alpha section refresh body 123"
+  - name: beta
+    every:
+      tool_calls: 1
+    text: "beta reminder that will not fit this time"

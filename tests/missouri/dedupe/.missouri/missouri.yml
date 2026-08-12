@@ -1,0 +1,15 @@
+doc: |
+  One tool_use_id seen as PreToolUse, PostToolUse, and PostToolUseFailure
+  counts exactly once.
+transitions:
+  - name: "pre, post, and failure with one id count once"
+    command: |
+      for ev in PreToolUse PostToolUse PostToolUseFailure; do
+        OUT=$(printf '{"hook_event_name":"%s","session_id":"s-1","tool_name":"Bash","tool_use_id":"t9"}' "$ev" | gaff hook)
+        [ -z "$OUT" ] || { echo "FAIL: spoke on $ev: $OUT"; exit 1; }
+      done
+      N=$(gaff status --session s-1 | jq -r '.tool_calls')
+      [ "$N" = "1" ] || { echo "FAIL: counted $N times"; exit 1; }
+      echo DEDUPE_OK
+    target: ../dedupe-counted
+    stdout: "DEDUPE_OK\n"

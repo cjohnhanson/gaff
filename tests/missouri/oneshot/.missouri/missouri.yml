@@ -1,0 +1,19 @@
+doc: |
+  Agent schedules a reminder 2 tool calls into its future; it fires once
+  on the next safe event and never again.
+transitions:
+  - name: "schedule, cross, flush once, never twice"
+    command: |
+      gaff remind "check CI" --after 2 --id ci --session s-1 || { echo "FAIL: remind"; exit 1; }
+      for id in t1 t2; do
+        OUT=$(printf '{"hook_event_name":"PostToolUse","session_id":"s-1","tool_name":"Bash","tool_use_id":"%s"}' "$id" | gaff hook)
+        [ -z "$OUT" ] || { echo "FAIL: spoke on $id: $OUT"; exit 1; }
+      done
+      OUT=$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s-1","prompt":"hi"}' | gaff hook)
+      printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext' | grep -qF '[gaff:remind] check CI' \
+        || { echo "FAIL: no fire: $OUT"; exit 1; }
+      OUT=$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"s-1","prompt":"again"}' | gaff hook)
+      [ -z "$OUT" ] || { echo "FAIL: refired: $OUT"; exit 1; }
+      echo ONESHOT_OK
+    target: ../oneshot-fired
+    stdout: "ONESHOT_OK\n"

@@ -1,0 +1,5 @@
+sections:
+  - name: conventions
+    file: sections/conventions.md
+    refresh:
+      tool_calls: 2

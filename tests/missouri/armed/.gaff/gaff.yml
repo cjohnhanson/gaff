@@ -1,0 +1,5 @@
+reminders:
+  - name: tisket
+    every:
+      tool_calls: 3
+    text: "Check tisket scratch is current."
