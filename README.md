@@ -19,18 +19,14 @@ ends with its opening instructions effectively invisible.
 
 ## What gaff does
 
-- **Counters** — per-session tallies over the hook events: prompts,
-  turns, and tool calls filtered by name. gaff keeps them in an
-  append-only ledger.
-- **Cadences** — re-inject a text every 20 tool calls. An agent can also
-  schedule a one-shot reminder N tool calls into its own future. gaff
-  re-arms a one-shot after a context compaction.
+- **Counters** — per-session tallies over the hook events: prompts and
+  tool calls. gaff keeps them in an append-only ledger, and a tool call
+  counts once across its Pre, Post, and failure events.
+- **Cadences** — re-inject a text every N tool calls or prompts. An
+  agent can also schedule a one-shot reminder N tool calls into its own
+  future. gaff re-arms a one-shot after a context compaction.
 - **Prime sections** — the session-start context, split into sections.
   Each section refreshes on its own cadence.
-- **Profiles** — named overlays that select the sections and the
-  cadences. A transition policy states which switches an agent may make
-  on itself. Profiles are advisory. Managed settings do the real
-  enforcement.
 
 ## What gaff is not
 
@@ -65,4 +61,5 @@ mid-session refresh, byte-capped injection with attribution prefixes,
 the `init`, `check`, and `doctor` commands, and the bundled docs.
 
 A missouri state-graph suite of 15 paths and the cargo unit tests cover
-this. Both enforce the never-exit-2 rule.
+this. The suite's error-surface path checks that every failure exits 1,
+never the blocking code 2. Profiles are not built yet.
