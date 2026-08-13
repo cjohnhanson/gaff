@@ -145,7 +145,14 @@ fn flush(
         if mode == SectionMode::PendingOnly && pending.is_none() {
             continue;
         }
-        let Ok(body) = std::fs::read_to_string(gaff_dir.join(&section.file)) else {
+        let Ok(path) = crate::config::confine_section_path(gaff_dir, &section.file) else {
+            eprintln!(
+                "gaff: section `{}`: the path {} leaves .gaff/. Skipping the section.",
+                section.name, section.file
+            );
+            continue;
+        };
+        let Ok(body) = std::fs::read_to_string(&path) else {
             eprintln!(
                 "gaff: section `{}`: cannot read {}. Skipping the section.",
                 section.name, section.file
@@ -457,6 +464,32 @@ mod tests {
         };
         let start = json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
         assert_eq!(handle(&event(start), &config, &store, gd()), None);
+    }
+
+    #[test]
+    fn section_path_escaping_gaff_dir_reads_nothing() {
+        // A committed config must not read a file outside .gaff/ into the
+        // model's context. A canary sits beside the temp .gaff/ dir; the
+        // section tries to reach it with `..`.
+        let dir = std::env::temp_dir().join(format!("gaff-escape-{}", std::process::id()));
+        let gaff = dir.join(".gaff");
+        std::fs::create_dir_all(&gaff).unwrap();
+        std::fs::write(dir.join("canary.txt"), "SECRET").unwrap();
+        let store = temp_store("escape");
+        for bad in ["../canary.txt", "../../etc/hostname", "/etc/hostname"] {
+            let config = Config {
+                reminders: Vec::new(),
+                sections: vec![crate::config::Section {
+                    name: "leak".to_string(),
+                    file: bad.to_string(),
+                    refresh: Every::default(),
+                }],
+                max_inject_bytes: 4096,
+            };
+            let start = json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
+            let out = handle(&event(start), &config, &store, &gaff);
+            assert_eq!(out, None, "escaping path `{bad}` must inject nothing");
+        }
     }
 
     #[test]

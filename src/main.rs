@@ -273,8 +273,15 @@ fn run_check() -> ExitCode {
         if !cadence_ok(&s.refresh) {
             problems.push(format!("section `{}` has a zero cadence", s.name));
         }
-        if !cwd.join(".gaff").join(&s.file).is_file() {
-            problems.push(format!("section `{}`: .gaff/{} not found", s.name, s.file));
+        match config::confine_section_path(&cwd.join(".gaff"), &s.file) {
+            Err(bad) => problems.push(format!(
+                "section `{}`: the path {bad} leaves .gaff/",
+                s.name
+            )),
+            Ok(path) if !path.is_file() => {
+                problems.push(format!("section `{}`: .gaff/{} not found", s.name, s.file));
+            }
+            Ok(_) => {}
         }
     }
 

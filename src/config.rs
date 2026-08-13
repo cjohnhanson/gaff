@@ -47,6 +47,41 @@ const fn default_max_inject_bytes() -> usize {
     DEFAULT_MAX_INJECT_BYTES
 }
 
+/// Resolve a section file path under `gaff_dir` and confine it there.
+///
+/// A section file is repo data. It must not read outside `.gaff/`. This
+/// rejects an absolute path and any `..` that escapes the directory,
+/// which stops a committed config from reading a file into the model's
+/// context. The check is lexical, so it needs no file on disk and works
+/// the same in `gaff check` and at read time.
+///
+/// # Errors
+/// Returns the offending path string when the file is absolute or leaves
+/// `gaff_dir`.
+pub fn confine_section_path(gaff_dir: &Path, file: &str) -> Result<std::path::PathBuf, String> {
+    let candidate = Path::new(file);
+    if candidate.is_absolute() {
+        return Err(file.to_string());
+    }
+    let mut depth: i32 = 0;
+    for component in candidate.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err(file.to_string());
+                }
+            }
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::CurDir => {}
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(file.to_string());
+            }
+        }
+    }
+    Ok(gaff_dir.join(candidate))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Reminder {
     pub name: String,
