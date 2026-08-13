@@ -255,9 +255,24 @@ fn run_check() -> ExitCode {
     let mut names = std::collections::HashSet::new();
     let cadence_ok =
         |e: &config::Every| e.tool_calls.is_none_or(|n| n > 0) && e.prompts.is_none_or(|n| n > 0);
+    // A name keys the pending, cursor, oneshot, and fired files. A `/`
+    // or a `\` would make the name escape the session directory, so the
+    // name must be a plain file component.
+    let name_ok = |n: &str| !n.is_empty() && !n.contains(['/', '\\']);
+
+    if cfg.max_inject_bytes == 0 {
+        problems.push("max_inject_bytes is 0, so every flush is empty".to_string());
+    }
+
     for r in &cfg.reminders {
         if !names.insert(r.name.clone()) {
             problems.push(format!("duplicate name `{}`", r.name));
+        }
+        if !name_ok(&r.name) {
+            problems.push(format!(
+                "reminder name `{}` must not be empty or hold / or \\",
+                r.name
+            ));
         }
         if r.every.tool_calls.is_none() && r.every.prompts.is_none() {
             problems.push(format!("reminder `{}` has no cadence", r.name));
@@ -270,6 +285,12 @@ fn run_check() -> ExitCode {
         if !names.insert(s.name.clone()) {
             problems.push(format!("duplicate name `{}`", s.name));
         }
+        if !name_ok(&s.name) {
+            problems.push(format!(
+                "section name `{}` must not be empty or hold / or \\",
+                s.name
+            ));
+        }
         if !cadence_ok(&s.refresh) {
             problems.push(format!("section `{}` has a zero cadence", s.name));
         }
@@ -281,7 +302,21 @@ fn run_check() -> ExitCode {
             Ok(path) if !path.is_file() => {
                 problems.push(format!("section `{}`: .gaff/{} not found", s.name, s.file));
             }
-            Ok(_) => {}
+            Ok(path) => {
+                // The prefix and separator cost bytes too. A body at or
+                // over the cap can never flush without truncation.
+                let overhead = format!("[gaff:{}]\n", s.name).len();
+                let raw_len = std::fs::metadata(&path).map_or(0, |m| m.len());
+                let body_len = usize::try_from(raw_len).unwrap_or(usize::MAX);
+                if overhead + body_len > cfg.max_inject_bytes {
+                    problems.push(format!(
+                        "section `{}`: the body plus its header is {} bytes, over the {}-byte cap",
+                        s.name,
+                        overhead + body_len,
+                        cfg.max_inject_bytes
+                    ));
+                }
+            }
         }
     }
 

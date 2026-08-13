@@ -1,0 +1,2 @@
+# gaff writes a lock sidecar next to each ledger; it is not state.
+ledger.lock

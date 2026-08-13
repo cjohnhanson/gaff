@@ -24,6 +24,7 @@ use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt as _;
 use serde_json::{json, Value};
 
 pub struct Store {
@@ -99,13 +100,40 @@ impl Store {
             .collect()
     }
 
+    /// Run `body` while holding an exclusive lock on the session's
+    /// ledger. Claude Code fires tool hooks in parallel, so several `gaff
+    /// hook` processes race on one session. The lock serializes the
+    /// read-count-append critical section, so no crossing is lost and no
+    /// two writers interleave a line. The lock is a sidecar file, so the
+    /// ledger's own bytes stay a clean append log.
+    fn with_ledger_lock<T>(
+        &self,
+        session: &str,
+        body: impl FnOnce() -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        std::fs::create_dir_all(self.session_dir(session))?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.session_dir(session).join("ledger.lock"))?;
+        lock.lock_exclusive()?;
+        let result = body();
+        // Best-effort unlock; the lock also drops with the handle.
+        let _ = fs2::FileExt::unlock(&lock);
+        result
+    }
+
+    /// Append one line as a single write. Under `O_APPEND` a lone write
+    /// of a short line is atomic, so a line never interleaves with a
+    /// concurrent writer even outside the lock.
     fn append_ledger(&self, session: &str, line: &Value) -> std::io::Result<()> {
         std::fs::create_dir_all(self.session_dir(session))?;
         let mut f = OpenOptions::new()
             .create(true)
             .append(true)
             .open(self.ledger_path(session))?;
-        writeln!(f, "{line}")
+        f.write_all(format!("{line}\n").as_bytes())
     }
 
     /// Record a tool call. The `tool_use_id` deduplicates it, because
@@ -113,33 +141,40 @@ impl Store {
     /// same id. One tool call counts once.
     ///
     /// Returns the new tool-call count. Returns `None` when this id was
-    /// already counted.
+    /// already counted. The count is exact under concurrent hooks,
+    /// because the read and the append run under the ledger lock.
     pub fn record_tool_call(
         &self,
         session: &str,
         tool_use_id: &str,
     ) -> std::io::Result<Option<u64>> {
-        let lines = self.ledger_lines(session);
-        let already = lines
-            .iter()
-            .any(|l| l["unit"] == "tool_calls" && l["id"] == tool_use_id);
-        if already {
-            return Ok(None);
-        }
-        let count = 1 + lines.iter().filter(|l| l["unit"] == "tool_calls").count() as u64;
-        self.append_ledger(session, &json!({"id": tool_use_id, "unit": "tool_calls"}))?;
-        Ok(Some(count))
+        self.with_ledger_lock(session, || {
+            let lines = self.ledger_lines(session);
+            let already = lines
+                .iter()
+                .any(|l| l["unit"] == "tool_calls" && l["id"] == tool_use_id);
+            if already {
+                return Ok(None);
+            }
+            let count = 1 + lines.iter().filter(|l| l["unit"] == "tool_calls").count() as u64;
+            self.append_ledger(session, &json!({"id": tool_use_id, "unit": "tool_calls"}))?;
+            Ok(Some(count))
+        })
     }
 
-    /// Record a user prompt. Returns the new prompt count.
+    /// Record a user prompt. Returns the new prompt count. The count is
+    /// exact under concurrent hooks; the read and append run under the
+    /// ledger lock.
     pub fn record_prompt(&self, session: &str) -> std::io::Result<u64> {
-        let count = 1 + self
-            .ledger_lines(session)
-            .iter()
-            .filter(|l| l["unit"] == "prompts")
-            .count() as u64;
-        self.append_ledger(session, &json!({"unit": "prompts"}))?;
-        Ok(count)
+        self.with_ledger_lock(session, || {
+            let count = 1 + self
+                .ledger_lines(session)
+                .iter()
+                .filter(|l| l["unit"] == "prompts")
+                .count() as u64;
+            self.append_ledger(session, &json!({"unit": "prompts"}))?;
+            Ok(count)
+        })
     }
 
     #[must_use]
@@ -349,6 +384,38 @@ mod tests {
         assert_eq!(s.counts("nope"), Counts::default());
         assert!(s.oneshots("nope").is_empty());
         assert!(!s.is_fired("nope", "x"));
+    }
+
+    #[test]
+    fn concurrent_tool_calls_lose_no_cadence_crossing() {
+        // 40 distinct ids recorded from 8 threads. Every count from 1..=40
+        // must appear exactly once, so no crossing (e.g. every 20th) is
+        // lost or duplicated.
+        let s = temp_store("concurrent");
+        let root = s.root.clone();
+        let seen: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for t in 0..8 {
+                let root = root.clone();
+                let seen = &seen;
+                scope.spawn(move || {
+                    for i in 0..5 {
+                        let id = format!("t{}", t * 5 + i);
+                        let store = Store::new(root.clone());
+                        if let Ok(Some(count)) = store.record_tool_call("s", &id) {
+                            seen.lock().unwrap().push(count);
+                        }
+                    }
+                });
+            }
+        });
+        let mut counts = seen.into_inner().unwrap();
+        counts.sort_unstable();
+        assert_eq!(
+            counts,
+            (1..=40).collect::<Vec<_>>(),
+            "each count exactly once"
+        );
     }
 
     #[test]

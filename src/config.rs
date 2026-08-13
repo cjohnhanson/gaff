@@ -16,6 +16,7 @@ pub const CONFIG_PATH: &str = ".gaff/gaff.yml";
 const DEFAULT_MAX_INJECT_BYTES: usize = 4096;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub reminders: Vec<Reminder>,
@@ -83,6 +84,7 @@ pub fn confine_section_path(gaff_dir: &Path, file: &str) -> Result<std::path::Pa
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Reminder {
     pub name: String,
     pub every: Every,
@@ -97,6 +99,7 @@ pub struct Reminder {
 /// and the cursor state use the name as the key. A name must be unique
 /// across both.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Section {
     pub name: String,
     /// The path to the section body, relative to `.gaff/`.
