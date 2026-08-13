@@ -221,6 +221,10 @@ impl Store {
         text: &str,
     ) -> std::io::Result<()> {
         std::fs::create_dir_all(self.session_dir(session))?;
+        // Reusing an id re-arms it. A stale fired marker from an earlier
+        // one-shot with the same id would otherwise make the new one a
+        // silent no-op.
+        std::fs::remove_file(self.session_dir(session).join(format!("fired-{id}"))).ok();
         let line = serde_json::to_string(&json!({"after": after, "at": at, "text": text}))
             .unwrap_or_default();
         std::fs::write(
@@ -441,5 +445,16 @@ mod tests {
         assert!(!s.claim_fired("s", "ci"));
         s.clear_fired("s");
         assert!(s.claim_fired("s", "ci"));
+    }
+
+    #[test]
+    fn rewriting_a_oneshot_rearms_a_fired_id() {
+        let s = temp_store("reuse");
+        s.write_oneshot("s", "ci", 0, 0, "first").unwrap();
+        assert!(s.claim_fired("s", "ci"), "fires the first time");
+        assert!(!s.claim_fired("s", "ci"), "does not fire twice");
+        // Scheduling the id again must clear the stale fired marker.
+        s.write_oneshot("s", "ci", 0, 0, "second").unwrap();
+        assert!(s.claim_fired("s", "ci"), "the reused id fires again");
     }
 }
