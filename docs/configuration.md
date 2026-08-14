@@ -271,6 +271,61 @@ problem, including a config it cannot parse. `gaff doctor` lists the
 declared handlers and whether this repo is trusted. Plain `gaff check`
 stays repo-only, so it behaves the same in CI as it does locally.
 
+## Git hooks
+
+gaff writes the hook scripts and dispatches them. Declare the entries,
+then run `gaff init --git`:
+
+```yaml
+git:
+  - name: fmt
+    on: [pre-commit]
+    command: ["cargo", "fmt", "--check"]
+  - name: test
+    on: [git:pre-push]        # the domain prefix is optional
+    command: ["cargo", "test"]
+    required: false           # report the failure, run the rest anyway
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `name` | required | The entry name, printed as the hook runs |
+| `on` | required | The git hooks this entry runs on |
+| `command` | required | The argv, run with the repo as the working directory |
+| `required` | `true` | Stop the hook when this entry fails |
+
+gaff installs these hooks: `pre-commit`, `prepare-commit-msg`,
+`commit-msg`, `post-commit`, `pre-push`, `post-checkout`, `post-merge`,
+and `pre-rebase`. git's own arguments are forwarded to the command, and
+`pre-push` passes its ref list through on stdin.
+
+### A git hook blocks, and an agent hook does not
+
+These are two contracts, and gaff keeps them apart on purpose.
+
+An agent hook must never block a session, so `gaff hook` exits 0 or 1
+and never 2. A git hook exists *to* block: a non-zero exit aborts the
+commit or the push. So `gaff githook` returns the failing command's
+exit code. A broken config fails the hook, rather than skipping a check
+that was meant to run.
+
+### Installing, and what gaff will not touch
+
+Running `gaff init --git` is the consent step, the same deliberate act
+as `pre-commit install`. gaff writes one script per declared hook.
+
+gaff never sets `core.hooksPath`. That setting names a single
+directory, so it silently disables every hook another tool installed.
+gaff writes individual files instead. When gaff finds a hook it did not
+write, it keeps that file as `<hook>.local` and calls it first, so an
+existing setup keeps working. `gaff init --git --uninstall` removes
+gaff's scripts and restores what it kept.
+
+Unlike a handler, a git command may be a bare name, and it may be
+declared in the repo config. A repo's own lint and test commands are
+the point of a git hook. The human who ran `gaff init --git` in that
+repo is the consent.
+
 ## Host adapters and the event vocabulary
 
 gaff names events for what they mean, not for what a host calls them.
@@ -292,9 +347,9 @@ name, such as Claude Code's `PostToolBatch`, never appears above the
 adapter.
 
 Claude Code is the only implemented adapter. An adapter owns four
-host-specific facts: the payload mapping, the map from its event names
-onto the set above, its own event names for registration, and the
-settings path that `gaff init` writes. `gaff hook` selects the adapter
+host-specific facts. These are the payload mapping, the map from its
+event names onto the set above, its own event names for registration,
+and the settings path that `gaff init` writes. `gaff hook` selects the adapter
 from `GAFF_HOST`, or from the payload shape when that variable is
 absent. `gaff init --host <name>` targets a named host.
 

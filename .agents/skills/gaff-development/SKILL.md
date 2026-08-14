@@ -8,7 +8,7 @@ description: Conventions for developing gaff itself — the never-exit-2 rule, t
 Four invariants govern this codebase. Each exists because breaking it
 damages a live agent session, and each is enforced by a test.
 
-## 1. gaff never exits 2
+## 1. gaff never exits 2 on the agent path
 
 Exit 2 is the agent host's blocking code. A gaff failure must never
 block a session. A config typo, an unwritable state directory, a bad
@@ -17,6 +17,11 @@ flag, and a dead handler all exit 0 or 1 and print a warning.
 This is why the CLI parses arguments by hand instead of using clap:
 clap exits 2 on a usage error. `cli::tests::no_usage_error_ever_exits_two`
 covers it. Add every new usage error to that list.
+
+`gaff githook` is the one exception, and it is deliberate. A git hook
+exists to block the commit or the push, so it returns the failing
+command's exit code. Keep the two contracts apart: the agent domain
+never blocks, and the git domain blocks by design.
 
 ## 2. Injection happens only at flush points
 

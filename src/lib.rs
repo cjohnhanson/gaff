@@ -14,6 +14,7 @@ pub mod docs;
 pub mod engine;
 pub mod error;
 pub mod event;
+pub mod githook;
 pub mod handler;
 pub mod init;
 pub mod state;

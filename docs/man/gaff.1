@@ -35,9 +35,25 @@ selects the session; the default comes from the environment.
 Show the counters, the pending entries, and the one-shots.
 .Fl -session Ar id
 selects the session.
-.It Cm init Op Fl -host Ar name
-Register the hooks in the host's settings file.
+.It Cm init Oo Fl -host Ar name Oc Op Fl -uninstall
+Register the agent hooks in the host's settings file.
 Claude Code is the only implemented host, and it is the default.
+.It Cm init Fl -git Op Fl -uninstall
+Write one script in
+.Pa .git/hooks
+for each git entry the config declares.
+gaff never sets
+.Va core.hooksPath ,
+because that setting names one directory and would disable every hook
+another tool installed.
+A hook gaff did not write is kept as
+.Pa <hook>.local
+and called first.
+.It Cm githook Ar name Op Ar args
+Run one git hook.
+The installed scripts call this.
+It returns the failing command's exit code, because a git hook exists
+to block the commit or the push.
 .It Cm check Op Fl -handlers
 Validate
 .Pa .gaff/gaff.yml
@@ -184,8 +200,15 @@ or run
 .Cm docs configuration
 for the full reference.
 .Sh EXIT STATUS
-0 on success, 1 on any failure.
-Never 2.
+An agent command exits 0 or 1, never 2.
+Exit 2 is the agent host's blocking code, and no gaff failure may block
+a session.
+.Pp
+.Cm githook
+is the exception, and it is deliberate.
+A git hook exists to block, so
+.Cm githook
+returns the exit code of the command that failed.
 .Sh SEE ALSO
 .Xr tisket 1 ,
 .Xr missouri 1

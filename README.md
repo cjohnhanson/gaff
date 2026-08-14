@@ -30,6 +30,9 @@ ends with its opening instructions effectively invisible.
 - **Handlers** — external commands whose output becomes context, on a
   cadence. They live only in the user-scoped config, and a repo must be
   trusted with `gaff trust` before any command runs in it.
+- **Git hooks** — gaff writes the scripts in `.git/hooks/`, and they
+  call back into gaff. One config declares the agent side and the git
+  side. A hook gaff did not write is kept and called first.
 - **Profiles** — named overlays that select which entries are active and
   override their cadences. A transition policy states which profiles an
   agent may select for itself. Profiles are advisory: gaff blocks
@@ -44,11 +47,10 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
 
 ## What gaff is not
 
-- **Not a hook dispatcher.** The harness's own hook system owns the
-  matching, the timeouts, and the parallelism. gaff registers as one
-  handler.
-- **Not a git-hook manager.** lefthook and pre-commit already do that
-  work well.
+- **Not an agent-hook dispatcher.** The harness's own hook system owns
+  the matching, the timeouts, and the parallelism there. gaff registers
+  as one handler. gaff does dispatch its own git hooks, because git has
+  no dispatcher of its own.
 - **Not an enforcement layer.** gaff blocks nothing. It injects context
   only on the events whose output channel is the model's session
   framing. It never decorates a tool result.
@@ -68,6 +70,7 @@ gaff remind "check CI" --after 10  # one-shot, N tool calls into the future
 gaff status --session <id>         # counters, pending entries, one-shots
 gaff check                         # validate .gaff/gaff.yml
 gaff doctor                        # what is live in this clone
+gaff init --git                    # write the git hook scripts
 gaff trust                         # allow handlers to run in this repo
 gaff check --handlers              # validate ~/.config/gaff/handlers.yml
 gaff profile list                  # the declared profiles and who may set them

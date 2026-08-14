@@ -38,6 +38,10 @@ pub struct Config {
     /// Which profile switches an agent may make on its own session.
     #[serde(default)]
     pub transitions: Transitions,
+    /// The git-hook entries. gaff writes the hook scripts, and they
+    /// call back into gaff, so one config covers both domains.
+    #[serde(default)]
+    pub git: Vec<crate::githook::GitHook>,
 }
 
 /// A profile: a named overlay on the reminders and the sections.
@@ -164,6 +168,7 @@ impl Default for Config {
             profiles: std::collections::BTreeMap::new(),
             default_profile: None,
             transitions: Transitions::default(),
+            git: Vec::new(),
         }
     }
 }
@@ -309,6 +314,8 @@ impl Config {
             .retain(|u| !repo.sections.iter().any(|r| r.name == u.name));
         self.sections.extend(repo.sections);
         self.profiles.extend(repo.profiles);
+        self.git.retain(|u| !repo.git.iter().any(|r| r.name == u.name));
+        self.git.extend(repo.git);
 
         if repo.max_inject_bytes != DEFAULT_MAX_INJECT_BYTES {
             self.max_inject_bytes = repo.max_inject_bytes;

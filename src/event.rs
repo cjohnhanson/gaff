@@ -16,6 +16,52 @@ use serde_json::Value;
 /// The schema version stamped on every envelope this binary emits.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// Where an event comes from, and therefore who runs it.
+///
+/// The three domains are not three flavors of the same thing. gaff
+/// executes only the agent domain. It cannot execute the others, and
+/// pretending otherwise would be a lie about what a config does.
+///
+/// - `agent` — gaff runs as a hook handler. It counts and injects.
+/// - `git` — a local git hook. lefthook and pre-commit own the
+///   dispatch, so gaff describes these and never claims
+///   `core.hooksPath`.
+/// - `github` — a remote workflow trigger. gaff is not present when it
+///   fires, so gaff can only describe it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Domain {
+    Agent,
+    Git,
+    Github,
+}
+
+impl Domain {
+    /// Whether gaff itself executes this domain's events.
+    #[must_use]
+    pub const fn is_executed(self) -> bool {
+        matches!(self, Self::Agent)
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Git => "git",
+            Self::Github => "github",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "agent" => Some(Self::Agent),
+            "git" => Some(Self::Git),
+            "github" => Some(Self::Github),
+            _ => None,
+        }
+    }
+}
+
 /// The normalized event set: what gaff means, not what a host calls it.
 ///
 /// This is the cross-agent intersection. Every host has a session that
@@ -60,7 +106,21 @@ impl Kind {
         matches!(self, Self::SessionStart | Self::Prompt | Self::ToolBatch)
     }
 
-    /// The name used in a config file and in the injection log.
+    /// The domain this event belongs to. Every event gaff executes is
+    /// an agent event.
+    #[must_use]
+    pub const fn domain(&self) -> Domain {
+        Domain::Agent
+    }
+
+    /// The qualified name used in a config file and in the injection
+    /// log, such as `agent:tool_batch`.
+    #[must_use]
+    pub fn qualified(&self) -> String {
+        format!("{}:{}", self.domain().as_str(), self.as_str())
+    }
+
+    /// The bare name, without the domain.
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
@@ -74,8 +134,12 @@ impl Kind {
     }
 
     /// Parse a normalized name from a config file.
+    ///
+    /// The name may carry a domain, as in `agent:prompt`. A bare name
+    /// means the agent domain, because that is the domain gaff runs.
     #[must_use]
     pub fn parse(name: &str) -> Self {
+        let name = name.strip_prefix("agent:").unwrap_or(name);
         match name {
             "session_start" => Self::SessionStart,
             "prompt" => Self::Prompt,

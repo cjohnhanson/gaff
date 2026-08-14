@@ -35,6 +35,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("doctor") => run_doctor(),
         Some("profile") => run_profile(&args[1..]),
         Some("trust") => run_trust(),
+        Some("githook") => run_githook(&args[1..]),
         Some("log") => run_log(&args[1..]),
         Some("docs") => run_docs(&args[1..]),
         Some("--version" | "-V" | "version") => {
@@ -46,9 +47,9 @@ pub fn run(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Some(other) => fail(&format!(
-            "unknown command `{other}` (available: hook, remind, status, init, check, doctor, trust, profile, log, docs)"
+            "unknown command `{other}` (available: hook, githook, remind, status, init, check, doctor, trust, profile, log, docs)"
         )),
-        None => fail("usage: gaff <hook|remind|status|init|check|doctor|trust|profile|log|docs>"),
+        None => fail("usage: gaff <hook|githook|remind|status|init|check|doctor|trust|profile|log|docs>"),
     }
 }
 
@@ -60,7 +61,9 @@ Commands:
   hook             Handle one hook event from stdin (the harness calls this)
   remind <text>    Schedule a one-shot reminder N tool calls ahead
   status           Show counters, pending entries, and one-shots
-  init [--host H]  Register the hooks in the host's settings file
+  init [--host H]  Register the agent hooks in the host's settings file
+  init --git       Write the git hook scripts declared in the config
+  githook <name>   Run one git hook (the installed scripts call this)
   check            Validate .gaff/gaff.yml (--handlers checks the user config)
   trust            Allow handlers to run in this repo (terminal only)
   doctor           Show what is live in this clone
@@ -259,6 +262,7 @@ fn run_init(args: &[String]) -> ExitCode {
     let mut uninstall = false;
     let mut command = "gaff hook".to_string();
     let mut host: Option<String> = None;
+    let mut git = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -267,12 +271,16 @@ fn run_init(args: &[String]) -> ExitCode {
                 Some(v) => command.clone_from(v),
                 None => return fail("--command requires a value"),
             },
+            "--git" => git = true,
             "--host" => match it.next() {
                 Some(v) => host = Some(v.clone()),
                 None => return fail("--host requires a value"),
             },
             other => return fail(&format!("unexpected argument `{other}`")),
         }
+    }
+    if git {
+        return run_init_git(uninstall);
     }
     let adapter = match host.as_deref() {
         None => &crate::adapter::CLAUDE_CODE,
@@ -721,6 +729,81 @@ fn check_handlers() -> ExitCode {
         println!("note: this repo is not trusted, so no handler runs here. Run `gaff trust`.");
     }
     if bad { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+/// `gaff init --git` — write the git hook scripts the config declares.
+///
+/// Running this is the consent step, the same deliberate act as
+/// `pre-commit install`. gaff writes one script per declared hook and
+/// keeps any hook it did not write.
+fn run_init_git(uninstall: bool) -> ExitCode {
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    if uninstall {
+        return match crate::githook::uninstall(&cwd) {
+            Ok(removed) if removed.is_empty() => {
+                println!("no gaff git hooks were installed");
+                ExitCode::SUCCESS
+            }
+            Ok(removed) => {
+                println!("removed: {}", removed.join(", "));
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&format!("cannot remove the hooks: {e}")),
+        };
+    }
+    let cfg = match config::load_layered(&cwd) {
+        Loaded::Ok(cfg) => cfg,
+        Loaded::Absent => config::Config::default(),
+        Loaded::Broken(err) => return fail(&err),
+    };
+    let mut bad = false;
+    for entry in &cfg.git {
+        for problem in entry.problems() {
+            eprintln!("gaff: {problem}");
+            bad = true;
+        }
+    }
+    if bad {
+        return ExitCode::FAILURE;
+    }
+    if cfg.git.is_empty() {
+        println!("the config declares no git entries. Nothing to install.");
+        return ExitCode::SUCCESS;
+    }
+    match crate::githook::install(&cwd, &cfg.git, "gaff githook") {
+        Ok(written) => {
+            println!("installed: {}", written.join(", "));
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("cannot write the hooks: {e}")),
+    }
+}
+
+/// `gaff githook <name> [args...]` — run one git hook.
+///
+/// The installed scripts call this. Unlike `gaff hook`, this returns
+/// the failing command's exit code, because a git hook exists to block
+/// the commit or the push.
+fn run_githook(args: &[String]) -> ExitCode {
+    let Some(hook) = args.first() else {
+        return fail("usage: gaff githook <hook-name> [args...]");
+    };
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    let cfg = match config::load_layered(&cwd) {
+        Loaded::Ok(cfg) => cfg,
+        Loaded::Absent => config::Config::default(),
+        Loaded::Broken(err) => {
+            // A broken config must not silently pass a check that was
+            // meant to run.
+            return fail(&format!("{err}. Refusing to skip the {hook} checks."));
+        }
+    };
+    let code = crate::githook::run(&cwd, &cfg.git, hook, &args[1..]);
+    u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }
 
 #[cfg(test)]

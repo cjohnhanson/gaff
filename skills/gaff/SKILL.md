@@ -90,6 +90,19 @@ trusted file yourself. The operator decides which repos may run
 commands. A handler's command runs with the repo as its working
 directory.
 
+## Git hooks
+
+gaff writes the scripts in `.git/hooks/` and dispatches them from the
+same config. The operator declares them under `git:` and runs
+`gaff init --git`.
+
+    gaff githook pre-commit    # what the installed script calls
+
+A failing git check blocks the commit. That is the point of it, and it
+is the opposite of the agent hooks, which never block. Do not remove a
+gaff git hook to get a commit through. Fix the check, or ask the
+operator.
+
 ## Rules
 
 - Never edit a file under the gaff state directory by hand. Use the CLI.
