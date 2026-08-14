@@ -1,0 +1,5 @@
+doc: |
+  After the merge the session records the allowed profile only.
+assertions:
+  - name: "the allowed profile is active"
+    command: "grep -qx safe .gaff-state/s-l/profile"

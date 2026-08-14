@@ -1,0 +1,50 @@
+doc: |
+  The user config is the base and the repo config is the overlay. A repo
+  entry wins the name it shadows. A repo may not widen the profiles an
+  agent grants itself.
+transitions:
+  - name: "the repo overlays the user config, but never widens agent permissions"
+    command: |
+      export HOME="$PWD/home"
+      mkdir -p "$HOME/.config/gaff"
+      cat > "$HOME/.config/gaff/gaff.yml" <<'EOF'
+      reminders:
+        - name: global
+          every: {tool_calls: 2}
+          text: applies everywhere
+        - name: shared
+          every: {tool_calls: 2}
+          text: FROM_USER
+      transitions:
+        agent_may_set: [safe]
+      EOF
+      tick() { printf '{"hook_event_name":"PostToolUse","session_id":"s-l","tool_use_id":"%s"}' "$1" | gaff hook > /dev/null 2>&1; }
+      tick a; tick b
+      OUT=$(printf '{"hook_event_name":"PostToolBatch","session_id":"s-l"}' | gaff hook 2>/dev/null)
+
+      case "$OUT" in
+        *"applies everywhere"*) ;;
+        *) echo "FAIL: a user reminder must apply in the repo: $OUT"; exit 1 ;;
+      esac
+      case "$OUT" in
+        *FROM_REPO*) ;;
+        *) echo "FAIL: the repo must win the shadowed name: $OUT"; exit 1 ;;
+      esac
+      case "$OUT" in
+        *FROM_USER*) echo "FAIL: the shadowed user text must not appear"; exit 1 ;;
+      esac
+      case "$OUT" in
+        *"repo scoped"*) ;;
+        *) echo "FAIL: a repo-only reminder must apply: $OUT"; exit 1 ;;
+      esac
+
+      # The repo lists dangerous; the user does not. The user wins.
+      if echo | gaff profile set dangerous --session s-l 2>/dev/null; then
+        echo "FAIL: a repo widened what an agent may grant itself"; exit 1
+      fi
+      echo | gaff profile set safe --session s-l > /dev/null 2>&1 || { echo "FAIL: an allowed switch must succeed"; exit 1; }
+
+      rm -rf home
+      echo LAYERED_OK
+    target: ../layered-merged
+    stdout: "LAYERED_OK\n"

@@ -116,6 +116,24 @@ The host adapter for
 .Cm gaff hook .
 Without it, gaff selects the adapter from the payload shape.
 .El
+.Sh FILES
+.Bl -tag -width "~/.config/gaff/handlers.yml"
+.It Pa .gaff/gaff.yml
+The repo config: reminders, sections, profiles, and cadences.
+It never holds a command.
+.It Pa ~/.config/gaff/gaff.yml
+The same keys, for every repo.
+The repo config lays over it, and a repo entry wins the name it
+shadows.
+The user value of
+.Va transitions
+wins, because a repo must not widen what an agent grants itself.
+.It Pa ~/.config/gaff/handlers.yml
+The handlers.
+Only this file may declare a command.
+.It Pa ~/.config/gaff/trusted
+The repos that may run handlers.
+.El
 .Sh HANDLERS
 A handler is an external command whose stdout becomes injected context.
 Handlers are declared only in

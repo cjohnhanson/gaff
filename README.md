@@ -35,6 +35,13 @@ ends with its opening instructions effectively invisible.
   agent may select for itself. Profiles are advisory: gaff blocks
   nothing.
 
+## Where config lives
+
+`$HOME/.config/gaff/gaff.yml` holds what you want in every repo.
+`.gaff/gaff.yml` holds what belongs to one repo, and it wins the names
+it shadows. A repo never widens the profiles an agent may grant itself.
+Handlers live only in `$HOME/.config/gaff/handlers.yml`.
+
 ## What gaff is not
 
 - **Not a hook dispatcher.** The harness's own hook system owns the

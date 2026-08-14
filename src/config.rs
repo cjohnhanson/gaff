@@ -251,6 +251,78 @@ pub enum Loaded {
     Broken(String),
 }
 
+/// The user-scoped data config. It holds the same keys as a repo
+/// config, and it never holds handlers.
+///
+/// Handlers stay in their own file, so the security boundary stays
+/// trivially checkable: a command can only come from `handlers.yml`.
+#[must_use]
+pub fn user_config_path() -> Option<std::path::PathBuf> {
+    crate::handler::config_dir().map(|d| d.join("gaff.yml"))
+}
+
+/// Load the user config, then lay the repo config over it.
+///
+/// A person works in many repos and wants some reminders everywhere.
+/// The repo is the more specific scope, so a repo entry wins over a
+/// user entry of the same name.
+#[must_use]
+pub fn load_layered(cwd: &Path) -> Loaded {
+    let user = match user_config_path() {
+        Some(p) => match std::fs::read_to_string(&p) {
+            Ok(text) => match serde_yml::from_str::<Config>(&text) {
+                Ok(cfg) => Some(cfg),
+                Err(e) => {
+                    return Loaded::Broken(format!("{}: {e}", p.display()));
+                }
+            },
+            Err(_) => None,
+        },
+        None => None,
+    };
+    match (user, load(cwd)) {
+        (None, repo) => repo,
+        (Some(user), Loaded::Absent) => Loaded::Ok(user),
+        (Some(user), Loaded::Ok(repo)) => Loaded::Ok(user.overlaid_with(repo)),
+        (Some(_), broken @ Loaded::Broken(_)) => broken,
+    }
+}
+
+impl Config {
+    /// Lay `repo` over `self`, where `self` is the user config.
+    ///
+    /// Reminders, sections, and profiles merge by name, and the repo
+    /// entry replaces the user entry it shadows. A scalar takes the
+    /// repo value when the repo sets one.
+    ///
+    /// `transitions` is the exception: the user value wins whenever the
+    /// user sets one. That field says which profiles an agent may grant
+    /// itself, and a repo must not widen it.
+    #[must_use]
+    pub fn overlaid_with(mut self, repo: Self) -> Self {
+        let user_set_transitions = !self.transitions.agent_may_set.is_empty();
+
+        self.reminders
+            .retain(|u| !repo.reminders.iter().any(|r| r.name == u.name));
+        self.reminders.extend(repo.reminders);
+        self.sections
+            .retain(|u| !repo.sections.iter().any(|r| r.name == u.name));
+        self.sections.extend(repo.sections);
+        self.profiles.extend(repo.profiles);
+
+        if repo.max_inject_bytes != DEFAULT_MAX_INJECT_BYTES {
+            self.max_inject_bytes = repo.max_inject_bytes;
+        }
+        if repo.default_profile.is_some() {
+            self.default_profile = repo.default_profile;
+        }
+        if !user_set_transitions {
+            self.transitions = repo.transitions;
+        }
+        self
+    }
+}
+
 #[must_use]
 pub fn load(cwd: &Path) -> Loaded {
     let path = cwd.join(CONFIG_PATH);
@@ -380,5 +452,76 @@ mod profile_tests {
         let cfg = base();
         assert!(cfg.transitions.agent_may_set("focus"));
         assert!(!cfg.transitions.agent_may_set("quiet"), "human only");
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+
+    fn cfg(yaml: &str) -> Config {
+        serde_yml::from_str(yaml).expect("the fixture must parse")
+    }
+
+    #[test]
+    fn a_user_reminder_applies_where_a_repo_declares_none() {
+        let user = cfg("reminders:\n  - name: global\n    every: {tool_calls: 9}\n    text: G\n");
+        let repo = cfg("reminders: []\n");
+        let merged = user.overlaid_with(repo);
+        assert_eq!(merged.reminders.len(), 1);
+        assert_eq!(merged.reminders[0].name, "global");
+    }
+
+    #[test]
+    fn a_repo_entry_replaces_the_user_entry_it_shadows() {
+        // The repo is the more specific scope, so it wins the name.
+        let user = cfg("reminders:\n  - name: same\n    every: {tool_calls: 1}\n    text: FROM_USER\n  - name: keep\n    every: {tool_calls: 2}\n    text: K\n");
+        let repo = cfg("reminders:\n  - name: same\n    every: {tool_calls: 5}\n    text: FROM_REPO\n");
+        let merged = user.overlaid_with(repo);
+        assert_eq!(merged.reminders.len(), 2, "the unshadowed user entry survives");
+        let same = merged.reminders.iter().find(|r| r.name == "same").unwrap();
+        assert_eq!(same.text, "FROM_REPO");
+        assert_eq!(same.every.tool_calls, Some(5));
+        assert!(merged.reminders.iter().any(|r| r.name == "keep"));
+    }
+
+    #[test]
+    fn a_repo_cannot_widen_what_an_agent_may_grant_itself() {
+        // transitions is the one field the repo does not win. A repo
+        // that could widen it would let an agent switch to any profile.
+        let user = cfg("transitions:\n  agent_may_set: [safe]\n");
+        let repo = cfg("transitions:\n  agent_may_set: [safe, dangerous]\n");
+        let merged = user.overlaid_with(repo);
+        assert!(merged.transitions.agent_may_set("safe"));
+        assert!(
+            !merged.transitions.agent_may_set("dangerous"),
+            "a repo must not widen the agent's own permissions"
+        );
+    }
+
+    #[test]
+    fn a_repo_sets_the_transitions_when_the_user_states_none() {
+        let user = cfg("reminders: []\n");
+        let repo = cfg("transitions:\n  agent_may_set: [focus]\n");
+        let merged = user.overlaid_with(repo);
+        assert!(merged.transitions.agent_may_set("focus"));
+    }
+
+    #[test]
+    fn the_repo_wins_the_scalars_it_sets() {
+        let user = cfg("max_inject_bytes: 100\ndefault_profile: userdef\n");
+        let repo = cfg("max_inject_bytes: 200\ndefault_profile: repodef\n");
+        let merged = user.overlaid_with(repo);
+        assert_eq!(merged.max_inject_bytes, 200);
+        assert_eq!(merged.default_profile.as_deref(), Some("repodef"));
+    }
+
+    #[test]
+    fn an_unset_repo_scalar_leaves_the_user_value() {
+        let user = cfg("max_inject_bytes: 100\ndefault_profile: userdef\n");
+        let repo = cfg("reminders: []\n");
+        let merged = user.overlaid_with(repo);
+        assert_eq!(merged.max_inject_bytes, 100, "the repo set no cap");
+        assert_eq!(merged.default_profile.as_deref(), Some("userdef"));
     }
 }

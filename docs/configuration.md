@@ -3,6 +3,34 @@
 The repo config lives at `.gaff/gaff.yml`. It holds data only: text, file
 paths, and cadences. gaff executes nothing in it.
 
+## Where a config lives
+
+gaff reads two data configs and lays one over the other.
+
+| File | Scope | Holds |
+|------|-------|-------|
+| `$HOME/.config/gaff/gaff.yml` | every repo | The keys below |
+| `.gaff/gaff.yml` | this repo | The keys below |
+| `$HOME/.config/gaff/handlers.yml` | every repo | Handlers only |
+| `$HOME/.config/gaff/trusted` | every repo | The repos that may run handlers |
+
+A person works in many repos and wants some reminders everywhere. Put
+those in the user config. The repo is the more specific scope, so a repo
+entry wins the name it shadows.
+
+- `reminders`, `sections`, and `profiles` merge by name. A repo entry
+  replaces the user entry with the same name. Every other entry from
+  both files stays active.
+- `max_inject_bytes` and `default_profile` take the repo value when the
+  repo sets one.
+- `transitions` is the exception. The user value wins whenever the user
+  sets one. That field says which profiles an agent may grant itself,
+  and a repo must never widen it.
+
+Only the user config may hold handlers, and they live in their own file.
+That keeps the security boundary easy to check: a command can only come
+from `handlers.yml`.
+
 ## Top-level fields
 
 | Field | Default | Description |

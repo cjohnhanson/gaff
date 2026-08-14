@@ -117,7 +117,7 @@ fn run_hook() -> ExitCode {
     };
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let cfg = match config::load(&cwd) {
+    let cfg = match config::load_layered(&cwd) {
         Loaded::Ok(cfg) => cfg,
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => {
@@ -319,7 +319,7 @@ fn run_check(args: &[String]) -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
-    let cfg = match config::load(&cwd) {
+    let cfg = match config::load_layered(&cwd) {
         Loaded::Absent => {
             println!("no config at {}. Nothing to validate.", config::CONFIG_PATH);
             return ExitCode::SUCCESS;
@@ -439,7 +439,7 @@ fn run_doctor() -> ExitCode {
         return fail("cannot resolve the working directory");
     };
 
-    match config::load(&cwd) {
+    match config::load_layered(&cwd) {
         Loaded::Ok(cfg) => println!(
             "config:  ok ({} reminder(s), {} section(s))",
             cfg.reminders.len(),
@@ -498,7 +498,7 @@ fn run_docs(args: &[String]) -> ExitCode {
 /// terminal on stdin is a human, anything else is an agent.
 fn run_profile(args: &[String]) -> ExitCode {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let cfg = match config::load(&cwd) {
+    let cfg = match config::load_layered(&cwd) {
         Loaded::Ok(cfg) => cfg,
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => {

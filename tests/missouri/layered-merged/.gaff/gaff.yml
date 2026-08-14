@@ -1,0 +1,18 @@
+reminders:
+  - name: shared
+    every:
+      tool_calls: 2
+    text: FROM_REPO
+  - name: repoonly
+    every:
+      tool_calls: 2
+    text: repo scoped
+transitions:
+  agent_may_set:
+    - safe
+    - dangerous
+profiles:
+  safe:
+    disable: []
+  dangerous:
+    disable: []
