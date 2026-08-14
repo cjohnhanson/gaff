@@ -396,7 +396,7 @@ mod tests {
         // must appear exactly once, so no crossing (e.g. every 20th) is
         // lost or duplicated.
         let s = temp_store("concurrent");
-        let root = s.root.clone();
+        let root = s.root;
         let seen: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
         std::thread::scope(|scope| {
             for t in 0..8 {
@@ -425,14 +425,17 @@ mod tests {
     #[test]
     fn claim_fired_exactly_once_under_races() {
         let s = temp_store("claim");
-        let root = s.root.clone();
+        let root = s.root;
         let wins: usize = std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..16)
-                .map(|_| {
-                    let root = root.clone();
-                    scope.spawn(move || usize::from(Store::new(root).claim_fired("s", "race")))
-                })
-                .collect();
+            // Spawn every racer before the first join, so the claims
+            // actually race.
+            let mut handles = Vec::new();
+            for _ in 0..16 {
+                let root = root.clone();
+                handles.push(
+                    scope.spawn(move || usize::from(Store::new(root).claim_fired("s", "race"))),
+                );
+            }
             handles.into_iter().map(|h| h.join().unwrap()).sum()
         });
         assert_eq!(wins, 1, "exactly one racer may claim the marker");

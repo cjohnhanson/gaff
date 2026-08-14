@@ -367,7 +367,7 @@ mod tests {
         let out = handle(&event(prompt.clone()), &config, &store, gd());
         assert_eq!(out.as_deref(), Some("[gaff:remind] check CI"));
         assert_eq!(
-            handle(&event(prompt.clone()), &config, &store, gd()),
+            handle(&event(prompt), &config, &store, gd()),
             None,
             "no refire"
         );
