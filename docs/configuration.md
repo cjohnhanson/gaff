@@ -10,6 +10,9 @@ paths, and cadences. gaff executes nothing in it.
 | `sections` | `[]` | The prime sections (see below) |
 | `reminders` | `[]` | The recurring reminders (see below) |
 | `max_inject_bytes` | `4096` | The hard cap per flush, truncation marker included |
+| `profiles` | `{}` | The named overlays (see below) |
+| `default_profile` | none | The profile that applies when nothing else selects one |
+| `transitions` | `{}` | Which profiles an agent may select for itself |
 
 ## Sections
 
@@ -33,6 +36,51 @@ mid-session, when the counter crosses.
 
 gaff emits the reminder as `[gaff:<name>] <text>` when the cadence
 crosses, at the next safe injection point.
+
+## Profiles
+
+A profile is a named overlay on the entries the config already
+declares. A profile never adds an entry. It selects from the declared
+entries and may override their cadences, so one file still states
+everything a repo can inject.
+
+```yaml
+profiles:
+  focus:
+    only: [build-clean]        # keep only these entries
+    cadence:
+      build-clean: {tool_calls: 2}   # override the cadence
+  quiet:
+    disable: [chatty]          # drop these entries
+    max_inject_bytes: 512      # a tighter cap under this profile
+default_profile: focus
+transitions:
+  agent_may_set: [focus]       # every other profile is human-only
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `only` | every entry | Keep only the named entries |
+| `disable` | `[]` | Drop the named entries; applied after `only` |
+| `cadence` | `{}` | Cadence overrides, keyed by entry name |
+| `max_inject_bytes` | the base cap | The cap under this profile |
+
+The resolution path is `GAFF_PROFILE`, then the session state, then a
+`.gaff/profile` file, then `default_profile`. The first hit wins. An
+unknown name applies nothing and warns, because a typo must never
+silently empty the config.
+
+A switch re-primes: the next flush delivers every section rather than
+wait for each refresh cadence.
+
+### The transition policy
+
+Profiles are advisory. gaff blocks nothing, and an agent that can write
+files can edit this config regardless. The policy states intent and
+refuses the agent-facing path, so a switch an operator did not sanction
+is at least not a supported one. gaff decides who is asking by
+structural identity: a terminal on stdin is a human, anything else is an
+agent. A profile absent from `transitions.agent_may_set` is human-only.
 
 ## Cadence units
 
@@ -61,6 +109,26 @@ one-shots. It lives outside the repo, under `$XDG_STATE_HOME/gaff/` or
 `~/.local/state/gaff/`, keyed by the working directory. It is never
 inside the repo, where `git clean -xdf` would erase it mid-session. Set
 `GAFF_STATE_DIR` to override the location.
+
+## The injection audit trail
+
+gaff appends one line to `injections.jsonl` in the session state for
+every flush it delivers. `gaff log` prints it: the event, the byte
+count, and the entry names. The log records what gaff put into a
+session, which is the question a reader actually has when a reminder
+seems to have fired at the wrong time.
+
+## Host adapters
+
+Claude Code is the only implemented adapter. An adapter owns three
+host-specific facts: the payload mapping, the event names, and the
+settings path that `gaff init` writes. `gaff hook` selects the adapter
+from `GAFF_HOST`, or from the payload shape when that variable is
+absent. `gaff init --host <name>` targets a named host.
+
+gaff ships no guessed schema for an untested host. Adding one means
+adding an `Adapter` constant with that host's real field names, taken
+from its documentation.
 
 ## Exit codes
 

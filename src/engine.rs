@@ -50,7 +50,7 @@ pub fn handle(
             if let Ok(count) = store.record_prompt(session) {
                 arm_crossings(config, store, session, count, |e| e.prompts);
             }
-            flush(config, store, session, gaff_dir, SectionMode::PendingOnly)
+            flush(config, store, session, gaff_dir, section_mode(store, session))
         }
         "SessionStart" => {
             if compaction_source(envelope) {
@@ -58,8 +58,19 @@ pub fn handle(
             }
             flush(config, store, session, gaff_dir, SectionMode::All)
         }
-        "PostToolBatch" => flush(config, store, session, gaff_dir, SectionMode::PendingOnly),
+        "PostToolBatch" => flush(config, store, session, gaff_dir, section_mode(store, session)),
         _ => None,
+    }
+}
+
+/// A profile switch re-primes the context. The switch changes which
+/// sections apply, so the next flush delivers them all rather than wait
+/// for each refresh cadence to come around.
+fn section_mode(store: &Store, session: &str) -> SectionMode {
+    if store.take_reprime(session) {
+        SectionMode::All
+    } else {
+        SectionMode::PendingOnly
     }
 }
 
@@ -259,6 +270,7 @@ mod tests {
             reminders,
             sections: Vec::new(),
             max_inject_bytes: cap,
+            ..Config::default()
         };
         if cap == 0 {
             c.max_inject_bytes = 4096;
@@ -425,6 +437,7 @@ mod tests {
                 },
             }],
             max_inject_bytes: 4096,
+            ..Config::default()
         };
 
         let start = json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
@@ -461,6 +474,7 @@ mod tests {
                 refresh: Every::default(),
             }],
             max_inject_bytes: 4096,
+            ..Config::default()
         };
         let start = json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
         assert_eq!(handle(&event(start), &config, &store, gd()), None);
@@ -485,6 +499,7 @@ mod tests {
                     refresh: Every::default(),
                 }],
                 max_inject_bytes: 4096,
+            ..Config::default()
             };
             let start = json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
             let out = handle(&event(start), &config, &store, &gaff);

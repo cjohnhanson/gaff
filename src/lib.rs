@@ -7,6 +7,7 @@
 //! owns no dispatch. It blocks nothing. It injects context only on the
 //! events whose context sink is the model's session framing.
 
+pub mod adapter;
 pub mod config;
 pub mod docs;
 pub mod engine;

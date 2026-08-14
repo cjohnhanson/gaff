@@ -1,0 +1,8 @@
+doc: |
+  After the switch the session state names the profile, and the
+  injection log holds one line per delivered flush.
+assertions:
+  - name: "the active profile persists"
+    command: "grep -qx focus .gaff-state/s-p/profile"
+  - name: "the injection log holds both flushes"
+    command: "test $(wc -l < .gaff-state/s-p/injections.jsonl) -eq 2"

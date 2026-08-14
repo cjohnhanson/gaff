@@ -1,0 +1,43 @@
+doc: |
+  Profiles are overlays on the declared entries. The transition policy
+  refuses the agent-facing path for a human-only profile.
+transitions:
+  - name: "the overlay filters, and the policy refuses a human-only switch"
+    command: |
+      for id in p1 p2; do
+        printf '{"hook_event_name":"PostToolUse","session_id":"s-p","tool_use_id":"%s"}' "$id" | gaff hook > /dev/null
+      done
+      BASE=$(printf '{"hook_event_name":"PostToolBatch","session_id":"s-p"}' | gaff hook | jq -r '.hookSpecificOutput.additionalContext')
+      case "$BASE" in
+        *keep*drop*) ;;
+        *) echo "FAIL: the base config must deliver both: $BASE"; exit 1 ;;
+      esac
+
+      for id in p3 p4; do
+        printf '{"hook_event_name":"PostToolUse","session_id":"s-p","tool_use_id":"%s"}' "$id" | gaff hook > /dev/null
+      done
+      FOCUS=$(printf '{"hook_event_name":"PostToolBatch","session_id":"s-p"}' | GAFF_PROFILE=focus gaff hook | jq -r '.hookSpecificOutput.additionalContext')
+      case "$FOCUS" in
+        *drop*) echo "FAIL: focus must drop the entry: $FOCUS"; exit 1 ;;
+        *keep*) ;;
+        *) echo "FAIL: focus must keep one entry: $FOCUS"; exit 1 ;;
+      esac
+
+      for id in p5 p6; do
+        printf '{"hook_event_name":"PostToolUse","session_id":"s-p","tool_use_id":"%s"}' "$id" | gaff hook > /dev/null
+      done
+      QUIET=$(printf '{"hook_event_name":"PostToolBatch","session_id":"s-p"}' | GAFF_PROFILE=quiet gaff hook)
+      [ -z "$QUIET" ] || { echo "FAIL: quiet must suppress every entry: $QUIET"; exit 1; }
+
+      # An agent (no terminal on stdin) may not select a human-only profile.
+      if echo | gaff profile set quiet --session s-p 2>/dev/null; then
+        echo "FAIL: the policy must refuse a human-only profile"; exit 1
+      fi
+      echo | gaff profile set focus --session s-p > /dev/null || { echo "FAIL: an allowed switch must succeed"; exit 1; }
+      [ -f .gaff-state/s-p/profile ] || { echo "FAIL: the switch must persist"; exit 1; }
+
+      # The log records every flush that was delivered.
+      gaff log --session s-p | grep -q 'keep' || { echo "FAIL: the log must name the entries"; exit 1; }
+      echo PROFILE_OK
+    target: ../profiled-focused
+    stdout: "PROFILE_OK\n"

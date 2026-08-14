@@ -134,21 +134,12 @@ pub struct Envelope {
 
 impl Envelope {
     /// Build an envelope from a Claude Code hook payload.
+    ///
+    /// The host-specific mapping lives in [`crate::adapter`]. This
+    /// delegate keeps the call sites in the tests short.
     #[must_use]
     pub fn from_claude_code(json: Value) -> Self {
-        let get = |key: &str| {
-            json.get(key)
-                .and_then(Value::as_str)
-                .map(std::string::ToString::to_string)
-        };
-        Self {
-            gaff_schema: SCHEMA_VERSION,
-            event: get("hook_event_name").unwrap_or_else(|| "Unknown".to_string()),
-            session_id: get("session_id"),
-            cwd: get("cwd"),
-            tool_name: get("tool_name"),
-            raw: json,
-        }
+        (crate::adapter::CLAUDE_CODE.parse)(json)
     }
 
     /// The capability of this envelope's event.

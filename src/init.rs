@@ -12,17 +12,13 @@ use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
-pub const SETTINGS_PATH: &str = ".claude/settings.local.json";
+/// The default settings path. `gaff init --host <name>` uses the named
+/// adapter's path instead.
+pub const SETTINGS_PATH: &str = crate::adapter::CLAUDE_CODE.settings_path;
 
 /// The events that gaff needs: the prime and flush points, plus the
 /// counted events.
-pub const HOOK_EVENTS: [&str; 5] = [
-    "PostToolBatch",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "SessionStart",
-    "UserPromptSubmit",
-];
+pub const HOOK_EVENTS: &[&str] = crate::adapter::CLAUDE_CODE_EVENTS;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -34,10 +30,20 @@ pub enum Outcome {
 /// `root`. The default command is `gaff hook`. This creates the file
 /// when the file is absent.
 pub fn install(root: &Path, command: &str) -> std::io::Result<Outcome> {
-    edit_settings(root, |settings| {
+    install_for(&crate::adapter::CLAUDE_CODE, root, command)
+}
+
+/// Install the hook entries for one adapter. The adapter owns the
+/// settings path and the event names.
+pub fn install_for(
+    adapter: &crate::adapter::Adapter,
+    root: &Path,
+    command: &str,
+) -> std::io::Result<Outcome> {
+    edit_settings(adapter.settings_path, root, |settings| {
         let hooks = hooks_map(settings);
         let mut changed = false;
-        for event in HOOK_EVENTS {
+        for event in adapter.hook_events {
             let entries = hooks
                 .entry(event.to_string())
                 .or_insert_with(|| Value::Array(Vec::new()));
@@ -56,7 +62,16 @@ pub fn install(root: &Path, command: &str) -> std::io::Result<Outcome> {
 /// Remove every hook entry whose command matches `command`. This also
 /// drops an empty event array and an empty `hooks` map.
 pub fn uninstall(root: &Path, command: &str) -> std::io::Result<Outcome> {
-    edit_settings(root, |settings| {
+    uninstall_for(&crate::adapter::CLAUDE_CODE, root, command)
+}
+
+/// Remove the hook entries for one adapter.
+pub fn uninstall_for(
+    adapter: &crate::adapter::Adapter,
+    root: &Path,
+    command: &str,
+) -> std::io::Result<Outcome> {
+    edit_settings(adapter.settings_path, root, |settings| {
         let hooks = hooks_map(settings);
         let mut changed = false;
         hooks.retain(|_, entries| {
@@ -98,10 +113,11 @@ fn has_command(entry: &Value, command: &str) -> bool {
 /// it. The mutator returns whether anything changed. gaff does not
 /// rewrite an unchanged file.
 fn edit_settings(
+    settings_path: &str,
     root: &Path,
     mutate: impl FnOnce(&mut Map<String, Value>) -> bool,
 ) -> std::io::Result<Outcome> {
-    let path = root.join(SETTINGS_PATH);
+    let path = root.join(settings_path);
     let mut settings: Map<String, Value> = match std::fs::read_to_string(&path) {
         Ok(bytes) => serde_json::from_str(&bytes).map_err(|e| {
             std::io::Error::new(

@@ -27,6 +27,10 @@ ends with its opening instructions effectively invisible.
   future. gaff re-arms a one-shot after a context compaction.
 - **Prime sections** — the session-start context, split into sections.
   Each section refreshes on its own cadence.
+- **Profiles** — named overlays that select which entries are active and
+  override their cadences. A transition policy states which profiles an
+  agent may select for itself. Profiles are advisory: gaff blocks
+  nothing.
 
 ## What gaff is not
 
@@ -45,11 +49,14 @@ ends with its opening instructions effectively invisible.
 ## Using it
 
 ```
-gaff init                          # register the hooks (.claude/settings.local.json)
+gaff init                          # register the hooks in the host's settings file
 gaff remind "check CI" --after 10  # one-shot, N tool calls into the future
 gaff status --session <id>         # counters, pending entries, one-shots
 gaff check                         # validate .gaff/gaff.yml
 gaff doctor                        # what is live in this clone
+gaff profile list                  # the declared profiles and who may set them
+gaff profile set focus             # switch, and re-prime the sections
+gaff log                           # what gaff injected into this session
 gaff docs getting-started          # the bundled documentation
 ```
 
@@ -57,9 +64,17 @@ gaff docs getting-started          # the bundled documentation
 
 These parts work: counters deduped by `tool_use_id`, cadence reminders,
 one-shot reminders with a compaction re-arm, prime sections with a
-mid-session refresh, byte-capped injection with attribution prefixes,
-the `init`, `check`, and `doctor` commands, and the bundled docs.
+mid-session refresh, profiles with a transition policy, the injection
+audit trail (`gaff log`), byte-capped injection with attribution
+prefixes, the `init`, `check`, `doctor`, `profile`, and `log` commands,
+and the bundled docs.
+
+Claude Code is the only implemented host adapter. The adapter is a
+seam, not a hard-coded path: a host declares its payload mapping, its
+event names, and its settings path in `src/adapter.rs`, and nothing
+else in gaff changes. gaff does not ship a guessed schema for a host
+nobody has tested.
 
 A missouri state-graph suite of 15 paths and the cargo unit tests cover
 this. The suite's error-surface path checks that every failure exits 1,
-never the blocking code 2. Profiles are not built yet.
+never the blocking code 2.

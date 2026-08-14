@@ -8,7 +8,7 @@
 //! This file parses the arguments by hand for that reason. clap exits 2
 //! on a usage error.
 
-use std::io::Read as _;
+use std::io::{IsTerminal as _, Read as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -16,7 +16,6 @@ use serde_json::json;
 
 use gaff::config::{self, Loaded};
 use gaff::engine;
-use gaff::event::Envelope;
 use gaff::state::{resolve_root, Store};
 use gaff::{docs, init};
 
@@ -29,6 +28,8 @@ fn main() -> ExitCode {
         Some("init") => run_init(&args[1..]),
         Some("check") => run_check(),
         Some("doctor") => run_doctor(),
+        Some("profile") => run_profile(&args[1..]),
+        Some("log") => run_log(&args[1..]),
         Some("docs") => run_docs(&args[1..]),
         Some("--version" | "-V" | "version") => {
             println!("gaff {}", env!("CARGO_PKG_VERSION"));
@@ -39,9 +40,9 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some(other) => fail(&format!(
-            "unknown command `{other}` (available: hook, remind, status, init, check, doctor, docs)"
+            "unknown command `{other}` (available: hook, remind, status, init, check, doctor, profile, log, docs)"
         )),
-        None => fail("usage: gaff <hook|remind|status|init|check|doctor|docs>"),
+        None => fail("usage: gaff <hook|remind|status|init|check|doctor|profile|log|docs>"),
     }
 }
 
@@ -53,9 +54,11 @@ Commands:
   hook             Handle one hook event from stdin (the harness calls this)
   remind <text>    Schedule a one-shot reminder N tool calls ahead
   status           Show counters, pending entries, and one-shots
-  init             Register the hooks in .claude/settings.local.json
+  init [--host H]  Register the hooks in the host's settings file
   check            Validate .gaff/gaff.yml
   doctor           Show what is live in this clone
+  profile          Show, list, or set the active profile
+  log              Show the injection audit trail for a session
   docs [page]      Print the bundled documentation
 
 Options:
@@ -98,7 +101,8 @@ fn run_hook() -> ExitCode {
     let Ok(payload) = serde_json::from_str::<serde_json::Value>(&input) else {
         return fail("invalid JSON on stdin");
     };
-    let envelope = Envelope::from_claude_code(payload);
+    let adapter = gaff::adapter::detect(std::env::var("GAFF_HOST").ok().as_deref(), &payload);
+    let envelope = (adapter.parse)(payload);
 
     let Some(store) = resolve_store() else {
         eprintln!("gaff: no state directory. Set GAFF_STATE_DIR or HOME. Passing through.");
@@ -119,7 +123,23 @@ fn run_hook() -> ExitCode {
         }
     };
 
-    if let Some(context) = engine::handle(&envelope, &cfg, &store, &cwd.join(".gaff")) {
+    // Resolve the profile before the overlay. The session state is
+    // authoritative, because it lives outside the repo tree.
+    let gaff_dir = cwd.join(".gaff");
+    let session = envelope.session_id.clone();
+    let profile = config::resolve_profile(
+        None,
+        std::env::var("GAFF_PROFILE").ok().as_deref(),
+        session.as_deref().and_then(|s| store.profile(s)).as_deref(),
+        &gaff_dir,
+        &cfg,
+    );
+    let cfg = cfg.with_profile(profile.as_deref());
+
+    if let Some(context) = engine::handle(&envelope, &cfg, &store, &gaff_dir) {
+        if let Some(sid) = session.as_deref() {
+            store.record_injection(sid, &envelope.event, &context);
+        }
         println!(
             "{}",
             json!({
@@ -226,6 +246,7 @@ fn run_status(args: &[String]) -> ExitCode {
 fn run_init(args: &[String]) -> ExitCode {
     let mut uninstall = false;
     let mut command = "gaff hook".to_string();
+    let mut host: Option<String> = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -234,16 +255,32 @@ fn run_init(args: &[String]) -> ExitCode {
                 Some(v) => command.clone_from(v),
                 None => return fail("--command requires a value"),
             },
+            "--host" => match it.next() {
+                Some(v) => host = Some(v.clone()),
+                None => return fail("--host requires a value"),
+            },
             other => return fail(&format!("unexpected argument `{other}`")),
         }
     }
+    let adapter = match host.as_deref() {
+        None => &gaff::adapter::CLAUDE_CODE,
+        Some(name) => match gaff::adapter::by_name(name) {
+            Some(a) => a,
+            None => {
+                return fail(&format!(
+                    "unknown host `{name}` (implemented: {})",
+                    gaff::adapter::names()
+                ));
+            }
+        },
+    };
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
     let result = if uninstall {
-        init::uninstall(&cwd, &command)
+        init::uninstall_for(adapter, &cwd, &command)
     } else {
-        init::install(&cwd, &command)
+        init::install_for(adapter, &cwd, &command)
     };
     match result {
         Ok(init::Outcome::Changed) => {
@@ -417,4 +454,174 @@ fn run_docs(args: &[String]) -> ExitCode {
             )
         },
     )
+}
+
+/// `gaff profile [show|list|set <name>] [--session <sid>]`
+///
+/// Profiles are advisory. gaff blocks nothing, and an agent that can
+/// write files can edit the config regardless. The transition policy
+/// refuses the agent-facing path, so an unsanctioned switch is at least
+/// not a supported one. Structural identity decides who is asking: a
+/// terminal on stdin is a human, anything else is an agent.
+fn run_profile(args: &[String]) -> ExitCode {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cfg = match config::load(&cwd) {
+        Loaded::Ok(cfg) => cfg,
+        Loaded::Absent => config::Config::default(),
+        Loaded::Broken(err) => {
+            eprintln!("gaff: the config is not valid: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let gaff_dir = cwd.join(".gaff");
+
+    let mut it = args.iter().map(String::as_str);
+    let sub = it.next();
+    let mut positional: Option<String> = None;
+    let mut session_flag: Option<String> = None;
+    let mut rest: Vec<&str> = it.collect();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--session" => match rest.get(i + 1) {
+                Some(v) => {
+                    session_flag = Some((*v).to_string());
+                    i += 2;
+                }
+                None => return fail("--session requires a value"),
+            },
+            other if positional.is_none() && !other.starts_with("--") => {
+                positional = Some(other.to_string());
+                i += 1;
+            }
+            other => return fail(&format!("unknown option `{other}`")),
+        }
+    }
+    rest.clear();
+
+    let session = session_from(session_flag.as_deref());
+
+    match sub {
+        None | Some("show") => {
+            let Some(store) = resolve_store() else {
+                return fail("no state directory");
+            };
+            let from_session = session.as_deref().and_then(|s| store.profile(s));
+            let active = config::resolve_profile(
+                None,
+                std::env::var("GAFF_PROFILE").ok().as_deref(),
+                from_session.as_deref(),
+                &gaff_dir,
+                &cfg,
+            );
+            match active {
+                Some(name) => println!("{name}"),
+                None => println!("(none)"),
+            }
+            ExitCode::SUCCESS
+        }
+        Some("list") => {
+            if cfg.profiles.is_empty() {
+                println!("(no profiles declared in .gaff/gaff.yml)");
+            }
+            for name in cfg.profiles.keys() {
+                let who = if cfg.transitions.agent_may_set(name) {
+                    "agent or human"
+                } else {
+                    "human only"
+                };
+                println!("{name}\t{who}");
+            }
+            ExitCode::SUCCESS
+        }
+        Some("set") => set_profile(&cfg, positional, session),
+        Some(other) => fail(&format!(
+            "unknown profile command `{other}` (available: show, list, set)"
+        )),
+    }
+}
+
+/// `gaff log [--session <sid>]`
+///
+/// Print the injection audit trail: what gaff put into the session, in
+/// order, with the byte count and the entry names.
+fn run_log(args: &[String]) -> ExitCode {
+    let mut session_flag: Option<String> = None;
+    let mut it = args.iter().map(String::as_str);
+    while let Some(arg) = it.next() {
+        match arg {
+            "--session" => match it.next() {
+                Some(v) => session_flag = Some(v.to_string()),
+                None => return fail("--session requires a value"),
+            },
+            other => return fail(&format!("unknown option `{other}`")),
+        }
+    }
+    let Some(store) = resolve_store() else {
+        return fail("no state directory");
+    };
+    let Some(session) = session_from(session_flag.as_deref()) else {
+        let sessions = store.sessions();
+        if sessions.is_empty() {
+            return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID");
+        }
+        eprintln!("gaff: no session given. Known sessions:");
+        for s in sessions {
+            eprintln!("  {s}");
+        }
+        return ExitCode::FAILURE;
+    };
+    let lines = store.injections(&session);
+    if lines.is_empty() {
+        println!("no injections recorded for session {session}");
+        return ExitCode::SUCCESS;
+    }
+    println!("{:<20} {:>7}  ENTRIES", "EVENT", "BYTES");
+    for line in lines {
+        let event = line["event"].as_str().unwrap_or("?");
+        let bytes = line["bytes"].as_u64().unwrap_or(0);
+        let entries: Vec<&str> = line["entries"]
+            .as_array()
+            .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        println!("{event:<20} {bytes:>7}  {}", entries.join(", "));
+    }
+    ExitCode::SUCCESS
+}
+
+/// Apply `gaff profile set`. Structural identity decides who is asking:
+/// a terminal on stdin is a human, anything else is an agent.
+fn set_profile(
+    cfg: &config::Config,
+    name: Option<String>,
+    session: Option<String>,
+) -> ExitCode {
+    let Some(name) = name else {
+        return fail("usage: gaff profile set <name> [--session <sid>]");
+    };
+    if !cfg.profiles.contains_key(&name) {
+        return fail(&format!("unknown profile `{name}`"));
+    }
+    let Some(session) = session else {
+        return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID");
+    };
+    if !std::io::stdin().is_terminal() && !cfg.transitions.agent_may_set(&name) {
+        return fail(&format!(
+            "profile `{name}` is human-only. Add it to transitions.agent_may_set to allow an agent switch."
+        ));
+    }
+    let Some(store) = resolve_store() else {
+        return fail("no state directory");
+    };
+    match store.set_profile(&session, &name) {
+        Ok(true) => {
+            println!("profile set to `{name}`; the next flush re-primes the sections");
+            ExitCode::SUCCESS
+        }
+        Ok(false) => {
+            println!("profile is already `{name}`");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("cannot write the profile: {e}")),
+    }
 }

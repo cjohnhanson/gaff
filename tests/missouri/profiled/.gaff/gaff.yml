@@ -1,0 +1,20 @@
+reminders:
+  - name: keep
+    every:
+      tool_calls: 2
+    text: kept under focus
+  - name: drop
+    every:
+      tool_calls: 2
+    text: dropped under focus
+profiles:
+  focus:
+    only:
+      - keep
+  quiet:
+    disable:
+      - keep
+      - drop
+transitions:
+  agent_may_set:
+    - focus

@@ -11,6 +11,9 @@
 //! <root>/<session>/cursor-<name>     last flushed multiple
 //! <root>/<session>/oneshot-<id>.json scheduled one-shot
 //! <root>/<session>/fired-<id>        one-shot consumed (O_EXCL claim)
+//! <root>/<session>/profile           the active profile name
+//! <root>/<session>/reprime           marker: re-deliver every section
+//! <root>/<session>/injections.jsonl  one line per injected flush
 //! ```
 //!
 //! `GAFF_STATE_DIR` sets the root. A relative path joins the process
@@ -314,6 +317,88 @@ impl Store {
         }
     }
 
+    /// The active profile for the session, if the session state names
+    /// one. This is the authoritative record: it lives in user-level
+    /// state, outside the repo tree.
+    #[must_use]
+    pub fn profile(&self, session: &str) -> Option<String> {
+        std::fs::read_to_string(self.session_dir(session).join("profile"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Record the active profile and arm a re-prime. A switch that does
+    /// not change the name arms nothing, so a repeated set is quiet.
+    pub fn set_profile(&self, session: &str, name: &str) -> std::io::Result<bool> {
+        if self.profile(session).as_deref() == Some(name) {
+            return Ok(false);
+        }
+        std::fs::create_dir_all(self.session_dir(session))?;
+        std::fs::write(self.session_dir(session).join("profile"), format!("{name}\n"))?;
+        std::fs::write(self.session_dir(session).join("reprime"), "")?;
+        Ok(true)
+    }
+
+    /// Consume the re-prime marker. A profile switch changes which
+    /// sections apply, so the next flush must deliver them all rather
+    /// than wait for each refresh cadence to come around.
+    #[must_use]
+    pub fn take_reprime(&self, session: &str) -> bool {
+        std::fs::remove_file(self.session_dir(session).join("reprime")).is_ok()
+    }
+
+    /// Append one line to the injection log. The log is the audit trail
+    /// for what gaff put into a session, and it never blocks a flush:
+    /// an unwritable log is silent.
+    pub fn record_injection(&self, session: &str, event: &str, text: &str) {
+        let Ok(()) = std::fs::create_dir_all(self.session_dir(session)) else {
+            return;
+        };
+        let names: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("[gaff:"))
+            .filter_map(|l| l.split(']').next())
+            .collect();
+        let line = serde_json::to_string(&json!({
+            "event": event,
+            "bytes": text.len(),
+            "entries": names,
+        }))
+        .unwrap_or_default();
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.session_dir(session).join("injections.jsonl"))
+        {
+            let _ = f.write_all(format!("{line}\n").as_bytes());
+        }
+    }
+
+    /// Read the injection log, oldest first.
+    #[must_use]
+    pub fn injections(&self, session: &str) -> Vec<Value> {
+        std::fs::read_to_string(self.session_dir(session).join("injections.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    /// Every session directory under the root, sorted.
+    #[must_use]
+    pub fn sessions(&self) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(&self.root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        out.sort();
+        out
+    }
+
     #[must_use]
     pub fn root_path(&self) -> &Path {
         &self.root
@@ -459,5 +544,48 @@ mod tests {
         // Scheduling the id again must clear the stale fired marker.
         s.write_oneshot("s", "ci", 0, 0, "second").unwrap();
         assert!(s.claim_fired("s", "ci"), "the reused id fires again");
+    }
+}
+
+#[cfg(test)]
+mod profile_state_tests {
+    use super::*;
+
+    fn store(tag: &str) -> Store {
+        let d = std::env::temp_dir().join(format!("gaff-ps-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(&d).unwrap();
+        Store::new(d)
+    }
+
+    #[test]
+    fn setting_a_profile_arms_one_reprime() {
+        let s = store("set");
+        assert!(s.profile("x").is_none(), "absent state reads as no profile");
+        assert!(s.set_profile("x", "focus").unwrap(), "the switch changed it");
+        assert_eq!(s.profile("x").as_deref(), Some("focus"));
+        assert!(s.take_reprime("x"), "a switch arms a re-prime");
+        assert!(!s.take_reprime("x"), "the marker is consumed once");
+
+        assert!(
+            !s.set_profile("x", "focus").unwrap(),
+            "a repeated set changes nothing"
+        );
+        assert!(!s.take_reprime("x"), "a no-op set arms no re-prime");
+    }
+
+    #[test]
+    fn the_injection_log_records_the_entry_names() {
+        let s = store("log");
+        assert!(s.injections("x").is_empty());
+        s.record_injection("x", "PostToolBatch", "[gaff:build-clean] keep it green");
+        s.record_injection("x", "SessionStart", "[gaff:prime]\nbody\n\n[gaff:skills] more");
+        let lines = s.injections("x");
+        assert_eq!(lines.len(), 2, "one line per injection, in order");
+        assert_eq!(lines[0]["event"], "PostToolBatch");
+        assert_eq!(lines[0]["entries"][0], "build-clean");
+        assert_eq!(lines[1]["entries"][0], "prime");
+        assert_eq!(lines[1]["entries"][1], "skills");
+        assert!(lines[0]["bytes"].as_u64().unwrap() > 0);
     }
 }
