@@ -28,13 +28,13 @@ session framing.
 Use `engine::is_flush_event` rather than a second list. A handler that
 subscribes to a non-flush event is a config error for this reason.
 
-## 3. The repo config is data; executables are user-scoped
+## 3. The repo config is data, and executables are user-scoped
 
 `.gaff/gaff.yml` declares sections, reminders, cadences, and profiles.
 It never names a command. Handlers live only in
-`~/.config/gaff/handlers.yml`, and gaff does not read `GAFF_CONFIG_DIR`
-or `XDG_CONFIG_HOME` on the hook path, because a repo can set an
-environment variable through direnv, mise, or a committed settings file.
+`~/.config/gaff/handlers.yml`. gaff does not read `GAFF_CONFIG_DIR` or
+`XDG_CONFIG_HOME` on the hook path. A repo can set an environment
+variable through direnv, mise, or a committed settings file.
 
 A handler's child still runs with the repo as its working directory,
 and tools such as git, make, and just read executable settings from
@@ -70,9 +70,9 @@ primary evidence that a command behaves. Run both:
     cd tests/missouri && missouri run
 
 When you add a command or a config key, add a missouri state pair for
-it. A state is a directory; a transition is a shell command; the
-comparison is a byte diff of the resulting tree, so the fixture records
-the real state. Prefer asserting on structural state (a consumed cursor,
+it. A state is a directory. A transition is a shell command. The comparison
+is a byte diff of the resulting tree, so the fixture records the real
+state. Prefer asserting on structural state (a consumed cursor,
 a remaining pending marker) over asserting on output text.
 
 Machine-specific or timing-coupled bytes belong in `.missouri/ignore`,

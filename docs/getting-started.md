@@ -3,8 +3,8 @@
 gaff keeps context alive in a long coding-agent session. Context injected
 at session start decays as the conversation grows. It moves into the
 low-attention middle of the model's context window. gaff counts what
-causes that decay — the tool calls and the prompts — and re-injects the
-important text on a cadence.
+causes that decay. It counts the tool calls and the prompts. It then
+re-injects the important text on a cadence.
 
 ## Install the hooks
 

@@ -11,9 +11,9 @@ event goes through up to three stages:
 2. **Arm.** When a cadence divides the new count, gaff writes a pending
    marker. gaff emits nothing here. The crossing usually happens on
    PostToolUse, whose output channel is unsafe to decorate.
-3. **Flush.** At the next safe event — SessionStart, UserPromptSubmit, or
-   PostToolBatch — gaff merges the pending entries under the byte cap and
-   emits them as `additionalContext`. gaff consumes an entry only when it
+3. **Flush.** The safe events are SessionStart, UserPromptSubmit, and
+   PostToolBatch. At the next one, gaff merges the pending entries under
+   the byte cap. It emits them as `additionalContext`. gaff consumes an entry only when it
    emits the entry.
 
 ## Sessions

@@ -115,8 +115,8 @@ inside the repo, where `git clean -xdf` would erase it mid-session. Set
 gaff appends one line to `injections.jsonl` in the session state for
 every flush it delivers. `gaff log` prints it: the event, the byte
 count, and the entry names. The log records what gaff put into a
-session, which is the question a reader actually has when a reminder
-seems to have fired at the wrong time.
+session. That is the question a reader has when a reminder seems to
+fire at the wrong time.
 
 ## Handlers
 
@@ -125,10 +125,10 @@ Handlers make injected context derived rather than static.
 
 Handlers live **only** in `$HOME/.config/gaff/handlers.yml`. A repo
 cannot declare one. gaff does not read `GAFF_CONFIG_DIR` or
-`XDG_CONFIG_HOME` on the hook path, because direnv, mise, a
-devcontainer, and a committed settings file all let a repo set an
-environment variable, and an env-selectable config path is a
-repo-selectable command.
+`XDG_CONFIG_HOME` on the hook path. A repo can set an environment
+variable through direnv, mise, a devcontainer, or a committed settings
+file. An env-selectable config path is therefore a repo-selectable
+command.
 
 ```yaml
 handlers:
@@ -161,10 +161,10 @@ repo's own `.git/config`.
 ### What runs, and what that costs you
 
 **A handler's command runs with the repo as its working directory.**
-Many ordinary tools read executable settings from there: `git` honors
-`core.pager` and `core.fsmonitor` from `.git/config`, and `make`,
-`just`, and `npm` read their own repo files. gaff cannot close that,
-so handlers are **deny-by-default**:
+Many ordinary tools read executable settings from there. `git` honors
+`core.pager` and `core.fsmonitor` from `.git/config`. `make`, `just`,
+and `npm` read their own repo files. gaff cannot close that. Handlers
+are therefore **deny-by-default**:
 
 ```
 gaff trust          # from a terminal, in the repo you want to allow
@@ -177,16 +177,16 @@ consent, no handler runs and gaff says so once.
 Note the limit of the gate: `gaff trust` refuses a caller whose stdin
 is not a terminal, so an agent cannot grant consent *through gaff*. An
 agent that can write your home directory can still edit the file. The
-gate raises the cost and makes the grant visible; it is not a sandbox.
+gate raises the cost and makes the grant visible. It is not a sandbox.
 
 `command[0]` must be an absolute path. gaff never searches `PATH`,
 because a repo can prepend its own `bin/` and shadow the binary you
 named.
 
-The child's environment is an **allowlist**, not a denylist: it gets
-`HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `TZ`, `USER`, a sanitized
-`PATH`, and the `GAFF_*` variables below. Nothing else, including your
-API tokens.
+The child's environment is an **allowlist**, not a denylist. The child
+gets `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `TZ`, `USER`, a
+sanitized `PATH`, and the `GAFF_*` variables below. It gets nothing
+else, and that includes your API tokens.
 
 A denylist kept losing: stripping `GIT_CONFIG_GLOBAL` still leaves
 `GIT_CONFIG_COUNT`, which does the same job, and every runtime adds
@@ -199,24 +199,24 @@ it:
 
 The grant is then explicit and visible in the config.
 
-`PATH` is filtered to absolute entries outside the repo, because the
-child resolves its own helpers by name (git calls `ssh`, a script uses
-`#!/usr/bin/env`) and a repo entry on `PATH` would shadow them.
+gaff filters `PATH` to absolute entries outside the repo. The child
+resolves its own helpers by name. git calls `ssh`, and a script uses
+`#!/usr/bin/env`. A repo entry on `PATH` would shadow them.
 
 gaff exports `GAFF_EVENT`, `GAFF_SESSION_ID`, `GAFF_HANDLER_NAME`, and
 `GAFF_TIMEOUT_MS`. It never passes the hook payload, which holds the
 user's prompt text.
 
 Handler output is untrusted: commit messages and branch names reach it
-from a cloned repo. gaff drops the characters that render as nothing
-(control codes, zero-width and format characters) and defuses the token
-`[gaff:` anywhere on a line, so output cannot pose as a section or a
-reminder, in the session framing or in `gaff log`.
+from a cloned repo. gaff drops the characters that render as nothing. These are the control
+codes, the zero-width characters, and the format characters. gaff then
+defuses the token `[gaff:` anywhere on a line. Output cannot pose as a
+section or a reminder, in the session framing or in `gaff log`.
 
 Output larger than 64 KiB is cut at that point rather than discarded.
 Output that does not fit the flush's byte cap is truncated with a
-marker, because a handler's cadence is already spent and dropping it
-would lose the output for good.
+marker. A handler's cadence is already spent, so a drop would lose the
+output for good.
 
 `GAFF_HANDLERS=off` disables every handler. It is the switch to reach
 for when a handler wedges a session.
@@ -229,10 +229,10 @@ misses the budget is skipped. A handler that overruns its deadline is
 killed, along with its process group.
 
 Two separate things are bounded, and both must be: the read, and the
-child. A grandchild that inherits the output pipe would hold the read
-open, and a child that closes its output and keeps running would hold
-the wait open. Either one would hang the session, so gaff bounds both
-and kills the process group.
+child. A grandchild that inherits the output pipe holds the read open. A child
+that closes its output and keeps running holds the wait open. Either
+one hangs the session. gaff bounds both, and it kills the process
+group.
 
 A cadence counts tool calls and prompts, and a fresh session has
 neither, so a `SessionStart` subscription runs at session start

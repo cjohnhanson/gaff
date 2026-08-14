@@ -1,6 +1,6 @@
 # 🪝 gaff
 
-> A gaff is a pole with a sharp hook on the end — used to land what's
+> A gaff is a pole with a sharp hook on the end. It lands what's
 > drifting past.
 
 gaff is a context-lifecycle handler for coding agents. It counts the hook
@@ -47,11 +47,11 @@ ends with its opening instructions effectively invisible.
   framing. It never decorates a tool result.
 - **Not a way to run repo-declared code.** The repo-level config is
   data: sections, text, and cadences. A handler's command can only be
-  declared in the user-scoped config. Note the limit of that claim: a
+  declared in the user-scoped config. Note the limit of that claim. A
   handler's command still *runs in* the repo's working directory, and
   tools like `git`, `make`, and `just` read executable settings from
-  there. That is why handlers are deny-by-default and need `gaff trust`
-  per repo.
+  there. Handlers are therefore deny-by-default, and they need
+  `gaff trust` per repo.
 
 ## Using it
 
@@ -79,9 +79,9 @@ prefixes, the `init`, `check`, `doctor`, `profile`, and `log` commands,
 and the bundled docs.
 
 Claude Code is the only implemented host adapter. The adapter is a
-seam, not a hard-coded path: a host declares its payload mapping, its
-event names, and its settings path in `src/adapter.rs`, and nothing
-else in gaff changes. gaff does not ship a guessed schema for a host
+seam, not a hard-coded path. A host declares its payload mapping, its
+event names, and its settings path in `src/adapter.rs`. Nothing else in
+gaff changes. gaff does not ship a guessed schema for a host
 nobody has tested.
 
 A missouri state-graph suite of 15 paths and the cargo unit tests cover

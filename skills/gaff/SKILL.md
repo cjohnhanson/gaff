@@ -70,23 +70,24 @@ may override their cadences.
 
 The transition policy decides which profiles you may set for yourself.
 A profile listed as `human only` refuses an agent switch. Do not work
-around that by editing the config; if a profile should be
-agent-settable, ask the operator to add it to `transitions.agent_may_set`.
+around that by editing the config. If a profile should be
+agent-settable, ask the operator to add it to
+`transitions.agent_may_set`.
 
 ## Handlers
 
 A handler is an external command whose output becomes context on a
-cadence. Handlers are declared only in the operator's user-scoped config
-at `~/.config/gaff/handlers.yml`, never in a repo, and they run only in
-a repo the operator trusted with `gaff trust`.
+cadence. Handlers are declared only in the operator's user-scoped config at
+`~/.config/gaff/handlers.yml`, never in a repo. They run only in a repo
+the operator trusted with `gaff trust`.
 
     gaff check --handlers    # validate the handler config
     gaff trust               # a human at a terminal only
 
 `gaff trust` refuses a caller whose stdin is not a terminal, so you
 cannot grant this through gaff. Do not route around it by writing the
-trusted file yourself; the operator decides which repos may run
-commands, and a handler's command runs with the repo as its working
+trusted file yourself. The operator decides which repos may run
+commands. A handler's command runs with the repo as its working
 directory.
 
 ## Rules
