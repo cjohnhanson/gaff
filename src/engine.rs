@@ -36,30 +36,105 @@ pub fn handle(
     store: &Store,
     gaff_dir: &Path,
 ) -> Option<String> {
+    handle_with(envelope, config, store, gaff_dir, &[], None)
+}
+
+/// Handle one event, with handlers.
+///
+/// `cwd` is the working directory a handler's child runs in. It is
+/// passed explicitly rather than derived from `gaff_dir`, because the
+/// two can diverge and running a command in the wrong repo is a silent
+/// boundary crossing.
+#[must_use]
+pub fn handle_with(
+    envelope: &Envelope,
+    config: &Config,
+    store: &Store,
+    gaff_dir: &Path,
+    handlers: &[crate::handler::Handler],
+    cwd: Option<&Path>,
+) -> Option<String> {
     let session = envelope.session_id.as_deref()?;
 
     match envelope.event.as_str() {
         "PostToolUse" | "PostToolUseFailure" => {
             let id = envelope.raw.get("tool_use_id")?.as_str()?;
             if let Ok(Some(count)) = store.record_tool_call(session, id) {
-                arm_crossings(config, store, session, count, |e| e.tool_calls);
+                arm_crossings(config, handlers, store, session, count, |e| e.tool_calls);
             }
             None
         }
         "UserPromptSubmit" => {
             if let Ok(count) = store.record_prompt(session) {
-                arm_crossings(config, store, session, count, |e| e.prompts);
+                arm_crossings(config, handlers, store, session, count, |e| e.prompts);
             }
-            flush(config, store, session, gaff_dir, section_mode(store, session))
+            flush(&FlushCtx {
+                config,
+                store,
+                session,
+                gaff_dir,
+                mode: section_mode(store, session),
+                handlers,
+                cwd,
+                event: &envelope.event,
+            })
         }
         "SessionStart" => {
             if compaction_source(envelope) {
                 store.clear_fired(session);
             }
-            flush(config, store, session, gaff_dir, SectionMode::All)
+            flush(&FlushCtx {
+                config,
+                store,
+                session,
+                gaff_dir,
+                mode: SectionMode::All,
+                handlers,
+                cwd,
+                event: &envelope.event,
+            })
         }
-        "PostToolBatch" => flush(config, store, session, gaff_dir, section_mode(store, session)),
+        "PostToolBatch" => flush(&FlushCtx {
+                config,
+                store,
+                session,
+                gaff_dir,
+                mode: section_mode(store, session),
+                handlers,
+                cwd,
+                event: &envelope.event,
+            }),
         _ => None,
+    }
+}
+
+/// Run the armed handlers and push their output.
+///
+/// Handlers run last, so derived context yields to scheduled context. A
+/// handler arms like a reminder, so it spawns a process only when its
+/// cadence crosses.
+fn push_handler_entries(
+    entries: &mut Vec<Entry>,
+    store: &Store,
+    session: &str,
+    handlers: &[crate::handler::Handler],
+    cwd: Option<&Path>,
+    event: &str,
+) {
+    let Some(cwd) = cwd else { return };
+    if handlers.is_empty() {
+        return;
+    }
+    let armed = |name: &str| store.pending_multiple(session, name).is_some();
+    for output in crate::handler::run_due(handlers, event, session, cwd, &armed) {
+        if let Some(multiple) = store.pending_multiple(session, &output.name)
+            && store.consume_pending(session, &output.name, multiple).is_ok()
+        {
+            entries.push(Entry {
+                text: output.text,
+                kind: EntryKind::Unconditional,
+            });
+        }
     }
 }
 
@@ -92,6 +167,7 @@ fn compaction_source(envelope: &Envelope) -> bool {
 /// divides the new count.
 fn arm_crossings(
     config: &Config,
+    handlers: &[crate::handler::Handler],
     store: &Store,
     session: &str,
     count: u64,
@@ -101,7 +177,8 @@ fn arm_crossings(
         .reminders
         .iter()
         .map(|r| (r.name.as_str(), &r.every))
-        .chain(config.sections.iter().map(|s| (s.name.as_str(), &s.refresh)));
+        .chain(config.sections.iter().map(|s| (s.name.as_str(), &s.refresh)))
+        .chain(handlers.iter().map(|h| (h.name.as_str(), &h.every)));
     for (name, every) in cadences {
         if let Some(n) = unit(every)
             && n > 0
@@ -142,13 +219,31 @@ enum SectionMode {
 /// gaff consumes an entry only when it emits the entry. An entry that
 /// overflows the byte cap stays pending, and gaff appends the truncation
 /// marker instead.
-fn flush(
-    config: &Config,
-    store: &Store,
-    session: &str,
-    gaff_dir: &Path,
+/// Everything one flush needs. The reviewer's note applies: derive no
+/// path here. `cwd` and `gaff_dir` can diverge, and running a handler
+/// in the wrong repo is a silent boundary crossing.
+struct FlushCtx<'a> {
+    config: &'a Config,
+    store: &'a Store,
+    session: &'a str,
+    gaff_dir: &'a Path,
     mode: SectionMode,
-) -> Option<String> {
+    handlers: &'a [crate::handler::Handler],
+    cwd: Option<&'a Path>,
+    event: &'a str,
+}
+
+fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
+    let FlushCtx {
+        config,
+        store,
+        session,
+        gaff_dir,
+        mode,
+        handlers,
+        cwd,
+        event,
+    } = *ctx;
     let mut entries: Vec<Entry> = Vec::new();
 
     for section in &config.sections {
@@ -200,6 +295,8 @@ fn flush(
             });
         }
     }
+
+    push_handler_entries(&mut entries, store, session, handlers, cwd, event);
 
     let (mut out, mut truncated) = (String::new(), false);
     for entry in entries {

@@ -1,0 +1,7 @@
+doc: |
+  After the run the injection log names the handler entries.
+assertions:
+  - name: "the log names the handler entries"
+    command: "grep -q 'handler:hello' .gaff-state/s-h/injections.jsonl"
+  - name: "the slow handler never delivered"
+    command: "! grep -q 'handler:slow' .gaff-state/s-h/injections.jsonl"

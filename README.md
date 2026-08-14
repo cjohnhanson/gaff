@@ -27,6 +27,9 @@ ends with its opening instructions effectively invisible.
   future. gaff re-arms a one-shot after a context compaction.
 - **Prime sections** — the session-start context, split into sections.
   Each section refreshes on its own cadence.
+- **Handlers** — external commands whose output becomes context, on a
+  cadence. They live only in the user-scoped config, and a repo must be
+  trusted with `gaff trust` before any command runs in it.
 - **Profiles** — named overlays that select which entries are active and
   override their cadences. A transition policy states which profiles an
   agent may select for itself. Profiles are advisory: gaff blocks
@@ -42,9 +45,13 @@ ends with its opening instructions effectively invisible.
 - **Not an enforcement layer.** gaff blocks nothing. It injects context
   only on the events whose output channel is the model's session
   framing. It never decorates a tool result.
-- **Not a way to run repo code.** The repo-level config is data:
-  sections, text, and cadences. Anything executable lives in the
-  user-scoped config.
+- **Not a way to run repo-declared code.** The repo-level config is
+  data: sections, text, and cadences. A handler's command can only be
+  declared in the user-scoped config. Note the limit of that claim: a
+  handler's command still *runs in* the repo's working directory, and
+  tools like `git`, `make`, and `just` read executable settings from
+  there. That is why handlers are deny-by-default and need `gaff trust`
+  per repo.
 
 ## Using it
 
@@ -54,6 +61,8 @@ gaff remind "check CI" --after 10  # one-shot, N tool calls into the future
 gaff status --session <id>         # counters, pending entries, one-shots
 gaff check                         # validate .gaff/gaff.yml
 gaff doctor                        # what is live in this clone
+gaff trust                         # allow handlers to run in this repo
+gaff check --handlers              # validate ~/.config/gaff/handlers.yml
 gaff profile list                  # the declared profiles and who may set them
 gaff profile set focus             # switch, and re-prime the sections
 gaff log                           # what gaff injected into this session

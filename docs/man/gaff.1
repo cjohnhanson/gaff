@@ -38,10 +38,16 @@ selects the session.
 .It Cm init Op Fl -host Ar name
 Register the hooks in the host's settings file.
 Claude Code is the only implemented host, and it is the default.
-.It Cm check
+.It Cm check Op Fl -handlers
 Validate
 .Pa .gaff/gaff.yml
 and report every problem.
+With
+.Fl -handlers ,
+validate
+.Pa ~/.config/gaff/handlers.yml
+instead.
+The plain form stays repo-only, so it behaves the same in CI.
 .It Cm doctor
 Show what is live in this clone: config, hooks, and state.
 .It Cm profile Oo Cm show | list | set Ar name Oc Op Fl -session Ar id
@@ -64,6 +70,18 @@ from
 is human-only.
 gaff decides who is asking by structural identity, where a terminal on
 stdin is a human and anything else is an agent.
+.It Cm trust
+Allow handlers to run in this repo.
+A handler's command runs with the repo as its working directory, and
+tools such as
+.Xr git 1 ,
+.Xr make 1 ,
+and just read executable settings from there.
+So handlers are refused by default, and consent is per repo.
+Only a human at a terminal may grant it; the agent path is refused.
+Consent is recorded in
+.Pa ~/.config/gaff/trusted ,
+outside every repo tree.
 .It Cm log Op Fl -session Ar id
 Print the injection audit trail: every flush gaff delivered to the
 session, with the byte count and the entry names.
@@ -84,11 +102,43 @@ The root is never inside the repo.
 The active profile.
 It outranks the session state and
 .Pa .gaff/profile .
+.It Ev GAFF_HANDLERS
+Set it to
+.Ql off
+to disable every handler.
+Reach for this when a handler wedges a session.
 .It Ev GAFF_HOST
 The host adapter for
 .Cm gaff hook .
 Without it, gaff selects the adapter from the payload shape.
 .El
+.Sh HANDLERS
+A handler is an external command whose stdout becomes injected context.
+Handlers are declared only in
+.Pa ~/.config/gaff/handlers.yml .
+A repo cannot declare one, and gaff does not consult
+.Ev GAFF_CONFIG_DIR
+or
+.Ev XDG_CONFIG_HOME
+on the hook path, because a repo can set an environment variable
+through direnv, mise, or a committed settings file.
+.Pp
+The first element of
+.Va command
+must be an absolute path.
+gaff never searches
+.Ev PATH ,
+because a repo can prepend to it.
+gaff strips the loader and git environment variables before it spawns a
+child, but everything else is inherited, including any tokens in the
+session.
+Handlers run in sequence inside one deadline for each flush.
+See
+.Xr gaff-docs 1
+or run
+.Nm
+.Cm docs configuration
+for the full reference.
 .Sh EXIT STATUS
 0 on success, 1 on any failure.
 Never 2.

@@ -118,6 +118,97 @@ count, and the entry names. The log records what gaff put into a
 session, which is the question a reader actually has when a reminder
 seems to have fired at the wrong time.
 
+## Handlers
+
+A handler is an external command whose stdout becomes injected context.
+Handlers make injected context derived rather than static.
+
+Handlers live **only** in `$HOME/.config/gaff/handlers.yml`. A repo
+cannot declare one. gaff does not read `GAFF_CONFIG_DIR` or
+`XDG_CONFIG_HOME` on the hook path, because direnv, mise, a
+devcontainer, and a committed settings file all let a repo set an
+environment variable, and an env-selectable config path is a
+repo-selectable command.
+
+```yaml
+handlers:
+  - name: ci
+    events: [SessionStart, PostToolBatch]
+    every: {tool_calls: 20}
+    command: ["/opt/homebrew/bin/gh", "run", "list", "--limit", "1"]
+    timeout_ms: 300
+    max_bytes: 1024
+    when:
+      file_exists: ".github/workflows"
+      branch_prefix: "feat/"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `name` | required | The entry name; it appears as `[gaff:handler:<name>]` |
+| `events` | required | Flush points only |
+| `command` | required | The argv. `command[0]` must be an absolute path |
+| `every` | required | The cadence, as for a reminder |
+| `timeout_ms` | 300 | The per-handler deadline, capped at 2000 |
+| `max_bytes` | 1024 | The injected size; the output truncates, never drops |
+| `when` | none | Predicates; every declared predicate must pass |
+
+`when` accepts `file_exists`, `cwd_prefix`, `branch_prefix`, and `env`.
+`branch_prefix` reads `.git/HEAD` directly and follows a worktree's
+`gitdir:` file. It never runs `git`, because that would honor the
+repo's own `.git/config`.
+
+### What runs, and what that costs you
+
+**A handler's command runs with the repo as its working directory.**
+Many ordinary tools read executable settings from there: `git` honors
+`core.pager` and `core.fsmonitor` from `.git/config`, and `make`,
+`just`, and `npm` read their own repo files. gaff cannot close that,
+so handlers are **deny-by-default**:
+
+```
+gaff trust          # from a terminal, in the repo you want to allow
+```
+
+Consent is recorded in `$HOME/.config/gaff/trusted`, outside every repo
+tree. Only a human at a terminal may grant it. Without it, no handler
+runs and gaff says so once.
+
+`command[0]` must be an absolute path. gaff never searches `PATH`,
+because a repo can prepend its own `bin/` and shadow the binary you
+named.
+
+gaff strips `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`, `BASH_ENV`,
+`ENV`, `NODE_OPTIONS`, `PYTHONSTARTUP`, `PYTHONPATH`, and the
+`GIT_CONFIG_*`, `GIT_SSH_COMMAND`, `GIT_EXTERNAL_DIFF`, and `GIT_PAGER`
+variables before it spawns a child. **Everything else is inherited,
+including any API tokens in the session**, so a network-capable handler
+carries them.
+
+gaff exports `GAFF_EVENT`, `GAFF_SESSION_ID`, `GAFF_HANDLER_NAME`, and
+`GAFF_TIMEOUT_MS`. It never passes the hook payload, which holds the
+user's prompt text.
+
+Handler output is untrusted: commit messages and branch names reach it
+from a cloned repo. A line that starts with `[gaff:` is defused, so
+output cannot pose as a section or a reminder in the session framing or
+in `gaff log`.
+
+`GAFF_HANDLERS=off` disables every handler. It is the switch to reach
+for when a handler wedges a session.
+
+### Cost
+
+Handlers run in sequence inside one shared deadline per flush: 2000 ms
+at `SessionStart`, 500 ms at every other flush point. A handler that
+misses the budget is skipped. A handler that overruns its own deadline
+is killed, along with its process group, because a grandchild that
+inherits the output pipe would otherwise hold the hook open and hang
+the session.
+
+`gaff check --handlers` validates the user config. Plain `gaff check`
+stays repo-only, so it behaves the same in CI as it does locally.
+
 ## Host adapters
 
 Claude Code is the only implemented adapter. An adapter owns three
