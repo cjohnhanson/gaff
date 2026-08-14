@@ -1,6 +1,6 @@
 ---
 title: 'handlers: external commands as context sources, user-scoped only'
-status: todo
+status: done
 priority: null
 assignee: null
 due_date: null
@@ -8,7 +8,7 @@ labels:
 - feature
 depends_on: []
 created: '2026-08-14T20:34:26Z'
-updated: '2026-08-14T20:34:26Z'
+updated: '2026-08-14T21:17:05Z'
 ---
 
 ## Scratch Notes
@@ -169,3 +169,18 @@ property.
 - `tests/missouri/handled*`: predicate pass, predicate fail, non-zero
   exit, untrusted repo, and a timeout using a 10x sleep with no elapsed
   value in the asserted text.
+
+## Review Log (final)
+- round 2 (QA, exercised): 1 subagent, 1B / 6M / 6m
+  BLOCKER: child.wait() unbounded — a child that closed stdout and kept
+  running held the hook open for its whole life (60s/20s/15s reproduced).
+  Majors: GIT_CONFIG_COUNT bypassed the env denylist and executed a repo
+  script; a failed handler never spent its cadence and respawned every
+  flush; the [gaff: defusing missed zero-width and ANSI prefixes;
+  over-cap output was discarded twice over; SessionStart handlers could
+  never fire on a fresh session; the trust doc overclaimed.
+  All fixed and verified against the reproductions. Shipped.
+- Layout brought to the ecosystem pattern: CLI moved to src/cli.rs in the
+  lib (main.rs is a 12-line shim), src/error.rs added, first CLI tests
+  assert the never-exit-2 rule. .agents/skills/gaff-development added.
+  Consumer skill updated for profiles, handlers, trust, and log.
