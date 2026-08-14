@@ -30,12 +30,39 @@ fn main() -> ExitCode {
         Some("check") => run_check(),
         Some("doctor") => run_doctor(),
         Some("docs") => run_docs(&args[1..]),
+        Some("--version" | "-V" | "version") => {
+            println!("gaff {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
+        Some("--help" | "-h" | "help") => {
+            println!("{USAGE}");
+            ExitCode::SUCCESS
+        }
         Some(other) => fail(&format!(
             "unknown command `{other}` (available: hook, remind, status, init, check, doctor, docs)"
         )),
         None => fail("usage: gaff <hook|remind|status|init|check|doctor|docs>"),
     }
 }
+
+const USAGE: &str = "gaff — a context-lifecycle handler for coding agents
+
+Usage: gaff <command> [options]
+
+Commands:
+  hook             Handle one hook event from stdin (the harness calls this)
+  remind <text>    Schedule a one-shot reminder N tool calls ahead
+  status           Show counters, pending entries, and one-shots
+  init             Register the hooks in .claude/settings.local.json
+  check            Validate .gaff/gaff.yml
+  doctor           Show what is live in this clone
+  docs [page]      Print the bundled documentation
+
+Options:
+  -h, --help       Print this help
+  -V, --version    Print the version
+
+Every gaff invocation exits 0 or 1, never 2. See man gaff for details.";
 
 fn fail(msg: &str) -> ExitCode {
     eprintln!("gaff: {msg}");

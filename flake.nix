@@ -75,6 +75,13 @@
             commonArgs
             // {
               inherit cargoArtifacts;
+              # The CLI is parsed by hand (the never-exit-2 rule keeps
+              # clap out), so the man page is hand-written in docs/man/
+              # and installed here.
+              postInstall = ''
+                mkdir -p $out/share/man/man1
+                cp docs/man/gaff.1 $out/share/man/man1/
+              '';
               # The nix check runs the unit tests only. The missouri suite
               # runs in development, because it needs the missouri binary,
               # which lives in its own derivation.

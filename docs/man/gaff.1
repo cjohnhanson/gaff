@@ -1,0 +1,58 @@
+.Dd August 14, 2026
+.Dt GAFF 1
+.Os
+.Sh NAME
+.Nm gaff
+.Nd context-lifecycle handler for coding agents
+.Sh SYNOPSIS
+.Nm
+.Ar command
+.Op Ar options
+.Sh DESCRIPTION
+.Nm
+manages session context for a coding agent through the harness hook
+system: counters, cadence reminders, one-shot reminders, and prime
+sections.
+Every invocation exits 0 or 1.
+It never exits 2, because the agent side treats exit 2 as the blocking
+code, and no gaff failure may block a session.
+.Sh COMMANDS
+.Bl -tag -width "remind <text>"
+.It Cm hook
+Handle one hook event from stdin.
+The harness calls this; it is not for interactive use.
+.It Cm remind Ar text Fl -after Ar n
+Schedule a one-shot reminder that fires
+.Ar n
+tool calls ahead.
+.Fl -after
+is required.
+.Fl -id Ar id
+names the one-shot; scheduling the same id again re-arms it.
+.Fl -session Ar id
+selects the session; the default comes from the environment.
+.It Cm status
+Show the counters, the pending entries, and the one-shots.
+.Fl -session Ar id
+selects the session.
+.It Cm init
+Register the hooks in
+.Pa .claude/settings.local.json .
+.It Cm check
+Validate
+.Pa .gaff/gaff.yml
+and report every problem.
+.It Cm doctor
+Show what is live in this clone: config, hooks, and state.
+.It Cm docs Op Ar page
+Print the bundled documentation.
+Without
+.Ar page ,
+list the available pages.
+.El
+.Sh EXIT STATUS
+0 on success, 1 on any failure.
+Never 2.
+.Sh SEE ALSO
+.Xr tisket 1 ,
+.Xr missouri 1
