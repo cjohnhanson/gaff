@@ -67,7 +67,15 @@ fn from_claude_code(json: Value) -> Envelope {
     Envelope {
         gaff_schema: SCHEMA_VERSION,
         event: get("hook_event_name").unwrap_or_else(|| "Unknown".to_string()),
-        session_id: get("session_id"),
+        // Drop an unsafe id at the boundary. The id names a state
+        // directory, and it arrives from the host payload.
+        session_id: get("session_id").filter(|id| {
+            let ok = crate::state::valid_session_id(id);
+            if !ok {
+                eprintln!("gaff: refusing an unsafe session id. Passing through.");
+            }
+            ok
+        }),
         cwd: get("cwd"),
         tool_name: get("tool_name"),
         raw: json,

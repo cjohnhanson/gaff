@@ -79,14 +79,38 @@ fn cwd_key(cwd: &Path) -> String {
     format!("{hash:016x}")
 }
 
+/// Whether a session id is safe to use as a directory name.
+///
+/// The id arrives from the host payload, so it is untrusted input. An
+/// id such as `../../x` would otherwise escape the state root and write
+/// a ledger into an arbitrary directory.
+#[must_use]
+pub fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id != "."
+        && id != ".."
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+}
+
 impl Store {
     #[must_use]
     pub const fn new(root: PathBuf) -> Self {
         Self { root }
     }
 
+    /// The state directory for one session.
+    ///
+    /// An invalid id is contained rather than trusted. gaff degrades; it
+    /// never blocks a session over a bad id.
     fn session_dir(&self, session: &str) -> PathBuf {
-        self.root.join(session)
+        if valid_session_id(session) {
+            self.root.join(session)
+        } else {
+            self.root.join("_invalid-session")
+        }
     }
 
     fn ledger_path(&self, session: &str) -> PathBuf {
@@ -587,5 +611,34 @@ mod profile_state_tests {
         assert_eq!(lines[1]["entries"][0], "prime");
         assert_eq!(lines[1]["entries"][1], "skills");
         assert!(lines[0]["bytes"].as_u64().unwrap() > 0);
+    }
+}
+
+#[cfg(test)]
+mod session_id_tests {
+    use super::*;
+
+    #[test]
+    fn a_traversing_session_id_never_escapes_the_root() {
+        let root = std::env::temp_dir().join(format!("gaff-sid-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Store::new(root.clone());
+        store.record_prompt("../escaped").unwrap();
+        assert!(
+            !root.parent().unwrap().join("escaped").exists(),
+            "the id must not escape the state root"
+        );
+        assert!(root.join("_invalid-session").is_dir(), "it is contained");
+    }
+
+    #[test]
+    fn the_id_rules_accept_real_ids_and_refuse_separators() {
+        assert!(valid_session_id("abc-123_XY.z"));
+        assert!(!valid_session_id("../x"));
+        assert!(!valid_session_id("a/b"));
+        assert!(!valid_session_id(".."));
+        assert!(!valid_session_id(""));
+        assert!(!valid_session_id(&"x".repeat(129)));
     }
 }
