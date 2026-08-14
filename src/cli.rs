@@ -415,6 +415,25 @@ fn run_check(args: &[String]) -> ExitCode {
 
 /// `gaff doctor` — report what is live in this clone. This command
 /// always exits 0. It reports a problem; it never becomes one.
+fn doctor_handlers() {
+    let trusted = std::env::current_dir().is_ok_and(|d| crate::handler::is_trusted(&d));
+    match crate::handler::load_checked() {
+        Err(e) => println!("handlers: {e}"),
+        Ok(cfg) if cfg.handlers.is_empty() => println!("handlers: none declared"),
+        Ok(cfg) => {
+            println!(
+                "handlers: {} declared; this repo is {}",
+                cfg.handlers.len(),
+                if trusted { "trusted" } else { "NOT trusted (run `gaff trust`)" }
+            );
+            for h in &cfg.handlers {
+                let state = if h.problems().is_empty() { "ok " } else { "BAD" };
+                println!("  {state} {} -> {}", h.name, h.command.join(" "));
+            }
+        }
+    }
+}
+
 fn run_doctor() -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
@@ -447,6 +466,7 @@ fn run_doctor() -> ExitCode {
     } else {
         println!("hooks:   NOT registered (run `gaff init`)");
     }
+    doctor_handlers();
     ExitCode::SUCCESS
 }
 
@@ -673,7 +693,10 @@ fn run_trust() -> ExitCode {
 /// This is separate from `gaff check`, which stays repo-only so it
 /// behaves the same in CI as it does locally.
 fn check_handlers() -> ExitCode {
-    let cfg = crate::handler::load();
+    let cfg = match crate::handler::load_checked() {
+        Ok(cfg) => cfg,
+        Err(e) => return fail(&e),
+    };
     if cfg.handlers.is_empty() {
         println!("no handlers declared");
         return ExitCode::SUCCESS;

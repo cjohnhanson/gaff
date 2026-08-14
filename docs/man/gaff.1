@@ -72,6 +72,10 @@ gaff decides who is asking by structural identity, where a terminal on
 stdin is a human and anything else is an agent.
 .It Cm trust
 Allow handlers to run in this repo.
+The command refuses a caller whose stdin is not a terminal, so an agent
+cannot grant consent through gaff.
+An agent that can write the home directory can still edit the file, so
+this raises the cost and makes the grant visible; it is not a sandbox.
 A handler's command runs with the repo as its working directory, and
 tools such as
 .Xr git 1 ,
@@ -129,9 +133,9 @@ must be an absolute path.
 gaff never searches
 .Ev PATH ,
 because a repo can prepend to it.
-gaff strips the loader and git environment variables before it spawns a
-child, but everything else is inherited, including any tokens in the
-session.
+The child's environment is an allowlist, not a denylist, so it receives
+no token unless a handler names one in
+.Va env_passthrough .
 Handlers run in sequence inside one deadline for each flush.
 See
 .Xr gaff-docs 1

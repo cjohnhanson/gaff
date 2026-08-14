@@ -53,6 +53,40 @@ transitions:
       case "$OUT" in *never*) echo "FAIL: a relative command ran"; exit 1 ;; esac
       # gaff check --handlers names the relative command as the problem.
       gaff check --handlers 2>&1 | grep -q "absolute path" || { echo "FAIL: check must name the relative command"; exit 1; }
+
+      # A child that closes stdout and keeps running must not hold the
+      # hook open. The read finishing does not mean the child exited.
+      cat > "$HOME/.config/gaff/handlers.yml" <<'EOF2'
+      handlers:
+        - name: detached
+          events: [PostToolBatch]
+          every: {tool_calls: 1}
+          timeout_ms: 100
+          command: ["/bin/sh", "-c", "echo out; exec 1>&-; sleep 45"]
+      EOF2
+      tick s-w a
+      START=$(date +%s)
+      flush s-w > /dev/null 2>&1
+      END=$(date +%s)
+      [ $((END - START)) -lt 20 ] || { echo "FAIL: a detached child held the hook for $((END - START))s"; exit 1; }
+
+      # A handler that never delivers must still spend its cadence,
+      # rather than re-spawning on every flush.
+      cat > "$HOME/.config/gaff/handlers.yml" <<'EOF3'
+      handlers:
+        - name: broken
+          events: [PostToolBatch]
+          every: {tool_calls: 1}
+          command: ["/bin/sh", "-c", "echo spawned >> spawns.log; exit 1"]
+      EOF3
+      rm -f spawns.log
+      tick s-c a
+      flush s-c > /dev/null 2>&1
+      flush s-c > /dev/null 2>&1
+      flush s-c > /dev/null 2>&1
+      COUNT=$(wc -l < spawns.log | tr -d ' ')
+      [ "$COUNT" = "1" ] || { echo "FAIL: a failing handler spawned $COUNT times, not once"; exit 1; }
+      rm -f spawns.log
       rm -rf home
       echo HANDLER_OK
     target: ../handled-ran

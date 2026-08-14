@@ -108,6 +108,20 @@ pub fn handle_with(
     }
 }
 
+/// The head of `text` that fits in `room` bytes, on a char boundary.
+/// `None` when nothing useful fits.
+fn clip(text: &str, room: usize) -> Option<String> {
+    const MARK: &str = "\n(gaff:handler-output-truncated)";
+    if room <= MARK.len() {
+        return None;
+    }
+    let mut cut = room - MARK.len();
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    (cut > 0).then(|| format!("{}{MARK}", &text[..cut]))
+}
+
 /// Run the armed handlers and push their output.
 ///
 /// Handlers run last, so derived context yields to scheduled context. A
@@ -127,12 +141,16 @@ fn push_handler_entries(
     }
     let armed = |name: &str| store.pending_multiple(session, name).is_some();
     for output in crate::handler::run_due(handlers, event, session, cwd, &armed) {
-        if let Some(multiple) = store.pending_multiple(session, &output.name)
-            && store.consume_pending(session, &output.name, multiple).is_ok()
-        {
+        // Spend the cadence on the attempt. A handler that failed or
+        // timed out would otherwise stay armed and re-spawn on every
+        // flush for the life of the session.
+        if let Some(multiple) = store.pending_multiple(session, &output.name) {
+            let _ = store.consume_pending(session, &output.name, multiple);
+        }
+        if let Some(text) = output.text {
             entries.push(Entry {
-                text: output.text,
-                kind: EntryKind::Unconditional,
+                text,
+                kind: EntryKind::Handler,
             });
         }
     }
@@ -196,6 +214,10 @@ struct Entry {
 }
 
 enum EntryKind {
+    /// A handler's output. Its cadence is already spent, so it has no
+    /// pending marker to retry with. It truncates to fit rather than
+    /// disappearing.
+    Handler,
     /// Nothing to consume. gaff emits this entry whenever it selects
     /// the entry. A session-start section with no pending refresh is one.
     Unconditional,
@@ -298,6 +320,20 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
 
     push_handler_entries(&mut entries, store, session, handlers, cwd, event);
 
+    merge(entries, config, store, session)
+}
+
+/// Merge the entries into one string, inside the byte cap.
+///
+/// gaff consumes an entry only when it emits the entry. An entry that
+/// overflows the cap stays pending, except a handler entry, whose
+/// cadence is already spent.
+fn merge(
+    entries: Vec<Entry>,
+    config: &Config,
+    store: &Store,
+    session: &str,
+) -> Option<String> {
     let (mut out, mut truncated) = (String::new(), false);
     for entry in entries {
         let candidate_len = if out.is_empty() {
@@ -306,13 +342,25 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
             out.len() + SEPARATOR.len() + entry.text.len()
         };
         if candidate_len > config.max_inject_bytes {
+            // A handler entry has no pending marker, so skipping it
+            // loses the output for good. Keep the head instead.
+            if matches!(entry.kind, EntryKind::Handler) {
+                let overhead = if out.is_empty() { 0 } else { SEPARATOR.len() };
+                let room = config.max_inject_bytes.saturating_sub(out.len() + overhead);
+                if let Some(head) = clip(&entry.text, room) {
+                    if !out.is_empty() {
+                        out.push_str(SEPARATOR);
+                    }
+                    out.push_str(&head);
+                }
+            }
             truncated = true;
             continue;
         }
         // Consume the entry before you emit it. A one-shot that loses a
         // race stays silent.
         let consumed = match &entry.kind {
-            EntryKind::Unconditional => true,
+            EntryKind::Unconditional | EntryKind::Handler => true,
             EntryKind::Recurring { name, multiple } => {
                 store.consume_pending(session, name, *multiple).is_ok()
             }

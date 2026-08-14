@@ -134,7 +134,7 @@ repo-selectable command.
 handlers:
   - name: ci
     events: [SessionStart, PostToolBatch]
-    every: {tool_calls: 20}
+    every: {tool_calls: 20}   # a SessionStart run ignores the cadence
     command: ["/opt/homebrew/bin/gh", "run", "list", "--limit", "1"]
     timeout_ms: 300
     max_bytes: 1024
@@ -150,7 +150,7 @@ handlers:
 | `command` | required | The argv. `command[0]` must be an absolute path |
 | `every` | required | The cadence, as for a reminder |
 | `timeout_ms` | 300 | The per-handler deadline, capped at 2000 |
-| `max_bytes` | 1024 | The injected size; the output truncates, never drops |
+| `max_bytes` | 1024 | The injected size; the output truncates rather than vanishing |
 | `when` | none | Predicates; every declared predicate must pass |
 
 `when` accepts `file_exists`, `cwd_prefix`, `branch_prefix`, and `env`.
@@ -171,28 +171,52 @@ gaff trust          # from a terminal, in the repo you want to allow
 ```
 
 Consent is recorded in `$HOME/.config/gaff/trusted`, outside every repo
-tree. Only a human at a terminal may grant it. Without it, no handler
-runs and gaff says so once.
+tree, and that file must not be writable by other users. Without
+consent, no handler runs and gaff says so once.
+
+Note the limit of the gate: `gaff trust` refuses a caller whose stdin
+is not a terminal, so an agent cannot grant consent *through gaff*. An
+agent that can write your home directory can still edit the file. The
+gate raises the cost and makes the grant visible; it is not a sandbox.
 
 `command[0]` must be an absolute path. gaff never searches `PATH`,
 because a repo can prepend its own `bin/` and shadow the binary you
 named.
 
-gaff strips `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`, `BASH_ENV`,
-`ENV`, `NODE_OPTIONS`, `PYTHONSTARTUP`, `PYTHONPATH`, and the
-`GIT_CONFIG_*`, `GIT_SSH_COMMAND`, `GIT_EXTERNAL_DIFF`, and `GIT_PAGER`
-variables before it spawns a child. **Everything else is inherited,
-including any API tokens in the session**, so a network-capable handler
-carries them.
+The child's environment is an **allowlist**, not a denylist: it gets
+`HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `TZ`, `USER`, a sanitized
+`PATH`, and the `GAFF_*` variables below. Nothing else, including your
+API tokens.
+
+A denylist kept losing: stripping `GIT_CONFIG_GLOBAL` still leaves
+`GIT_CONFIG_COUNT`, which does the same job, and every runtime adds
+another loader variable. A handler that genuinely needs a secret names
+it:
+
+```yaml
+    env_passthrough: [GITHUB_TOKEN]
+```
+
+The grant is then explicit and visible in the config.
+
+`PATH` is filtered to absolute entries outside the repo, because the
+child resolves its own helpers by name (git calls `ssh`, a script uses
+`#!/usr/bin/env`) and a repo entry on `PATH` would shadow them.
 
 gaff exports `GAFF_EVENT`, `GAFF_SESSION_ID`, `GAFF_HANDLER_NAME`, and
 `GAFF_TIMEOUT_MS`. It never passes the hook payload, which holds the
 user's prompt text.
 
 Handler output is untrusted: commit messages and branch names reach it
-from a cloned repo. A line that starts with `[gaff:` is defused, so
-output cannot pose as a section or a reminder in the session framing or
-in `gaff log`.
+from a cloned repo. gaff drops the characters that render as nothing
+(control codes, zero-width and format characters) and defuses the token
+`[gaff:` anywhere on a line, so output cannot pose as a section or a
+reminder, in the session framing or in `gaff log`.
+
+Output larger than 64 KiB is cut at that point rather than discarded.
+Output that does not fit the flush's byte cap is truncated with a
+marker, because a handler's cadence is already spent and dropping it
+would lose the output for good.
 
 `GAFF_HANDLERS=off` disables every handler. It is the switch to reach
 for when a handler wedges a session.
@@ -201,12 +225,22 @@ for when a handler wedges a session.
 
 Handlers run in sequence inside one shared deadline per flush: 2000 ms
 at `SessionStart`, 500 ms at every other flush point. A handler that
-misses the budget is skipped. A handler that overruns its own deadline
-is killed, along with its process group, because a grandchild that
-inherits the output pipe would otherwise hold the hook open and hang
-the session.
+misses the budget is skipped. A handler that overruns its deadline is
+killed, along with its process group.
 
-`gaff check --handlers` validates the user config. Plain `gaff check`
+Two separate things are bounded, and both must be: the read, and the
+child. A grandchild that inherits the output pipe would hold the read
+open, and a child that closes its output and keeps running would hold
+the wait open. Either one would hang the session, so gaff bounds both
+and kills the process group.
+
+A cadence counts tool calls and prompts, and a fresh session has
+neither, so a `SessionStart` subscription runs at session start
+regardless of `every`. Every other flush point waits for a crossing.
+
+`gaff check --handlers` validates the user config and exits 1 on a
+problem, including a config it cannot parse. `gaff doctor` lists the
+declared handlers and whether this repo is trusted. Plain `gaff check`
 stays repo-only, so it behaves the same in CI as it does locally.
 
 ## Host adapters

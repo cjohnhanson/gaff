@@ -259,6 +259,15 @@ pub fn load(cwd: &Path) -> Loaded {
     };
     match serde_yml::from_str::<Config>(&bytes) {
         Ok(cfg) => Loaded::Ok(cfg),
+        // Name this one, because the generic serde message does not say
+        // where handlers belong, and the reader has to know that a repo
+        // may never declare a command.
+        Err(e) if e.to_string().contains("unknown field `handlers`") => Loaded::Broken(
+            "a repo may not declare handlers. They are user-scoped, in \
+             $HOME/.config/gaff/handlers.yml, because a repo-declared command \
+             would run on clone."
+                .to_string(),
+        ),
         Err(e) => Loaded::Broken(e.to_string()),
     }
 }

@@ -83,9 +83,11 @@ a repo the operator trusted with `gaff trust`.
     gaff check --handlers    # validate the handler config
     gaff trust               # a human at a terminal only
 
-You cannot grant this to yourself: `gaff trust` refuses when stdin is
-not a terminal. That is deliberate, because a handler's command runs
-with the repo as its working directory.
+`gaff trust` refuses a caller whose stdin is not a terminal, so you
+cannot grant this through gaff. Do not route around it by writing the
+trusted file yourself; the operator decides which repos may run
+commands, and a handler's command runs with the repo as its working
+directory.
 
 ## Rules
 
