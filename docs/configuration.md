@@ -161,7 +161,7 @@ command.
 ```yaml
 handlers:
   - name: ci
-    events: [SessionStart, PostToolBatch]
+    events: [session_start, tool_batch]
     every: {tool_calls: 20}   # a SessionStart run ignores the cadence
     command: ["/opt/homebrew/bin/gh", "run", "list", "--limit", "1"]
     timeout_ms: 300
@@ -271,10 +271,29 @@ problem, including a config it cannot parse. `gaff doctor` lists the
 declared handlers and whether this repo is trusted. Plain `gaff check`
 stays repo-only, so it behaves the same in CI as it does locally.
 
-## Host adapters
+## Host adapters and the event vocabulary
 
-Claude Code is the only implemented adapter. An adapter owns three
-host-specific facts: the payload mapping, the event names, and the
+gaff names events for what they mean, not for what a host calls them.
+An adapter maps its host's names onto this set:
+
+| Normalized | Meaning | Flush point |
+|------------|---------|-------------|
+| `session_start` | A session begins or resumes | yes |
+| `prompt` | The user submits a prompt | yes |
+| `tool_call` | One tool call finished; gaff counts these | no |
+| `tool_batch` | A batch of tool calls finished | yes |
+| `stop` | The agent finished a turn | no |
+
+A host event outside this set stays first-class. gaff forwards it and
+permits nothing, rather than dropping it.
+
+Write these names in a config, and read them in `gaff log`. A host's own
+name, such as Claude Code's `PostToolBatch`, never appears above the
+adapter.
+
+Claude Code is the only implemented adapter. An adapter owns four
+host-specific facts: the payload mapping, the map from its event names
+onto the set above, its own event names for registration, and the
 settings path that `gaff init` writes. `gaff hook` selects the adapter
 from `GAFF_HOST`, or from the payload shape when that variable is
 absent. `gaff init --host <name>` targets a named host.

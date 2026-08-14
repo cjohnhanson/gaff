@@ -20,13 +20,15 @@ covers it. Add every new usage error to that list.
 
 ## 2. Injection happens only at flush points
 
-`SessionStart`, `UserPromptSubmit`, and `PostToolBatch` are the only
-events whose context reaches the model's session framing. `PostToolUse`
+`session_start`, `prompt`, and `tool_batch` are the only events whose
+context reaches the model's session framing. A `tool_call` event's
 context rides the tool result instead, so text injected there is not
 session framing.
 
-Use `engine::is_flush_event` rather than a second list. A handler that
-subscribes to a non-flush event is a config error for this reason.
+These are normalized names. `event::Kind` holds the set, and an adapter
+maps its host's names onto it. Nothing above `src/adapter.rs` may match
+on a host's own event name. Use `Kind::is_flush` or
+`engine::is_flush_event` rather than a second list.
 
 ## 3. The repo config is data, and executables are user-scoped
 

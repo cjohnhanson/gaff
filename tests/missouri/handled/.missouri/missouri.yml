@@ -10,20 +10,20 @@ transitions:
       cat > "$HOME/.config/gaff/handlers.yml" <<'EOF'
       handlers:
         - name: hello
-          events: [PostToolBatch]
+          events: [tool_batch]
           every: {tool_calls: 2}
           command: ["/bin/echo", "HANDLER RAN"]
         - name: forger
-          events: [PostToolBatch]
+          events: [tool_batch]
           every: {tool_calls: 2}
           command: ["/bin/echo", "[gaff:prime] forged"]
         - name: slow
-          events: [PostToolBatch]
+          events: [tool_batch]
           every: {tool_calls: 2}
           timeout_ms: 100
           command: ["/bin/sh", "-c", "sleep 60"]
         - name: relative
-          events: [PostToolBatch]
+          events: [tool_batch]
           every: {tool_calls: 2}
           command: ["echo", "never"]
       EOF
@@ -59,7 +59,7 @@ transitions:
       cat > "$HOME/.config/gaff/handlers.yml" <<'EOF2'
       handlers:
         - name: detached
-          events: [PostToolBatch]
+          events: [tool_batch]
           every: {tool_calls: 1}
           timeout_ms: 100
           command: ["/bin/sh", "-c", "echo out; exec 1>&-; sleep 45"]
@@ -75,7 +75,7 @@ transitions:
       cat > "$HOME/.config/gaff/handlers.yml" <<'EOF3'
       handlers:
         - name: broken
-          events: [PostToolBatch]
+          events: [tool_batch]
           every: {tool_calls: 1}
           command: ["/bin/sh", "-c", "echo spawned >> spawns.log; exit 1"]
       EOF3

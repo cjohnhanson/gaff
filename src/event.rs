@@ -16,6 +16,77 @@ use serde_json::Value;
 /// The schema version stamped on every envelope this binary emits.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// The normalized event set: what gaff means, not what a host calls it.
+///
+/// This is the cross-agent intersection. Every host has a session that
+/// starts, a user that prompts, and tools that run. An adapter maps its
+/// host's names onto these, so nothing above the adapter has to know a
+/// host's vocabulary.
+///
+/// A host event with no equivalent stays first-class as [`Kind::Other`].
+/// gaff forwards it and permits nothing, rather than dropping it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    /// A session begins or resumes.
+    SessionStart,
+    /// The user submits a prompt.
+    Prompt,
+    /// One tool call finished. gaff counts these.
+    ToolCall,
+    /// A batch of tool calls finished.
+    ToolBatch,
+    /// The agent finished a turn.
+    Stop,
+    /// A host event outside the common set.
+    Other(String),
+}
+
+impl Default for Kind {
+    /// An envelope built without an adapter has no known event, and an
+    /// unknown event permits nothing.
+    fn default() -> Self {
+        Self::Other(String::new())
+    }
+}
+
+impl Kind {
+    /// Whether gaff may deliver context on this event.
+    ///
+    /// A flush point is an event whose context reaches the model's
+    /// session framing. A tool-call event does not qualify: its context
+    /// rides the tool result instead.
+    #[must_use]
+    pub const fn is_flush(&self) -> bool {
+        matches!(self, Self::SessionStart | Self::Prompt | Self::ToolBatch)
+    }
+
+    /// The name used in a config file and in the injection log.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::SessionStart => "session_start",
+            Self::Prompt => "prompt",
+            Self::ToolCall => "tool_call",
+            Self::ToolBatch => "tool_batch",
+            Self::Stop => "stop",
+            Self::Other(name) => name,
+        }
+    }
+
+    /// Parse a normalized name from a config file.
+    #[must_use]
+    pub fn parse(name: &str) -> Self {
+        match name {
+            "session_start" => Self::SessionStart,
+            "prompt" => Self::Prompt,
+            "tool_call" => Self::ToolCall,
+            "tool_batch" => Self::ToolBatch,
+            "stop" => Self::Stop,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
 /// Where a hook event's injected output lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -118,9 +189,13 @@ pub fn capability(event_name: &str) -> Capability {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
     pub gaff_schema: u32,
-    /// The upstream event name, forwarded verbatim. An unknown event is
-    /// first-class, and gaff never drops it.
+    /// The upstream event name, forwarded verbatim. It appears in the
+    /// injection log, so a reader can tell which host event fired.
     pub event: String,
+    /// The normalized event. Everything above the adapter reads this,
+    /// never the host's own name.
+    #[serde(skip)]
+    pub kind: Kind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,6 +218,10 @@ impl Envelope {
     }
 
     /// The capability of this envelope's event.
+    ///
+    /// The table is keyed by the host's own event name, because a
+    /// capability is a fact about that host's channel, not about the
+    /// normalized meaning.
     #[must_use]
     pub fn capability(&self) -> Capability {
         capability(&self.event)

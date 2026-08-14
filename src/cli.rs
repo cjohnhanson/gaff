@@ -148,7 +148,9 @@ fn run_hook() -> ExitCode {
         engine::handle_with(&envelope, &cfg, &store, &gaff_dir, &handlers, Some(&cwd))
     {
         if let Some(sid) = session.as_deref() {
-            store.record_injection(sid, &envelope.event, &context);
+            // Log the normalized name, so the log speaks the same
+            // vocabulary a config is written in.
+            store.record_injection(sid, envelope.kind.as_str(), &context);
         }
         println!(
             "{}",

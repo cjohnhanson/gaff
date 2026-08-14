@@ -19,7 +19,7 @@
 
 use serde_json::Value;
 
-use crate::event::{Envelope, SCHEMA_VERSION};
+use crate::event::{Envelope, Kind, SCHEMA_VERSION};
 
 /// One agent host.
 pub struct Adapter {
@@ -64,9 +64,11 @@ fn from_claude_code(json: Value) -> Envelope {
             .and_then(Value::as_str)
             .map(std::string::ToString::to_string)
     };
+    let event = get("hook_event_name").unwrap_or_else(|| "Unknown".to_string());
     Envelope {
         gaff_schema: SCHEMA_VERSION,
-        event: get("hook_event_name").unwrap_or_else(|| "Unknown".to_string()),
+        kind: claude_code_kind(&event),
+        event,
         // Drop an unsafe id at the boundary. The id names a state
         // directory, and it arrives from the host payload.
         session_id: get("session_id").filter(|id| {
@@ -79,6 +81,21 @@ fn from_claude_code(json: Value) -> Envelope {
         cwd: get("cwd"),
         tool_name: get("tool_name"),
         raw: json,
+    }
+}
+
+/// Map a Claude Code event name onto the normalized set.
+///
+/// This mapping is the adapter's job. Nothing above the adapter knows
+/// that this host calls a prompt `UserPromptSubmit`.
+fn claude_code_kind(event: &str) -> Kind {
+    match event {
+        "SessionStart" => Kind::SessionStart,
+        "UserPromptSubmit" => Kind::Prompt,
+        "PostToolUse" | "PostToolUseFailure" => Kind::ToolCall,
+        "PostToolBatch" => Kind::ToolBatch,
+        "Stop" => Kind::Stop,
+        other => Kind::Other(other.to_string()),
     }
 }
 
@@ -148,6 +165,55 @@ mod tests {
             assert!(!adapter.settings_path.is_empty(), "{}", adapter.name);
             assert!(!adapter.hook_events.is_empty(), "{}", adapter.name);
             assert!(by_name(adapter.name).is_some(), "{}", adapter.name);
+        }
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::*;
+    use crate::event::Kind;
+    use serde_json::json;
+
+    #[test]
+    fn the_adapter_maps_host_names_onto_the_normalized_set() {
+        // Nothing above the adapter should ever see these host strings.
+        for (host, want) in [
+            ("SessionStart", Kind::SessionStart),
+            ("UserPromptSubmit", Kind::Prompt),
+            ("PostToolUse", Kind::ToolCall),
+            ("PostToolUseFailure", Kind::ToolCall),
+            ("PostToolBatch", Kind::ToolBatch),
+            ("Stop", Kind::Stop),
+        ] {
+            let env = (CLAUDE_CODE.parse)(json!({"hook_event_name": host, "session_id": "s"}));
+            assert_eq!(env.kind, want, "{host}");
+            assert_eq!(env.event, host, "the host name stays for the log");
+        }
+    }
+
+    #[test]
+    fn an_unmapped_host_event_stays_first_class_and_permits_nothing() {
+        let env = (CLAUDE_CODE.parse)(json!({"hook_event_name": "SomeFutureEvent"}));
+        assert_eq!(env.kind, Kind::Other("SomeFutureEvent".to_string()));
+        assert!(!env.kind.is_flush(), "an unknown event is never a flush point");
+        assert!(!env.capability().verified);
+    }
+
+    #[test]
+    fn the_flush_points_are_the_cross_agent_set() {
+        assert!(Kind::SessionStart.is_flush());
+        assert!(Kind::Prompt.is_flush());
+        assert!(Kind::ToolBatch.is_flush());
+        // A tool call's context rides the tool result, never the framing.
+        assert!(!Kind::ToolCall.is_flush());
+        assert!(!Kind::Stop.is_flush());
+    }
+
+    #[test]
+    fn a_normalized_name_round_trips_through_a_config() {
+        for k in [Kind::SessionStart, Kind::Prompt, Kind::ToolCall, Kind::ToolBatch, Kind::Stop] {
+            assert_eq!(Kind::parse(k.as_str()), k);
         }
     }
 }

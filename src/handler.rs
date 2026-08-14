@@ -132,8 +132,14 @@ impl Handler {
         }
         for event in &self.events {
             if !crate::engine::is_flush_event(event) {
+                let hint = match event.as_str() {
+                    "SessionStart" => " Use `session_start`.",
+                    "UserPromptSubmit" => " Use `prompt`.",
+                    "PostToolBatch" => " Use `tool_batch`.",
+                    _ => "",
+                };
                 out.push(format!(
-                    "handler `{}`: `{event}` is not a flush point. Its output would land in the tool result rather than the session framing.",
+                    "handler `{}`: `{event}` is not a flush point.{hint} The flush points are session_start, prompt, and tool_batch. Any other event delivers its output to the tool result rather than the session framing.",
                     self.name
                 ));
             }
@@ -617,7 +623,7 @@ mod tests {
         // A repo can prepend to PATH, so a bare name is repo-resolvable.
         let h = Handler {
             name: "ci".into(),
-            events: vec!["PostToolBatch".into()],
+            events: vec!["tool_batch".into()],
             command: vec!["gh".into()],
             every: Every { tool_calls: Some(5), prompts: None },
             timeout_ms: None,
@@ -636,7 +642,7 @@ mod tests {
     fn a_non_flush_event_and_a_missing_cadence_are_errors() {
         let h = Handler {
             name: "x".into(),
-            events: vec!["PostToolUse".into()],
+            events: vec!["tool_call".into()],
             command: vec!["/bin/echo".into()],
             every: Every::default(),
             timeout_ms: None,
@@ -653,7 +659,7 @@ mod tests {
     fn a_valid_handler_has_no_problems() {
         let h = Handler {
             name: "ci".into(),
-            events: vec!["SessionStart".into()],
+            events: vec!["session_start".into()],
             command: vec!["/bin/echo".into(), "hi".into()],
             every: Every { tool_calls: None, prompts: Some(1) },
             timeout_ms: None,

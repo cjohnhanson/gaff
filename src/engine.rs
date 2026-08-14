@@ -10,14 +10,13 @@
 //! context lands in the tool result (the qei8 bug class).
 
 use crate::config::Config;
-use crate::event::Envelope;
+use crate::event::{Envelope, Kind};
 use crate::state::Store;
 use std::path::Path;
 
-/// The events that deliver the pending context. `Stop` has a safe sink,
-/// but gaff excludes it. A decorated stop decision does not re-prime the
-/// context.
-const FLUSH_EVENTS: [&str; 3] = ["SessionStart", "UserPromptSubmit", "PostToolBatch"];
+// The events that deliver the pending context are the flush kinds.
+// `stop` has a safe sink, but gaff excludes it, because a decorated
+// stop decision does not re-prime the context.
 
 /// The fixed attribution prefix for an agent-scheduled one-shot.
 const ONESHOT_PREFIX: &str = "[gaff:remind]";
@@ -56,15 +55,15 @@ pub fn handle_with(
 ) -> Option<String> {
     let session = envelope.session_id.as_deref()?;
 
-    match envelope.event.as_str() {
-        "PostToolUse" | "PostToolUseFailure" => {
+    match &envelope.kind {
+        Kind::ToolCall => {
             let id = envelope.raw.get("tool_use_id")?.as_str()?;
             if let Ok(Some(count)) = store.record_tool_call(session, id) {
                 arm_crossings(config, handlers, store, session, count, |e| e.tool_calls);
             }
             None
         }
-        "UserPromptSubmit" => {
+        Kind::Prompt => {
             if let Ok(count) = store.record_prompt(session) {
                 arm_crossings(config, handlers, store, session, count, |e| e.prompts);
             }
@@ -76,10 +75,10 @@ pub fn handle_with(
                 mode: section_mode(store, session),
                 handlers,
                 cwd,
-                event: &envelope.event,
+                event: envelope.kind.as_str(),
             })
         }
-        "SessionStart" => {
+        Kind::SessionStart => {
             if compaction_source(envelope) {
                 store.clear_fired(session);
             }
@@ -91,10 +90,10 @@ pub fn handle_with(
                 mode: SectionMode::All,
                 handlers,
                 cwd,
-                event: &envelope.event,
+                event: envelope.kind.as_str(),
             })
         }
-        "PostToolBatch" => flush(&FlushCtx {
+        Kind::ToolBatch => flush(&FlushCtx {
                 config,
                 store,
                 session,
@@ -102,7 +101,7 @@ pub fn handle_with(
                 mode: section_mode(store, session),
                 handlers,
                 cwd,
-                event: &envelope.event,
+                event: envelope.kind.as_str(),
             }),
         _ => None,
     }
@@ -167,9 +166,11 @@ fn section_mode(store: &Store, session: &str) -> SectionMode {
     }
 }
 
+/// Whether a normalized event name is a flush point. A config names an
+/// event this way, so the check and the config share one vocabulary.
 #[must_use]
 pub fn is_flush_event(event: &str) -> bool {
-    FLUSH_EVENTS.contains(&event)
+    Kind::parse(event).is_flush()
 }
 
 /// Read the origin field of a `SessionStart` event. The live reference

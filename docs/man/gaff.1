@@ -134,6 +134,28 @@ Only this file may declare a command.
 .It Pa ~/.config/gaff/trusted
 The repos that may run handlers.
 .El
+.Sh EVENTS
+gaff names an event for what it means, not for what a host calls it.
+An adapter maps its host's names onto this set:
+.Bl -tag -width session_start -compact
+.It Ic session_start
+A session begins or resumes.
+A flush point.
+.It Ic prompt
+The user submits a prompt.
+A flush point.
+.It Ic tool_call
+One tool call finished.
+gaff counts these.
+.It Ic tool_batch
+A batch of tool calls finished.
+A flush point.
+.It Ic stop
+The agent finished a turn.
+.El
+.Pp
+A host event outside this set stays first-class.
+gaff forwards it and permits nothing.
 .Sh HANDLERS
 A handler is an external command whose stdout becomes injected context.
 Handlers are declared only in
