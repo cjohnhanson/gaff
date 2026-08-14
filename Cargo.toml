@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "A context-lifecycle handler for coding agents: counters, cadenced re-injection, prime sections, and profiles"
 license = "MIT"
+repository = "https://github.com/cjohnhanson/gaff"
 
 [lints.rust]
 unsafe_code = "forbid"
