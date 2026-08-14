@@ -1,0 +1,22 @@
+reminders: []
+git:
+  - name: test
+    on:
+      - pre-push
+    command:
+      - cargo
+      - test
+github:
+  - name: ci
+    on:
+      - push
+      - github:pull_request
+    branches:
+      - main
+    steps:
+      - use_git: test
+      - name: audit
+        command:
+          - sh
+          - -c
+          - "cargo audit || true"

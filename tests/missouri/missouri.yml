@@ -7,3 +7,4 @@ setup:
     command: "mkdir -p .missouri/bin && ln -sf $(cd ../.. && pwd)/target/debug/gaff .missouri/bin/gaff"
 packages:
   - jq
+  - git

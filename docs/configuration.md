@@ -326,6 +326,48 @@ declared in the repo config. A repo's own lint and test commands are
 the point of a git hook. The human who ran `gaff init --git` in that
 repo is the consent.
 
+## GitHub workflows
+
+gaff cannot run a GitHub event, because it is not there when one fires.
+So this domain is generated and checked, never executed.
+
+```yaml
+github:
+  - name: ci
+    on: [push, github:pull_request]
+    branches: [main]
+    steps:
+      - use_git: fmt          # reuse the git entry's command
+      - name: audit
+        command: ["cargo", "audit"]
+```
+
+`gaff init --github` renders each workflow to
+`.github/workflows/<name>.yml`. `gaff check --github` compares the
+render against the committed file, and exits 1 when one drifted, so CI
+can run it.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `name` | required | The workflow name, and the filename |
+| `on` | required | The triggering events |
+| `branches` | none | Restrict a `push` or `pull_request` trigger |
+| `runs_on` | `ubuntu-latest` | The runner |
+| `steps` | required | Each step carries `command` or `use_git` |
+
+gaff renders `push`, `pull_request`, `merge_group`,
+`workflow_dispatch`, `schedule`, and `release`.
+
+### One check, written once
+
+`use_git` names a `git:` entry and renders that entry's command into
+the workflow. A check then runs in the git hook and in CI from a single
+declaration. Change the command in one place, run `gaff init --github`,
+and the workflow follows.
+
+The render is deterministic, so regenerating an unchanged config
+produces identical bytes and no diff.
+
 ## Host adapters and the event vocabulary
 
 gaff names events for what they mean, not for what a host calls them.
@@ -347,9 +389,9 @@ name, such as Claude Code's `PostToolBatch`, never appears above the
 adapter.
 
 Claude Code is the only implemented adapter. An adapter owns four
-host-specific facts. These are the payload mapping, the map from its
-event names onto the set above, its own event names for registration,
-and the settings path that `gaff init` writes. `gaff hook` selects the adapter
+host-specific facts. It owns the payload mapping, and the map from its
+event names onto the set above. It also owns its own event names for
+registration, and the settings path that `gaff init` writes. `gaff hook` selects the adapter
 from `GAFF_HOST`, or from the payload shape when that variable is
 absent. `gaff init --host <name>` targets a named host.
 

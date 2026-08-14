@@ -33,6 +33,8 @@ ends with its opening instructions effectively invisible.
 - **Git hooks** — gaff writes the scripts in `.git/hooks/`, and they
   call back into gaff. One config declares the agent side and the git
   side. A hook gaff did not write is kept and called first.
+- **GitHub workflows** — generated from the same config, and checked
+  for drift. A check declared once runs in the git hook and in CI.
 - **Profiles** — named overlays that select which entries are active and
   override their cadences. A transition policy states which profiles an
   agent may select for itself. Profiles are advisory: gaff blocks
@@ -71,6 +73,8 @@ gaff status --session <id>         # counters, pending entries, one-shots
 gaff check                         # validate .gaff/gaff.yml
 gaff doctor                        # what is live in this clone
 gaff init --git                    # write the git hook scripts
+gaff init --github                 # generate the workflows
+gaff check --github                # report a workflow that drifted
 gaff trust                         # allow handlers to run in this repo
 gaff check --handlers              # validate ~/.config/gaff/handlers.yml
 gaff profile list                  # the declared profiles and who may set them

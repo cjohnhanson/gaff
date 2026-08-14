@@ -1,0 +1,49 @@
+doc: |
+  gaff owns the git hooks. It writes the scripts, they call back into
+  gaff, and a failing check blocks the commit. A hook gaff did not write
+  survives and runs first.
+transitions:
+  - name: "install keeps a foreign hook, blocks a bad commit, and uninstall restores"
+    command: |
+      # The repo lives in a subdirectory that this transition removes,
+      # so the compared state stays deterministic.
+      mkdir -p work && cd work
+      git init -q .
+      git config user.email t@example.com
+      git config user.name tester
+      cp -R ../.gaff .gaff
+      printf '#!/bin/sh\necho FOREIGN HOOK\n' > .git/hooks/pre-commit
+      chmod +x .git/hooks/pre-commit
+
+      gaff init --git > install.log 2>&1
+      grep -q 'kept the existing pre-commit' install.log || { echo "FAIL: a foreign hook was not kept"; cat install.log; exit 1; }
+      grep -q FOREIGN .git/hooks/pre-commit.local || { echo "FAIL: the foreign hook was not preserved"; exit 1; }
+
+      # A clean commit passes, and the foreign hook still runs.
+      echo fine > ok.txt
+      git add ok.txt
+      git commit -q -m ok > commit.log 2>&1 || { echo "FAIL: a clean commit must pass"; cat commit.log; exit 1; }
+      grep -q 'FOREIGN HOOK' commit.log || { echo "FAIL: the foreign hook did not run"; exit 1; }
+
+      # A failing check blocks the commit. This is the opposite of the
+      # agent path, which must never block.
+      echo FIXME > bad.txt
+      git add bad.txt
+      if git commit -q -m bad > blocked.log 2>&1; then
+        echo "FAIL: the commit was not blocked"; exit 1
+      fi
+      grep -q 'found a FIXME' blocked.log || { echo "FAIL: the check output is missing"; cat blocked.log; exit 1; }
+      test "$(git log --oneline | wc -l | tr -d ' ')" = "1" || { echo "FAIL: the bad commit landed"; exit 1; }
+
+      # Uninstall restores the foreign hook.
+      gaff init --git --uninstall > /dev/null 2>&1
+      grep -q FOREIGN .git/hooks/pre-commit || { echo "FAIL: uninstall did not restore"; exit 1; }
+      test ! -e .git/hooks/pre-commit.local || { echo "FAIL: the kept copy was left behind"; exit 1; }
+
+      # gaff never sets core.hooksPath, which would disable other tools.
+      test -z "$(git config core.hooksPath)" || { echo "FAIL: gaff set core.hooksPath"; exit 1; }
+
+      cd .. && rm -rf work
+      echo GITHOOK_OK
+    target: ../git-hooked-ran
+    stdout: "GITHOOK_OK\n"

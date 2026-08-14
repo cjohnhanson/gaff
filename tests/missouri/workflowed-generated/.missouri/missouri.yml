@@ -1,0 +1,8 @@
+doc: |
+  The generated workflow is committed, so the byte diff records the
+  exact output gaff produces.
+assertions:
+  - name: "the workflow checks clean"
+    command: "gaff check --github"
+  - name: "the reused git command is rendered"
+    command: "grep -q 'run: cargo test' .github/workflows/ci.yml"

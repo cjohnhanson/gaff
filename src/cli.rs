@@ -63,8 +63,11 @@ Commands:
   status           Show counters, pending entries, and one-shots
   init [--host H]  Register the agent hooks in the host's settings file
   init --git       Write the git hook scripts declared in the config
+  init --github    Generate the workflows declared in the config
   githook <name>   Run one git hook (the installed scripts call this)
-  check            Validate .gaff/gaff.yml (--handlers checks the user config)
+  check            Validate .gaff/gaff.yml
+                   (--handlers checks the user config;
+                    --github reports a workflow that drifted)
   trust            Allow handlers to run in this repo (terminal only)
   doctor           Show what is live in this clone
   profile          Show, list, or set the active profile
@@ -263,6 +266,7 @@ fn run_init(args: &[String]) -> ExitCode {
     let mut command = "gaff hook".to_string();
     let mut host: Option<String> = None;
     let mut git = false;
+    let mut github = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -272,6 +276,7 @@ fn run_init(args: &[String]) -> ExitCode {
                 None => return fail("--command requires a value"),
             },
             "--git" => git = true,
+            "--github" => github = true,
             "--host" => match it.next() {
                 Some(v) => host = Some(v.clone()),
                 None => return fail("--host requires a value"),
@@ -281,6 +286,9 @@ fn run_init(args: &[String]) -> ExitCode {
     }
     if git {
         return run_init_git(uninstall);
+    }
+    if github {
+        return run_init_github();
     }
     let adapter = match host.as_deref() {
         None => &crate::adapter::CLAUDE_CODE,
@@ -325,6 +333,9 @@ fn run_init(args: &[String]) -> ExitCode {
 fn run_check(args: &[String]) -> ExitCode {
     if args.iter().any(|a| a == "--handlers") {
         return check_handlers();
+    }
+    if args.iter().any(|a| a == "--github") {
+        return check_github();
     }
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
@@ -779,6 +790,83 @@ fn run_init_git(uninstall: bool) -> ExitCode {
         }
         Err(e) => fail(&format!("cannot write the hooks: {e}")),
     }
+}
+
+/// `gaff init --github` — generate the declared workflows.
+fn run_init_github() -> ExitCode {
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    let cfg = match config::load_layered(&cwd) {
+        Loaded::Ok(cfg) => cfg,
+        Loaded::Absent => config::Config::default(),
+        Loaded::Broken(err) => return fail(&err),
+    };
+    if let Some(code) = report_github_problems(&cfg) {
+        return code;
+    }
+    if cfg.github.is_empty() {
+        println!("the config declares no workflows. Nothing to generate.");
+        return ExitCode::SUCCESS;
+    }
+    match crate::ghworkflow::write_all(&cwd, &cfg.github, &cfg.git) {
+        Ok(paths) => {
+            println!("generated: {}", paths.join(", "));
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("cannot write the workflows: {e}")),
+    }
+}
+
+/// Print every workflow problem. Returns a failure code when any
+/// workflow is unusable.
+fn report_github_problems(cfg: &config::Config) -> Option<ExitCode> {
+    let mut bad = false;
+    for wf in &cfg.github {
+        for problem in wf.problems(&cfg.git) {
+            eprintln!("gaff: {problem}");
+            bad = true;
+        }
+    }
+    bad.then_some(ExitCode::FAILURE)
+}
+
+/// `gaff check --github` — report a workflow that drifted from the
+/// config.
+///
+/// A generated file that someone edited by hand is the failure this
+/// catches. It exits 1, so CI can run it.
+fn check_github() -> ExitCode {
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    let cfg = match config::load_layered(&cwd) {
+        Loaded::Ok(cfg) => cfg,
+        Loaded::Absent => config::Config::default(),
+        Loaded::Broken(err) => return fail(&err),
+    };
+    if let Some(code) = report_github_problems(&cfg) {
+        return code;
+    }
+    if cfg.github.is_empty() {
+        println!("no workflows declared");
+        return ExitCode::SUCCESS;
+    }
+    let mut drifted = false;
+    for wf in &cfg.github {
+        match crate::ghworkflow::drift(wf, &cfg.git, &cwd) {
+            crate::ghworkflow::Drift::Match => println!("ok      {}", wf.name),
+            crate::ghworkflow::Drift::Missing => {
+                println!("MISSING {} (run `gaff init --github`)", wf.name);
+                drifted = true;
+            }
+            crate::ghworkflow::Drift::Differs => {
+                println!("DRIFTED {} (run `gaff init --github`)", wf.name);
+                drifted = true;
+            }
+        }
+    }
+    if drifted { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
 /// `gaff githook <name> [args...]` — run one git hook.

@@ -42,6 +42,10 @@ pub struct Config {
     /// call back into gaff, so one config covers both domains.
     #[serde(default)]
     pub git: Vec<crate::githook::GitHook>,
+    /// The workflows to generate. gaff cannot run a GitHub event, so
+    /// this domain is generated and checked, never executed.
+    #[serde(default)]
+    pub github: Vec<crate::ghworkflow::Workflow>,
 }
 
 /// A profile: a named overlay on the reminders and the sections.
@@ -169,6 +173,7 @@ impl Default for Config {
             default_profile: None,
             transitions: Transitions::default(),
             git: Vec::new(),
+            github: Vec::new(),
         }
     }
 }
@@ -316,6 +321,9 @@ impl Config {
         self.profiles.extend(repo.profiles);
         self.git.retain(|u| !repo.git.iter().any(|r| r.name == u.name));
         self.git.extend(repo.git);
+        self.github
+            .retain(|u| !repo.github.iter().any(|r| r.name == u.name));
+        self.github.extend(repo.github);
 
         if repo.max_inject_bytes != DEFAULT_MAX_INJECT_BYTES {
             self.max_inject_bytes = repo.max_inject_bytes;

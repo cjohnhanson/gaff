@@ -1,0 +1,42 @@
+doc: |
+  gaff generates a workflow from the same config that declares the git
+  hooks, so one check is written once. gaff check --github reports a
+  file that drifted, in either direction.
+transitions:
+  - name: "generate, detect a hand edit, detect a stale file, then regenerate"
+    command: |
+      gaff init --github > /dev/null 2>&1 || { echo "FAIL: generation failed"; exit 1; }
+      test -f .github/workflows/ci.yml || { echo "FAIL: no workflow written"; exit 1; }
+
+      # The step that reuses the git entry carries that entry's command.
+      grep -q 'run: cargo test' .github/workflows/ci.yml || { echo "FAIL: the reused command is missing"; exit 1; }
+
+      # A clean tree checks clean, and the check is usable in CI.
+      gaff check --github > /dev/null 2>&1 || { echo "FAIL: a fresh render must check clean"; exit 1; }
+
+      # A hand edit drifts.
+      cp .github/workflows/ci.yml /tmp/gaff-wf-backup.yml
+      printf 'name: edited by hand\n' > .github/workflows/ci.yml
+      if gaff check --github > /dev/null 2>&1; then
+        echo "FAIL: a hand-edited workflow must drift"; exit 1
+      fi
+      cp /tmp/gaff-wf-backup.yml .github/workflows/ci.yml
+      rm -f /tmp/gaff-wf-backup.yml
+
+      # A missing file drifts.
+      mv .github/workflows/ci.yml /tmp/gaff-wf-moved.yml
+      if gaff check --github > /dev/null 2>&1; then
+        echo "FAIL: a missing workflow must drift"; exit 1
+      fi
+      mv /tmp/gaff-wf-moved.yml .github/workflows/ci.yml
+
+      # Regenerating is idempotent, so a no-op run leaves no diff.
+      cp .github/workflows/ci.yml /tmp/gaff-wf-first.yml
+      gaff init --github > /dev/null 2>&1
+      cmp -s /tmp/gaff-wf-first.yml .github/workflows/ci.yml || { echo "FAIL: the render is not deterministic"; exit 1; }
+      rm -f /tmp/gaff-wf-first.yml
+
+      gaff check --github > /dev/null 2>&1 || { echo "FAIL: the tree must check clean at the end"; exit 1; }
+      echo WORKFLOW_OK
+    target: ../workflowed-generated
+    stdout: "WORKFLOW_OK\n"

@@ -49,6 +49,11 @@ another tool installed.
 A hook gaff did not write is kept as
 .Pa <hook>.local
 and called first.
+.It Cm init Fl -github
+Render each declared workflow to
+.Pa .github/workflows .
+gaff cannot run a GitHub event, so this domain is generated and
+checked, never executed.
 .It Cm githook Ar name Op Ar args
 Run one git hook.
 The installed scripts call this.
@@ -63,6 +68,10 @@ With
 validate
 .Pa ~/.config/gaff/handlers.yml
 instead.
+With
+.Fl -github ,
+report a workflow that drifted from the config.
+It exits 1 on a drift, so CI can run it.
 The plain form stays repo-only, so it behaves the same in CI.
 .It Cm doctor
 Show what is live in this clone: config, hooks, and state.
