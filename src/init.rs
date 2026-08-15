@@ -87,17 +87,29 @@ pub fn uninstall_for(
                 // once it is empty. Dropping the whole matcher group
                 // because one hook inside it was gaff's destroyed
                 // another tool's hook that shared the group.
-                for entry in list.iter_mut() {
+                let mut emptied = Vec::new();
+                for (index, entry) in list.iter_mut().enumerate() {
                     let Some(inner) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
                         continue;
                     };
                     let before = inner.len();
                     inner.retain(|h| h["command"] != command);
-                    changed |= inner.len() != before;
+                    if inner.len() != before {
+                        changed = true;
+                        if inner.is_empty() {
+                            emptied.push(index);
+                        }
+                    }
                 }
+                // Drop only what this call emptied. Sweeping every
+                // empty entry took one that arrived empty, which is
+                // the user's however inert it looks.
                 let before = list.len();
-                list.retain(|e| {
-                    e["hooks"].as_array().is_none_or(|inner| !inner.is_empty())
+                let mut index = 0;
+                list.retain(|_| {
+                    let keep = !emptied.contains(&index);
+                    index += 1;
+                    keep
                 });
                 changed |= list.len() != before;
                 !list.is_empty()
@@ -106,7 +118,10 @@ pub fn uninstall_for(
             }
         });
         if hooks.is_empty() {
-            settings.remove("hooks");
+            // `remove` is `swap_remove` under `preserve_order`, so it
+            // moves the last key into this slot and scrambles the
+            // file gaff just went to trouble to keep in order.
+            settings.shift_remove("hooks");
         }
         changed
     })
@@ -208,6 +223,14 @@ fn edit_settings(
         "{}\n",
         serde_json::to_string_pretty(&Value::Object(settings)).expect("maps serialize")
     );
+    // A hard link has no target to resolve, so a rename replaces this
+    // name and leaves the other link pointing at the old content. Write
+    // in place instead, which keeps the link at the cost of the atomic
+    // swap. Every other file gets the swap.
+    if hard_linked(&path) {
+        std::fs::write(&path, rendered)?;
+        return Ok(Outcome::Changed);
+    }
     // A per-process name, so two gaff runs cannot collide on it, and
     // it is removed when the rename fails rather than left behind.
     let tmp = path.with_extension(format!("json.gaff-tmp.{}", std::process::id()));
@@ -217,6 +240,18 @@ fn edit_settings(
         return Err(e);
     }
     Ok(Outcome::Changed)
+}
+
+/// Whether another name refers to this same file.
+#[cfg(unix)]
+fn hard_linked(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path).is_ok_and(|m| m.nlink() > 1)
+}
+
+#[cfg(not(unix))]
+fn hard_linked(_path: &Path) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -402,6 +437,78 @@ mod preservation_tests {
         install(&d, "gaff hook").unwrap();
         uninstall(&d, "gaff hook").unwrap();
         assert_eq!(settings(&d), original);
+        std::fs::remove_dir_all(&d).ok();
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("gaff-link-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(d.join(".claude")).unwrap();
+        d
+    }
+
+    #[test]
+    fn uninstall_keeps_the_key_order_of_the_rest() {
+        // Under `preserve_order`, `remove` is `swap_remove`: it moves
+        // the last key into the removed slot. That undid the ordering
+        // work on the one path that motivated it.
+        let d = scratch("order");
+        let path = d.join(".claude/settings.local.json");
+        std::fs::write(&path, r#"{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6}"#).unwrap();
+        install(&d, "gaff hook").unwrap();
+        uninstall(&d, "gaff hook").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        let order: Vec<usize> = ["a", "b", "c", "d", "e", "f"]
+            .iter()
+            .map(|k| after.find(&format!("\"{k}\"")).expect("key kept"))
+            .collect();
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "the keys moved: {after}"
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn uninstall_keeps_an_entry_that_was_already_empty() {
+        // Sweeping every empty entry took one that arrived that way,
+        // which is the user's however inert it looks.
+        let d = scratch("preempty");
+        let path = d.join(".claude/settings.local.json");
+        std::fs::write(
+            &path,
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[]},{"hooks":[{"type":"command","command":"gaff hook"}]}]}}"#,
+        )
+        .unwrap();
+        uninstall(&d, "gaff hook").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("matcher"), "the user's entry survives: {after}");
+        assert!(!after.contains("gaff hook"), "{after}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_hard_linked_settings_file_keeps_its_other_name() {
+        // A rename replaces this name and leaves the other link on the
+        // old content. A hard link has no target for canonicalize to
+        // resolve, so the write has to happen in place.
+        let d = scratch("hardlink");
+        let other = d.join("other.json");
+        let path = d.join(".claude/settings.local.json");
+        std::fs::write(&other, r#"{"model":"opus"}"#).unwrap();
+        std::fs::hard_link(&other, &path).unwrap();
+        install(&d, "gaff hook").unwrap();
+        let sibling = std::fs::read_to_string(&other).unwrap();
+        assert!(
+            sibling.contains("PreToolUse"),
+            "the other name must see the same file: {sibling}"
+        );
+        assert!(sibling.contains("opus"), "and keep its own keys: {sibling}");
         std::fs::remove_dir_all(&d).ok();
     }
 }
