@@ -4,28 +4,8 @@
       {
         "hooks": [
           {
-            "command": "gaff hook",
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "command": "gaff hook",
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "hooks": [
-          {
-            "command": "gaff hook",
-            "type": "command"
+            "type": "command",
+            "command": "gaff hook"
           }
         ]
       }
@@ -34,8 +14,28 @@
       {
         "hooks": [
           {
-            "command": "gaff hook",
-            "type": "command"
+            "type": "command",
+            "command": "gaff hook"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gaff hook"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gaff hook"
           }
         ]
       }
@@ -44,8 +44,8 @@
       {
         "hooks": [
           {
-            "command": "gaff hook",
-            "type": "command"
+            "type": "command",
+            "command": "gaff hook"
           }
         ]
       }
@@ -54,8 +54,8 @@
       {
         "hooks": [
           {
-            "command": "gaff hook",
-            "type": "command"
+            "type": "command",
+            "command": "gaff hook"
           }
         ]
       }

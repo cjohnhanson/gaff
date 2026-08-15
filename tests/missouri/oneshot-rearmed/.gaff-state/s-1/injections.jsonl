@@ -1,2 +1,2 @@
-{"bytes":22,"entries":["remind"],"event":"prompt"}
-{"bytes":22,"entries":["remind"],"event":"session_start"}
+{"event":"prompt","bytes":22,"entries":["remind"]}
+{"event":"session_start","bytes":22,"entries":["remind"]}
