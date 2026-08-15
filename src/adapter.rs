@@ -263,9 +263,13 @@ mod kind_tests {
         assert!(Kind::SessionStart.is_flush());
         assert!(Kind::Prompt.is_flush());
         assert!(Kind::ToolBatch.is_flush());
+        // Stop is the last moment before the model walks away, and its
+        // sink is verified. It is where every "drive the work to done"
+        // rule actually applies.
+        assert!(Kind::Stop.is_flush());
         // A tool call's context rides the tool result, never the framing.
         assert!(!Kind::ToolCall.is_flush());
-        assert!(!Kind::Stop.is_flush());
+        assert!(!Kind::PreToolCall.is_flush());
     }
 
     #[test]

@@ -95,6 +95,29 @@ pub fn valid_session_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
 }
 
+/// A file-safe form of a caller-supplied id.
+///
+/// An id reaches this from the command line, and it names a file in the
+/// session directory. A `/` or a `..` in one would put that file
+/// somewhere else entirely.
+fn sanitize(id: &str) -> String {
+    let cleaned: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "id".to_string()
+    } else {
+        cleaned
+    }
+}
+
 impl Store {
     #[must_use]
     pub const fn new(root: PathBuf) -> Self {
@@ -251,6 +274,7 @@ impl Store {
         // Reusing an id re-arms it. A stale fired marker from an earlier
         // one-shot with the same id would otherwise make the new one a
         // silent no-op.
+        let id = sanitize(id);
         std::fs::remove_file(self.session_dir(session).join(format!("fired-{id}"))).ok();
         let line = serde_json::to_string(&json!({"after": after, "at": at, "text": text}))
             .unwrap_or_default();
@@ -370,6 +394,81 @@ impl Store {
     #[must_use]
     pub fn take_reprime(&self, session: &str) -> bool {
         std::fs::remove_file(self.session_dir(session).join("reprime")).is_ok()
+    }
+
+    /// Hold this session open until the agent says the work is done.
+    ///
+    /// The agent-facing stop hook. It is text and nothing else: gaff
+    /// refuses the stop and delivers the text, and the model reading it
+    /// decides whether the work is finished. No command runs, which is
+    /// why an agent may set one at all — `gaff trust` exists precisely
+    /// so an agent cannot schedule command execution for itself.
+    ///
+    /// # Errors
+    /// Returns the IO error when the session directory cannot be
+    /// written.
+    pub fn write_hold(&self, session: &str, id: &str, text: &str) -> std::io::Result<()> {
+        let dir = self.session_dir(session).join("holds");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(sanitize(id)), text)
+    }
+
+    /// The stop holds this session set for itself, by id.
+    #[must_use]
+    pub fn holds(&self, session: &str) -> Vec<(String, String)> {
+        let Ok(entries) = std::fs::read_dir(self.session_dir(session).join("holds")) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(String, String)> = entries
+            .filter_map(Result::ok)
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let text = std::fs::read_to_string(e.path()).ok()?;
+                Some((name, text))
+            })
+            .collect();
+        // A stable order, so the same session reports the same first
+        // hold every time rather than whatever the directory yields.
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Release a stop hold by id. `None` releases every one.
+    pub fn clear_hold(&self, session: &str, id: Option<&str>) {
+        let dir = self.session_dir(session).join("holds");
+        match id {
+            Some(id) => {
+                let _ = std::fs::remove_file(dir.join(sanitize(id)));
+            }
+            None => {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    /// How many times in a row a goal has refused a stop, after    /// How many times in a row a goal has refused a stop, after
+    /// counting this one.
+    ///
+    /// A goal that can never be met would otherwise refuse every stop
+    /// forever, and there is no way out of that from inside the
+    /// session. The count is the escape hatch.
+    #[must_use]
+    pub fn record_stop_refusal(&self, session: &str) -> u32 {
+        let path = self.session_dir(session).join("stop-refusals");
+        let next = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0)
+            + 1;
+        if std::fs::create_dir_all(self.session_dir(session)).is_ok() {
+            let _ = std::fs::write(&path, next.to_string());
+        }
+        next
+    }
+
+    /// Forget the refusal streak. Any stop that gaff allows ends it.
+    pub fn clear_stop_refusals(&self, session: &str) {
+        let _ = std::fs::remove_file(self.session_dir(session).join("stop-refusals"));
     }
 
     /// Append one line to the injection log. The log is the audit trail
@@ -640,5 +739,71 @@ mod session_id_tests {
         assert!(!valid_session_id(".."));
         assert!(!valid_session_id(""));
         assert!(!valid_session_id(&"x".repeat(129)));
+    }
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+
+    fn store(tag: &str) -> Store {
+        let d = std::env::temp_dir().join(format!("gaff-hold-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(&d).unwrap();
+        Store::new(d)
+    }
+
+    #[test]
+    fn a_hold_survives_until_it_is_released() {
+        let s = store("basic");
+        s.write_hold("sess", "intent", "finish the work").unwrap();
+        assert_eq!(
+            s.holds("sess"),
+            vec![("intent".to_string(), "finish the work".to_string())]
+        );
+        s.clear_hold("sess", Some("intent"));
+        assert!(s.holds("sess").is_empty());
+    }
+
+    #[test]
+    fn several_holds_report_in_a_stable_order() {
+        // The same session must name the same first hold every time,
+        // rather than whatever the directory happens to yield.
+        let s = store("many");
+        s.write_hold("sess", "b", "second").unwrap();
+        s.write_hold("sess", "a", "first").unwrap();
+        let names: Vec<String> = s.holds("sess").into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn rewriting_an_id_replaces_rather_than_stacks() {
+        let s = store("rewrite");
+        s.write_hold("sess", "intent", "old").unwrap();
+        s.write_hold("sess", "intent", "new").unwrap();
+        assert_eq!(s.holds("sess").len(), 1);
+        assert_eq!(s.holds("sess")[0].1, "new");
+    }
+
+    #[test]
+    fn an_id_cannot_escape_the_session_directory() {
+        // An id arrives from the command line and names a file. A `/`
+        // or a `..` in one would put that file somewhere else.
+        let s = store("escape");
+        s.write_hold("sess", "../../etc/passwd", "nope").unwrap();
+        let held = s.holds("sess");
+        assert_eq!(held.len(), 1);
+        assert!(!held[0].0.contains('/'), "{:?}", held[0].0);
+        assert!(!held[0].0.contains(".."), "{:?}", held[0].0);
+    }
+
+    #[test]
+    fn the_refusal_streak_counts_and_clears() {
+        // A hold nothing clears would end the session's ability to end.
+        let s = store("streak");
+        assert_eq!(s.record_stop_refusal("sess"), 1);
+        assert_eq!(s.record_stop_refusal("sess"), 2);
+        s.clear_stop_refusals("sess");
+        assert_eq!(s.record_stop_refusal("sess"), 1);
     }
 }

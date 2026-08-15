@@ -7,7 +7,8 @@
 //! framing.
 //!
 //! `PostToolUse` is not a flush point, whatever its payload says. Its
-//! context lands in the tool result (the qei8 bug class).
+//! context lands in the tool result (the qei8 bug class), so a reminder
+//! injected there reads as output from the command that just ran.
 
 use crate::config::Config;
 use crate::event::{Envelope, Kind};
@@ -15,8 +16,8 @@ use crate::state::Store;
 use std::path::Path;
 
 // The events that deliver the pending context are the flush kinds.
-// `stop` has a safe sink, but gaff excludes it, because a decorated
-// stop decision does not re-prime the context.
+// `stop` is one of them. Its sink is verified, and it is where every
+// rule of the form "drive the work to done" actually applies.
 
 /// The fixed attribution prefix for an agent-scheduled one-shot.
 const ONESHOT_PREFIX: &str = "[gaff:remind]";
@@ -93,7 +94,10 @@ pub fn handle_with(
                 event: envelope.kind.as_str(),
             })
         }
-        Kind::ToolBatch => flush(&FlushCtx {
+        // Stop is the last moment before the model walks away, which
+        // makes it the one point where "is this actually done" can
+        // still change the answer. gaff used to do nothing here.
+        Kind::Stop | Kind::ToolBatch => flush(&FlushCtx {
                 config,
                 store,
                 session,
@@ -139,7 +143,12 @@ fn push_handler_entries(
         return;
     }
     let armed = |name: &str| store.pending_multiple(session, name).is_some();
-    for output in crate::handler::run_due(handlers, event, session, cwd, &armed) {
+    // A blocking handler is the caller's business: its output is a
+    // refusal message, not injected context, and running it here would
+    // run it twice.
+    let ordinary: Vec<crate::handler::Handler> =
+        handlers.iter().filter(|h| !h.blocks).cloned().collect();
+    for output in crate::handler::run_due(&ordinary, event, session, cwd, &armed) {
         // Spend the cadence on the attempt. A handler that failed or
         // timed out would otherwise stay armed and re-spawn on every
         // flush for the life of the session.
@@ -628,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_and_unknown_events_never_flush() {
+    fn an_unknown_event_never_flushes() {
         let store = temp_store("noflush");
         let config = cfg(vec![reminder("r", 1, "hello")], 0);
         let _ = handle(
@@ -639,7 +648,7 @@ mod tests {
             &store,
             gd(),
         );
-        for name in ["Stop", "FutureThing", "WorktreeCreate", "PreToolUse"] {
+        for name in ["FutureThing", "WorktreeCreate", "PreToolUse"] {
             let out = handle(
                 &event(json!({"hook_event_name": name, "session_id": "s", "tool_use_id": "t9"})),
                 &config,

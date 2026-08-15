@@ -65,6 +65,7 @@ Usage: gaff <command> [options]
 Commands:
   hook             Handle one hook event from stdin (the harness calls this)
   remind <text>    Schedule a one-shot reminder N tool calls ahead
+                   (--at stop holds the stop until --clear)
   status           Show counters, pending entries, and one-shots
   init [--host H]  Register the agent hooks in the host's settings file
   init --git       Write the git hook scripts declared in the config
@@ -83,9 +84,15 @@ Options:
   -h, --help       Print this help
   -V, --version    Print the version
 
-A hook exits 0 or 1, so a gaff fault never blocks a session. Two
+A hook exits 0 or 1, so a gaff fault never blocks a session. Three
 things exit otherwise, on purpose: a guard refuses a tool call with 2,
-and githook returns the failing command's own code.";
+a goal refuses a stop with 2, and githook returns the failing
+command's own code.";
+
+/// How many stops in a row a goal may refuse before gaff gives up on
+/// it. A condition that can never be met would otherwise end the
+/// session's ability to end.
+const MAX_STOP_REFUSALS: u32 = 12;
 
 fn fail(msg: &str) -> ExitCode {
     eprintln!("gaff: {msg}");
@@ -186,6 +193,17 @@ fn run_hook(args: &[String]) -> ExitCode {
     let cfg = cfg.with_profile(profile.as_deref());
 
     let handlers = crate::handler::load().handlers;
+
+    // Stop is the last moment before the model walks away, so it is the
+    // one flush point that is a decision rather than a moment, and the
+    // one that can still be refused.
+    if envelope.kind == crate::event::Kind::Stop
+        && let Some(sid) = session.as_deref()
+        && let Some(code) = refuse_stop(&handlers, &store, sid, &cwd)
+    {
+        return code;
+    }
+
     if let Some(context) =
         engine::handle_with(&envelope, &cfg, &store, &gaff_dir, &handlers, Some(&cwd))
     {
@@ -207,6 +225,69 @@ fn run_hook(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Whether anything refuses this stop, and the code to exit with.
+///
+/// Two things can: a handler the user configured with `blocks: true`,
+/// whose command decides, and a hold the session set for itself, which
+/// is text the model judges. The first runs a command and lives in the
+/// user config, which is why it may run at all. The second runs nothing,
+/// which is why an agent may set one — `gaff trust` exists so an agent
+/// cannot schedule command execution for itself.
+fn refuse_stop(
+    handlers: &[crate::handler::Handler],
+    store: &Store,
+    session: &str,
+    cwd: &std::path::Path,
+) -> Option<ExitCode> {
+    let blocking: Vec<crate::handler::Handler> =
+        handlers.iter().filter(|h| h.blocks).cloned().collect();
+    if !blocking.is_empty() {
+        let armed = |_: &str| true;
+        let outputs = crate::handler::run_due(
+            &blocking,
+            crate::event::Kind::Stop.as_str(),
+            session,
+            cwd,
+            &armed,
+        );
+        if let Some(failed) = outputs.iter().find(|o| o.failed) {
+            let streak = store.record_stop_refusal(session);
+            if streak <= MAX_STOP_REFUSALS {
+                eprintln!(
+                    "gaff: the handler `{}` failed, so this is not done.",
+                    failed.name
+                );
+                if let Some(text) = &failed.text {
+                    eprintln!("\n{text}");
+                }
+                return Some(ExitCode::from(2));
+            }
+            eprintln!(
+                "gaff: the handler `{}` has refused {streak} stops in a row, so gaff is letting this one through.",
+                failed.name
+            );
+        }
+    }
+
+    if let Some((id, text)) = store.holds(session).first() {
+        let streak = store.record_stop_refusal(session);
+        if streak <= MAX_STOP_REFUSALS {
+            eprintln!(
+                "gaff: held by `{id}`. Clear it with `gaff remind --clear --id {id}` once it is true.\n\n{text}"
+            );
+            return Some(ExitCode::from(2));
+        }
+        // A hold nothing clears would end the session's ability to end,
+        // and nothing inside the session could undo it.
+        eprintln!(
+            "gaff: the hold `{id}` has refused {streak} stops in a row, so gaff is letting this one through."
+        );
+        store.clear_hold(session, None);
+    }
+    store.clear_stop_refusals(session);
+    None
+}
+
 /// `gaff remind <text> --after <N> [--id <id>] [--session <sid>]`
 ///
 /// Schedule a one-shot reminder N tool calls into the session's future.
@@ -215,6 +296,8 @@ fn run_remind(args: &[String]) -> ExitCode {
     let mut after: Option<u64> = None;
     let mut id: Option<String> = None;
     let mut session_flag: Option<String> = None;
+    let mut at_stop = false;
+    let mut clear = false;
 
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -223,6 +306,17 @@ fn run_remind(args: &[String]) -> ExitCode {
                 Some(Ok(n)) => after = Some(n),
                 _ => return fail("--after requires a non-negative integer"),
             },
+            // A one-shot normally fires at a tool-call count. `--at
+            // stop` fires it at the stop instead, and holds the stop
+            // open until it is cleared.
+            "--at" => match it.next().map(String::as_str) {
+                Some("stop") => at_stop = true,
+                Some(other) => {
+                    return fail(&format!("--at takes `stop`, not `{other}`"));
+                }
+                None => return fail("--at requires a value"),
+            },
+            "--clear" => clear = true,
             "--id" => match it.next() {
                 Some(v) => id = Some(v.clone()),
                 None => return fail("--id requires a value"),
@@ -236,17 +330,38 @@ fn run_remind(args: &[String]) -> ExitCode {
         }
     }
 
-    let Some(text) = text else {
-        return fail("usage: gaff remind <text> --after <N> [--id <id>] [--session <sid>]");
-    };
-    let Some(after) = after else {
-        return fail("--after is required");
-    };
     let Some(session) = session_from(session_flag.as_deref()) else {
         return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID.");
     };
     let Some(store) = resolve_store() else {
         return fail("no state directory. Set GAFF_STATE_DIR or HOME.");
+    };
+
+    if clear {
+        store.clear_hold(&session, id.as_deref());
+        println!("released");
+        return ExitCode::SUCCESS;
+    }
+
+    let Some(text) = text else {
+        return fail(
+            "usage: gaff remind <text> (--after <N> | --at stop) [--id <id>] [--session <sid>]",
+        );
+    };
+
+    if at_stop {
+        let id = id.unwrap_or_else(|| "hold".to_string());
+        return match store.write_hold(&session, &id, &text) {
+            Ok(()) => {
+                println!("holding the stop as `{id}`. Release it with `gaff remind --clear --id {id}`.");
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&format!("cannot write the hold: {e}")),
+        };
+    }
+
+    let Some(after) = after else {
+        return fail("--after is required, or use --at stop");
     };
 
     let counts = store.counts(&session);

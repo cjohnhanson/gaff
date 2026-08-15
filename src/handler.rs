@@ -86,6 +86,15 @@ pub struct Handler {
     /// no other inherited variable.
     #[serde(default)]
     pub env_passthrough: Vec<String>,
+    /// Whether a non-zero exit refuses the event.
+    ///
+    /// Only `stop` can be refused, because it is the only flush point
+    /// that is a decision rather than a moment. A blocking handler is
+    /// the user-written stop hook: run a command, and if it fails, the
+    /// work is not done. The command lives in the user config, which is
+    /// why it may run at all.
+    #[serde(default)]
+    pub blocks: bool,
 }
 
 /// The predicates. Every declared predicate must pass.
@@ -144,14 +153,35 @@ impl Handler {
                 ));
             }
         }
-        if self.every.tool_calls.is_none() && self.every.prompts.is_none() {
+        // A blocking handler is a gate, and a gate that only sometimes
+        // gates is not one. It runs at every stop, so it needs no
+        // cadence and must not be asked for one.
+        if !self.blocks && self.every.tool_calls.is_none() && self.every.prompts.is_none() {
             out.push(format!(
                 "handler `{}`: no cadence. Without `every`, the command would run on every flush.",
                 self.name
             ));
         }
+        if self.blocks
+            && (self.every.tool_calls.is_some() || self.every.prompts.is_some())
+        {
+            out.push(format!(
+                "handler `{}`: a blocking handler runs at every stop, so it takes no cadence. Remove `every`.",
+                self.name
+            ));
+        }
         // A cadence of zero divides no count, so the handler never arms
         // and never runs. It reads like a working entry.
+        // Only a stop can be refused. Every other flush point is a
+        // moment that has already happened, so there is nothing to
+        // block, and a handler claiming otherwise reads as a gate that
+        // does not exist.
+        if self.blocks && !self.events.iter().any(|e| e == "stop") {
+            out.push(format!(
+                "handler `{}`: `blocks` applies to the `stop` event, and this handler does not subscribe to it. Only a stop can be refused.",
+                self.name
+            ));
+        }
         if self.every.tool_calls == Some(0) || self.every.prompts == Some(0) {
             out.push(format!(
                 "handler `{}`: a cadence of 0 never fires. Use 1 to run at every flush.",
@@ -356,6 +386,10 @@ pub struct Output {
     /// The text to inject. `None` means the handler was attempted and
     /// delivered nothing, which still spends its cadence.
     pub text: Option<String>,
+    /// Whether the command exited non-zero. A blocking handler reads
+    /// this; an ordinary one ignores it. It is distinct from `text:
+    /// None`, which also covers a handler that simply printed nothing.
+    pub failed: bool,
 }
 
 /// Run the handlers that subscribe to `event` and whose predicates
@@ -386,7 +420,7 @@ pub fn run_due(
                 .iter()
                 .any(|e| crate::event::Kind::parse(e) == crate::event::Kind::parse(event))
         })
-        .filter(|h| at_session_start || armed(&h.name))
+        .filter(|h| at_session_start || h.blocks || armed(&h.name))
         .filter(|h| h.problems().is_empty())
         .filter(|h| predicates_pass(h.when.as_ref(), cwd))
         .collect();
@@ -411,10 +445,11 @@ pub fn run_due(
         // Record the attempt whether or not it produced output. A
         // handler that fails must still spend its cadence, or it
         // re-spawns on every flush for the life of the session.
-        let text = run_one(h, event, session, cwd, h.timeout().min(left), deadline);
+        let (text, failed) = run_one(h, event, session, cwd, h.timeout().min(left), deadline);
         out.push(Output {
             name: h.name.clone(),
             text,
+            failed,
         });
     }
     out
@@ -428,7 +463,7 @@ fn run_one(
     cwd: &Path,
     timeout: Duration,
     deadline: Instant,
-) -> Option<String> {
+) -> (Option<String>, bool) {
     let mut cmd = Command::new(&h.command[0]);
     cmd.args(&h.command[1..])
         .current_dir(cwd)
@@ -469,11 +504,15 @@ fn run_one(
         Ok(c) => c,
         Err(e) => {
             eprintln!("gaff: handler `{}` did not start: {e}", h.name);
-            return None;
+            // A gate gaff cannot run is not a gate. Blocking a stop on
+            // a command that never started would wedge the session.
+            return (None, false);
         }
     };
     let pid = child.id();
-    let mut stdout = child.stdout.take()?;
+    let Some(mut stdout) = child.stdout.take() else {
+        return (None, false);
+    };
 
     // Read on a detached thread. A scoped thread cannot time out,
     // because the thread that would notice the deadline is the one
@@ -508,7 +547,9 @@ fn run_one(
         kill_group(pid);
         let _ = child.kill();
         let _ = child.wait();
-        return None;
+        // gaff killed it, so the non-zero exit is gaff's doing. A stop
+        // held on that would be held on nothing.
+        return (None, false);
     };
 
     // Never wait without a bound. A child that closes stdout and keeps
@@ -526,14 +567,19 @@ fn run_one(
             String::from_utf8_lossy(&raw).trim().to_string()
         });
         eprintln!("gaff: handler `{}` failed. {err}", h.name);
-        return None;
+        // A blocking handler's output is its message, so it survives a
+        // non-zero exit. That exit is the whole point of the handler.
+        let body = sanitize(&String::from_utf8_lossy(&collected), h.max_bytes());
+        let text = (h.blocks && !body.is_empty())
+            .then(|| format!("[gaff:handler:{}]\n{body}", h.name));
+        return (text, true);
     }
 
     let body = sanitize(&String::from_utf8_lossy(&collected), h.max_bytes());
     if body.is_empty() {
-        return None;
+        return (None, false);
     }
-    Some(format!("[gaff:handler:{}]\n{body}", h.name))
+    (Some(format!("[gaff:handler:{}]\n{body}", h.name)), false)
 }
 
 /// Wait for a child, but never past the deadline.
@@ -652,6 +698,7 @@ mod tests {
             max_bytes: None,
             when: None,
             env_passthrough: Vec::new(),
+            blocks: false,
         };
         let problems = h.problems();
         assert!(
@@ -671,6 +718,7 @@ mod tests {
             max_bytes: None,
             when: None,
             env_passthrough: Vec::new(),
+            blocks: false,
         };
         let problems = h.problems();
         assert!(problems.iter().any(|p| p.contains("not a flush point")), "{problems:?}");
@@ -688,6 +736,7 @@ mod tests {
             max_bytes: None,
             when: None,
             env_passthrough: Vec::new(),
+            blocks: false,
         };
         assert!(h.problems().is_empty(), "{:?}", h.problems());
     }
@@ -769,5 +818,74 @@ mod tests {
         assert!(!predicates_pass(Some(&no), &dir));
         let pfx = When { cwd_prefix: Some("/nowhere".into()), ..When::default() };
         assert!(!predicates_pass(Some(&pfx), &dir));
+    }
+}
+
+#[cfg(test)]
+mod blocking_tests {
+    use super::*;
+
+    fn handler(blocks: bool, events: &[&str], every: Every) -> Handler {
+        Handler {
+            name: "gate".into(),
+            events: events.iter().map(|e| (*e).to_string()).collect(),
+            command: vec!["/usr/bin/true".into()],
+            every,
+            timeout_ms: None,
+            max_bytes: None,
+            when: None,
+            env_passthrough: Vec::new(),
+            blocks,
+        }
+    }
+
+    #[test]
+    fn a_blocking_handler_needs_no_cadence() {
+        // It is a gate, and a gate that only sometimes gates is not
+        // one. Demanding a cadence made `problems` non-empty, which
+        // filtered the handler out and left the gate never running.
+        let h = handler(true, &["stop"], Every::default());
+        assert!(h.problems().is_empty(), "{:?}", h.problems());
+    }
+
+    #[test]
+    fn a_blocking_handler_refuses_a_cadence() {
+        let h = handler(
+            true,
+            &["stop"],
+            Every {
+                tool_calls: Some(5),
+                prompts: None,
+            },
+        );
+        assert!(h.problems().iter().any(|p| p.contains("takes no cadence")));
+    }
+
+    #[test]
+    fn only_a_stop_can_be_blocked() {
+        // Every other flush point is a moment that already happened,
+        // so there is nothing left to refuse.
+        for event in ["session_start", "prompt", "tool_batch"] {
+            let h = handler(true, &[event], Every::default());
+            assert!(
+                h.problems().iter().any(|p| p.contains("only a stop")
+                    || p.contains("Only a stop")),
+                "{event}: {:?}",
+                h.problems()
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_handler_still_needs_a_cadence() {
+        let h = handler(
+            false,
+            &["tool_batch"],
+            Every {
+                tool_calls: None,
+                prompts: None,
+            },
+        );
+        assert!(h.problems().iter().any(|p| p.contains("no cadence")));
     }
 }

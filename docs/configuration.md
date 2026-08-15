@@ -136,10 +136,15 @@ agent. A profile absent from `transitions.agent_may_set` is human-only.
 
 ## Injection points and the byte cap
 
-gaff injects only on SessionStart, UserPromptSubmit, and PostToolBatch.
+gaff injects on SessionStart, UserPromptSubmit, PostToolBatch, and Stop.
 The harness delivers the output of those events as session framing. gaff
 never decorates PostToolUse. That context attaches to the tool result,
 and the model reads it as tool output.
+
+Stop is the last moment before the model walks away, which makes it the
+one point where "is this actually done" can still change the answer.
+Every rule of the form *drive the work to done* or *check the gate
+before saying shipped* applies exactly there.
 
 A threshold that crosses on an unsafe event arms the entry. The delivery
 waits for the next safe event. Per flush, gaff merges the sections first,
@@ -147,6 +152,62 @@ then reminders in config order, then one-shots by id. A blank
 line separates each entry, and the total stays under `max_inject_bytes`.
 An entry that does not fit stays armed for the next flush, and gaff
 appends `[gaff:truncated]`.
+
+
+## Refusing a stop
+
+A guard refuses a tool call. A **stop hook** refuses the stop itself.
+Neither is a fault, so the exit-code rule holds: gaff's own failures
+still exit 0 or 1, and 2 belongs to the places that mean it.
+
+There are two kinds, and the difference is who may run a command.
+
+### A blocking handler: the condition is a command
+
+Set `blocks: true` on a handler that subscribes to `stop`. A non-zero
+exit refuses the stop, and the command's output is the message.
+
+```yaml
+handlers:
+  - name: tests-pass
+    events: [stop]
+    blocks: true
+    command: ["/opt/homebrew/bin/just", "test"]
+```
+
+A blocking handler takes no `every`: it is a gate, and a gate that only
+sometimes gates is not one. It runs at every stop. Only `stop` accepts
+`blocks`, because every other flush point is a moment that has already
+happened, so there is nothing left to refuse.
+
+This lives in the user config, which is why the command may run at all.
+A repo cannot declare a handler.
+
+### A hold: the condition is text the model judges
+
+An agent sets this for itself, mid-session:
+
+```
+gaff remind "The goal is X, and it is not reached yet." --at stop --id goal
+gaff remind --clear --id goal
+```
+
+gaff refuses the stop and delivers the text. The model reads it and
+decides whether the work is done, then releases the hold. Nothing runs,
+which is why an agent may set one: `gaff trust` exists precisely so an
+agent cannot schedule command execution for itself, and a hold needs no
+such right.
+
+A session may hold several times under different ids. The first one
+still held refuses the stop.
+
+### Neither can wedge a session
+
+A stop hook that can never be satisfied would end a session's ability to
+end, and nothing inside the session could undo it. So gaff counts
+consecutive refusals and lets the stop through after twelve, saying so.
+A condition that cannot start, or that outruns its timeout, allows the
+stop rather than refusing on a gate that did not run.
 
 ## State
 
@@ -491,9 +552,10 @@ prints a warning on stderr, writes a `degraded` marker in the state
 directory, and gaff continues without reminders. Run `gaff doctor` to see
 the degradation.
 
-Two things exit 2 on purpose, and neither is a failure:
+Three things exit 2 on purpose, and none is a failure:
 
 - A **guard** that refuses a tool call. That is the operator saying "not
   this call", and exit 2 is the only way the harness hears it.
+- A **stop hook** that refuses a stop, because the work is not done.
 - `gaff githook`, which relays the failing command's own exit code. A
   hook command that exits 2 makes gaff exit 2.

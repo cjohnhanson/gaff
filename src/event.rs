@@ -106,7 +106,10 @@ impl Kind {
     /// rides the tool result instead.
     #[must_use]
     pub const fn is_flush(&self) -> bool {
-        matches!(self, Self::SessionStart | Self::Prompt | Self::ToolBatch)
+        matches!(
+            self,
+            Self::SessionStart | Self::Prompt | Self::ToolBatch | Self::Stop
+        )
     }
 
     /// The domain this event belongs to. Every event gaff executes is
