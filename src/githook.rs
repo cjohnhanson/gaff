@@ -447,16 +447,19 @@ pub fn run(cwd: &Path, entries: &[GitHook], hook: &str, args: &[String]) -> i32 
             false
         })
         .collect();
-    let mut seen: Vec<&str> = Vec::new();
+    // Report each repeated name once, with its real count. Warning per
+    // extra entry said "two" three times for three entries.
+    let mut counts: Vec<(&str, usize)> = Vec::new();
     for entry in &due {
-        if seen.contains(&entry.name.as_str()) {
-            eprintln!(
-                "gaff: {hook}: two entries are named `{}`. Both run, and their output cannot be told apart. Rename one of them.",
-                entry.name
-            );
-        } else {
-            seen.push(&entry.name);
+        match counts.iter_mut().find(|(n, _)| *n == entry.name) {
+            Some((_, seen)) => *seen += 1,
+            None => counts.push((&entry.name, 1)),
         }
+    }
+    for (name, count) in counts.iter().filter(|(_, c)| *c > 1) {
+        eprintln!(
+            "gaff: {hook}: {count} entries are named `{name}`. All of them run, and their output cannot be told apart. Rename all but one."
+        );
     }
     if !broken.is_empty() {
         for p in &broken {
