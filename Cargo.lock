@@ -32,6 +32,7 @@ name = "gaff"
 version = "0.1.0"
 dependencies = [
  "fs2",
+ "libc",
  "regex",
  "serde",
  "serde_json",

@@ -253,9 +253,9 @@ pub fn install(cwd: &Path, entries: &[GitHook], command: &str) -> std::io::Resul
     let mut blocked = Vec::new();
     for hook in &declared {
         let path = dir.join(hook);
-        if path.exists()
+        if std::fs::symlink_metadata(&path).is_ok()
             && !is_ours(&path)
-            && dir.join(format!("{hook}.local")).exists()
+            && std::fs::symlink_metadata(dir.join(format!("{hook}.local"))).is_ok()
         {
             blocked.push(hook.clone());
         }
@@ -447,6 +447,17 @@ pub fn run(cwd: &Path, entries: &[GitHook], hook: &str, args: &[String]) -> i32 
             false
         })
         .collect();
+    let mut seen: Vec<&str> = Vec::new();
+    for entry in &due {
+        if seen.contains(&entry.name.as_str()) {
+            eprintln!(
+                "gaff: {hook}: two entries are named `{}`. Both run, and their output cannot be told apart. Rename one of them.",
+                entry.name
+            );
+        } else {
+            seen.push(&entry.name);
+        }
+    }
     if !broken.is_empty() {
         for p in &broken {
             eprintln!("gaff: {hook}: {p}");
@@ -497,7 +508,13 @@ pub fn run(cwd: &Path, entries: &[GitHook], hook: &str, args: &[String]) -> i32 
             if entry.required {
                 return code;
             }
-            worst = code;
+            // Keep the first failure's code. Later ones overwrote it,
+            // so the number reported was the last thing to fail rather
+            // than the first thing that broke, which is what a reader
+            // goes and looks at.
+            if worst == 0 {
+                worst = code;
+            }
         }
     }
     worst

@@ -414,20 +414,44 @@ pub fn read_section_body(section: &Section, gaff_dir: &Path) -> Result<String, S
         // Read the confined path rather than the name that was
         // checked. They are the same file unless something swapped the
         // name in between, and then this reads the one that passed.
-        return read_confined(section, &real);
+        return read_confined(section, &real, true);
     }
-    read_confined(section, &path)
+    read_confined(section, &path, false)
 }
 
 /// Open a section body and answer every check from the one descriptor.
-fn read_confined(section: &Section, path: &Path) -> Result<String, String> {
+///
+/// `no_follow` refuses a final component that is a symlink, which is
+/// the last thing a concurrent writer could swap after the path was
+/// canonicalized. It is set for a repo section only: a user section may
+/// be a link, because a dotfile manager installs it that way.
+fn read_confined(section: &Section, path: &Path, no_follow: bool) -> Result<String, String> {
     // Open once, and answer every question from that one descriptor.
     //
     // Resolving the path a second time for `metadata` and a third for
     // the read left two windows in which the name could be swapped for
     // a link pointing out of the repo. The checks then described a
     // different file from the one that was read.
-    let mut file = std::fs::File::open(path)
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // O_NONBLOCK makes the open of a FIFO return rather than wait
+        // for a writer. Putting the type check behind the open meant a
+        // stray FIFO wedged every hook event in the session; the flag
+        // is a no-op on a regular file, and `fstat` below still refuses
+        // the FIFO.
+        let mut flags = libc::O_NONBLOCK;
+        if no_follow {
+            flags |= libc::O_NOFOLLOW;
+        }
+        open.custom_flags(flags);
+    }
+    #[cfg(not(unix))]
+    let _ = no_follow;
+    let mut file = open
+        .open(path)
         .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
     let meta = file
         .metadata()
