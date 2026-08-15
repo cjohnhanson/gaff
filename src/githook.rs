@@ -59,6 +59,10 @@ pub struct GitHook {
     /// output of later checks.
     #[serde(default = "yes")]
     pub required: bool,
+    /// True when the user config declared this entry. Set at load time,
+    /// never read from YAML.
+    #[serde(skip)]
+    pub user: bool,
 }
 
 const fn yes() -> bool {
@@ -280,16 +284,57 @@ pub fn install(cwd: &Path, entries: &[GitHook], command: &str) -> std::io::Resul
     let mut written = Vec::new();
     for hook in declared {
         let path = dir.join(&hook);
-        if path.exists() && !is_ours(&path) {
+        // `exists()` follows a link, so a dangling one reported false
+        // and the write landed at the link's target, anywhere on disk.
+        // Test the entry itself.
+        if std::fs::symlink_metadata(&path).is_ok() && !is_ours(&path) {
             let kept = dir.join(format!("{hook}.local"));
             std::fs::rename(&path, &kept)?;
             eprintln!("gaff: kept the existing {hook} as {hook}.local, and calls it first.");
+            // The wrapper guards with `[ -x ... ]`, so a kept hook
+            // without the execute bit is skipped every time. Saying
+            // "calls it first" while that is true is a false report.
+            if !is_executable(&kept) {
+                eprintln!(
+                    "gaff: {hook}.local is not executable, so it will not run. Run `chmod +x` on it, or git never ran it either."
+                );
+            }
         }
         std::fs::write(&path, script(&hook, command))?;
         set_executable(&path)?;
         written.push(hook);
     }
     Ok(written)
+}
+
+/// Whether a file carries an execute bit.
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+    true
+}
+
+/// Hooks the config declares that are not installed.
+///
+/// Git hooks never travel with a clone. Every fresh clone of a repo
+/// that declares hooks therefore has none of them, and nothing said so:
+/// `gaff check` passed and every commit skipped every check. This is
+/// the likeliest fail-open of all, because it is the default state of a
+/// new checkout.
+#[must_use]
+pub fn missing_installs(cwd: &Path, entries: &[GitHook]) -> Vec<String> {
+    let Some(dir) = hooks_dir(cwd) else {
+        return Vec::new();
+    };
+    hooks_declared(entries)
+        .into_iter()
+        .filter(|h| !is_ours(&dir.join(h)))
+        .collect()
 }
 
 /// Hooks whose script is installed while the config declares no entry
@@ -355,6 +400,27 @@ fn set_executable(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Run a child, writing `input` to its stdin when there is any.
+///
+/// The write happens on a thread. A check that reads only the first
+/// line of a long ref list would otherwise deadlock: the child stops
+/// reading, the pipe fills, and the parent blocks on the write while
+/// the child waits on the parent.
+fn spawn_with_stdin(command: &mut Command, input: Option<&[u8]>) -> std::io::Result<i32> {
+    let mut child = command.spawn()?;
+    if let Some(bytes) = input {
+        let mut pipe = child.stdin.take().ok_or_else(|| {
+            std::io::Error::other("the child was given no stdin pipe")
+        })?;
+        let owned = bytes.to_vec();
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let _ = pipe.write_all(&owned);
+        });
+    }
+    Ok(child.wait()?.code().unwrap_or(1))
+}
+
 /// Run entries declared for one hook.
 ///
 /// The exit code is the first failing command's code. A git hook exists
@@ -387,17 +453,36 @@ pub fn run(cwd: &Path, entries: &[GitHook], hook: &str, args: &[String]) -> i32 
     if due.is_empty() {
         return 0;
     }
+    // Read the hook's stdin once, and give every entry its own copy.
+    //
+    // Inheriting one descriptor meant the first entry that read the ref
+    // list drained it, and every later entry saw EOF. A second
+    // protected-branch gate then found no refs and allowed the push.
+    // This is the same failure the generated script solves for a kept
+    // hook; it survived between gaff's own entries.
+    let stdin_bytes = if STDIN_HOOKS.contains(&hook) {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut buf).ok();
+        Some(buf)
+    } else {
+        None
+    };
+
     let mut worst = 0;
     for entry in due {
         eprintln!("gaff: {hook}: {}", entry.name);
-        let status = Command::new(&entry.command[0])
+        let mut command = Command::new(&entry.command[0]);
+        command
             .args(&entry.command[1..])
             .args(args)
             .current_dir(cwd)
-            .stdin(Stdio::inherit())
-            .status();
-        let code = match status {
-            Ok(s) => s.code().unwrap_or(1),
+            .stdin(if stdin_bytes.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            });
+        let code = match spawn_with_stdin(&mut command, stdin_bytes.as_deref()) {
+            Ok(c) => c,
             Err(e) => {
                 eprintln!("gaff: {hook}: `{}` did not start: {e}", entry.name);
                 1
@@ -424,6 +509,7 @@ mod tests {
             on: on.iter().map(|s| (*s).to_string()).collect(),
             command: cmd.iter().map(|s| (*s).to_string()).collect(),
             required: true,
+            user: false,
         }
     }
 
@@ -544,6 +630,7 @@ mod ownership_tests {
             on: vec!["pre-commit".into()],
             command: vec!["true".into()],
             required: true,
+            user: false,
         }
     }
 

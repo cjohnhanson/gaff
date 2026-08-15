@@ -32,6 +32,10 @@ pub struct Workflow {
     #[serde(default = "default_runner")]
     pub runs_on: String,
     pub steps: Vec<Step>,
+    /// True when the user config declared this workflow. Set at load
+    /// time, never read from YAML.
+    #[serde(skip)]
+    pub user: bool,
 }
 
 fn default_runner() -> String {
@@ -89,6 +93,22 @@ impl Workflow {
         if self.on.is_empty() {
             out.push(format!("workflow `{}`: no events", self.name));
         }
+        // `push` and `github:push` strip to the same name and render
+        // `push:` twice. A duplicate mapping key is rejected by GitHub
+        // and by any strict parser, and silently collapsed by a lenient
+        // one, so the workflow either fails or loses a trigger.
+        let mut seen: Vec<&str> = Vec::new();
+        for event in &self.on {
+            let bare = event.strip_prefix("github:").unwrap_or(event);
+            if seen.contains(&bare) {
+                out.push(format!(
+                    "workflow `{}`: `{bare}` is named twice, which renders a duplicate YAML key",
+                    self.name
+                ));
+            } else {
+                seen.push(bare);
+            }
+        }
         for event in &self.on {
             let bare = event.strip_prefix("github:").unwrap_or(event);
             if !KNOWN_EVENTS.contains(&bare) {
@@ -138,16 +158,48 @@ impl Workflow {
                 check("command", a, true);
             }
         }
+        out.extend(self.step_problems(git));
+        out
+    }
+
+    /// Problems with the steps, including a reused git entry.
+    ///
+    /// Split from `problems` so each half stays readable.
+    fn step_problems(&self, git: &[crate::githook::GitHook]) -> Vec<String> {
+        let mut out = Vec::new();
         for step in &self.steps {
             match (&step.use_git, step.command.is_empty()) {
-                (Some(name), true) => {
-                    if !git.iter().any(|g| &g.name == name) {
-                        out.push(format!(
-                            "workflow `{}`: no git entry named `{name}` to reuse",
-                            self.name
-                        ));
+                (Some(name), true) => match git.iter().find(|g| &g.name == name) {
+                    None => out.push(format!(
+                        "workflow `{}`: no git entry named `{name}` to reuse",
+                        self.name
+                    )),
+                    // A user workflow may reuse a user entry only. A
+                    // dangling reference in a user workflow was filled
+                    // by whatever a cloned repo declared under that
+                    // name, so repo-authored argv ran in CI under a
+                    // workflow the user wrote.
+                    Some(entry) if self.user && !entry.user => out.push(format!(
+                        "workflow `{}`: the git entry `{name}` it reuses comes from the repo. A user workflow reuses a user entry only.",
+                        self.name
+                    )),
+                    Some(entry) if entry.command.is_empty() => out.push(format!(
+                        "workflow `{}`: the git entry `{name}` it reuses has an empty command, so the step would run nothing",
+                        self.name
+                    )),
+                    // The reused argv lands in the rendered file, so it
+                    // gets the same character check as a literal one.
+                    Some(entry) => {
+                        for a in &entry.command {
+                            if a.chars().any(is_yaml_control) {
+                                out.push(format!(
+                                    "workflow `{}`: the git entry `{name}` it reuses holds a control character, which cannot appear in YAML",
+                                    self.name
+                                ));
+                            }
+                        }
                     }
-                }
+                },
                 (None, false) => {}
                 (Some(_), false) => out.push(format!(
                     "workflow `{}`: a step sets both `command` and `use_git`",
@@ -362,6 +414,7 @@ mod tests {
             on: vec!["pre-commit".into()],
             command: cmd.iter().map(|s| (*s).to_string()).collect(),
             required: true,
+            user: false,
         }
     }
 
@@ -371,6 +424,7 @@ mod tests {
             on: vec!["push".into(), "github:pull_request".into()],
             branches: vec!["main".into()],
             runs_on: "ubuntu-latest".into(),
+            user: false,
             steps: vec![
                 Step {
                     name: None,
