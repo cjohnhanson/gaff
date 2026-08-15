@@ -32,7 +32,7 @@ use crate::{docs, init};
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
-        Some("hook") => run_hook(),
+        Some("hook") => run_hook(&args[1..]),
         Some("remind") => run_remind(&args[1..]),
         Some("status") => run_status(&args[1..]),
         Some("init") => run_init(&args[1..]),
@@ -113,7 +113,15 @@ fn session_from(flag: Option<&str>) -> Option<String> {
 /// Unreadable stdin and unparseable stdin exit 1. Claude Code treats
 /// exit 1 as a non-blocking error. Every later failure degrades to a
 /// silent passthrough at exit 0.
-fn run_hook() -> ExitCode {
+fn run_hook(args: &[String]) -> ExitCode {
+    // Every other subcommand rejects a flag it does not know. `hook`
+    // took its whole input from stdin and ignored the rest, so a typo
+    // read as a working invocation.
+    if let Some(unexpected) = args.first() {
+        return fail(&format!(
+            "unexpected argument `{unexpected}`. `gaff hook` reads its payload from stdin."
+        ));
+    }
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
         return fail("cannot read stdin");
@@ -131,7 +139,14 @@ fn run_hook() -> ExitCode {
         Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => {
-            eprintln!("gaff: {err}. Continuing without reminders.");
+            // Guards live only in the user config, so a schema error
+            // anywhere in that file — in a section with nothing to do
+            // with guards — turns off every refusal. Saying "continuing
+            // without reminders" named the wrong subsystem and read
+            // like a cosmetic degradation.
+            eprintln!(
+                "gaff: {err}. Continuing without reminders, and any guard declared there is NOT active."
+            );
             config::Config::default()
         }
     };
@@ -317,6 +332,11 @@ fn run_init(args: &[String]) -> ExitCode {
         return run_init_git(uninstall);
     }
     if github {
+        if command != "gaff hook" {
+            return fail(
+                "--command applies to the agent hooks, not to --github. A workflow step runs what the config declares.",
+            );
+        }
         return run_init_github();
     }
     let adapter = match host.as_deref() {
@@ -1381,15 +1401,22 @@ fn guard_refusal(
     // the payload here would tie every guard to one host's schema.
     let value = |field: &str| {
         let found = (adapter.tool_field)(&envelope.raw, field);
-        if found.is_none()
-            && envelope
+        if found.is_none() {
+            // A guard names this tool and gaff could not read the field
+            // it matches on, so the guard did not run. Absent and
+            // wrong-type were both silent; only the second warned.
+            let raw_present = envelope
                 .raw
                 .get("tool_input")
                 .and_then(|i| i.get(field))
-                .is_some()
-        {
+                .is_some();
+            let why = if raw_present {
+                "is not text gaff can read"
+            } else {
+                "is not in the payload"
+            };
             eprintln!(
-                "gaff: the `{field}` field of this {tool} call is not text gaff can read, so no guard was matched against it."
+                "gaff: a guard matches the `{field}` field of a {tool} call, and that field {why}, so the guard did not run."
             );
         }
         found

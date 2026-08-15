@@ -48,7 +48,14 @@ pub fn install_for(
                 .entry(event.to_string())
                 .or_insert_with(|| Value::Array(Vec::new()));
             let Value::Array(entries) = entries else {
-                continue; // An unknown shape: leave the user's config alone.
+                // An unknown shape: leave the user's config alone, and
+                // say which event went unregistered. Reporting "hooks
+                // registered" while the one blocking event was skipped
+                // is a false status.
+                eprintln!(
+                    "gaff: the `{event}` key is not an array, so gaff did not register there. Fix it by hand, or remove the key."
+                );
+                continue;
             };
             if !entries.iter().any(|e| has_command(e, command)) {
                 entries.push(json!({"hooks": [{"type": "command", "command": command}]}));
@@ -76,8 +83,22 @@ pub fn uninstall_for(
         let mut changed = false;
         hooks.retain(|_, entries| {
             if let Value::Array(list) = entries {
+                // Filter the inner hooks array, then drop an entry only
+                // once it is empty. Dropping the whole matcher group
+                // because one hook inside it was gaff's destroyed
+                // another tool's hook that shared the group.
+                for entry in list.iter_mut() {
+                    let Some(inner) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+                        continue;
+                    };
+                    let before = inner.len();
+                    inner.retain(|h| h["command"] != command);
+                    changed |= inner.len() != before;
+                }
                 let before = list.len();
-                list.retain(|e| !has_command(e, command));
+                list.retain(|e| {
+                    e["hooks"].as_array().is_none_or(|inner| !inner.is_empty())
+                });
                 changed |= list.len() != before;
                 !list.is_empty()
             } else {
@@ -126,7 +147,24 @@ fn edit_settings(
     // untouched, and reports success. `read_user_config_file` goes out
     // of its way to support that layout; this path has to match.
     let path = std::fs::canonicalize(&declared).unwrap_or(declared);
+    // A settings file is a regular file. Reading a FIFO here blocked
+    // forever, waiting for a writer that never came.
+    if let Ok(meta) = std::fs::symlink_metadata(&path)
+        && !meta.is_file()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: not a regular file. Refusing to rewrite it.", path.display()),
+        ));
+    }
+    // Absent and unreadable are different things, and treating them
+    // alike destroyed settings files. One non-UTF8 byte, or a mode gaff
+    // could not read, made the read fail; gaff then proceeded as though
+    // the repo had no settings, wrote its own map, and renamed over the
+    // user's `permissions` and `model` keys at exit 0.
     let mut settings: Map<String, Value> = match std::fs::read_to_string(&path) {
+        // An empty file is a common benign state, not corruption.
+        Ok(bytes) if bytes.trim().is_empty() => Map::new(),
         Ok(bytes) => serde_json::from_str(&bytes).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -136,7 +174,16 @@ fn edit_settings(
                 ),
             )
         })?,
-        Err(_) => Map::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Map::new(),
+        Err(e) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "{}: cannot read it ({e}). Refusing to rewrite the file, because that would replace what is there.",
+                    path.display()
+                ),
+            ));
+        }
     };
 
     // Replacing a non-object `hooks` value dropped whatever the user
@@ -161,9 +208,14 @@ fn edit_settings(
         "{}\n",
         serde_json::to_string_pretty(&Value::Object(settings)).expect("maps serialize")
     );
-    let tmp = path.with_extension("json.gaff-tmp");
+    // A per-process name, so two gaff runs cannot collide on it, and
+    // it is removed when the rename fails rather than left behind.
+    let tmp = path.with_extension(format!("json.gaff-tmp.{}", std::process::id()));
     std::fs::write(&tmp, rendered)?;
-    std::fs::rename(&tmp, &path)?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        std::fs::remove_file(&tmp).ok();
+        return Err(e);
+    }
     Ok(Outcome::Changed)
 }
 
@@ -248,5 +300,108 @@ mod tests {
             "not json",
             "gaff keeps the original file"
         );
+    }
+}
+
+#[cfg(test)]
+mod preservation_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("gaff-init-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(d.join(".claude")).unwrap();
+        d
+    }
+
+    fn settings(root: &Path) -> String {
+        std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap()
+    }
+
+    #[test]
+    fn an_unreadable_settings_file_is_never_replaced() {
+        // Treating "cannot read" like "does not exist" made gaff write
+        // its own map over a file it had never seen. One non-UTF8 byte
+        // was enough, and `permissions` — a security control — went
+        // with it, at exit 0.
+        let d = scratch("unreadable");
+        let path = d.join(".claude/settings.local.json");
+        let original: &[u8] = b"{\"permissions\":{\"deny\":[\"x\"]},\"n\":\"caf\xe9\"}";
+        std::fs::write(&path, original).unwrap();
+        let err = install(&d, "gaff hook").expect_err("an unreadable file is refused");
+        assert!(err.to_string().contains("cannot read"), "{err}");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "the file is byte-identical"
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_non_object_hooks_key_is_never_replaced() {
+        let d = scratch("hookskey");
+        let path = d.join(".claude/settings.local.json");
+        for value in ["[1,2,3]", "\"legacy\"", "42", "null"] {
+            let original = format!("{{\"model\":\"opus\",\"hooks\":{value}}}");
+            std::fs::write(&path, &original).unwrap();
+            let err = install(&d, "gaff hook").expect_err("a non-object hooks key is refused");
+            assert!(err.to_string().contains("not an object"), "{err}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn uninstall_keeps_a_foreign_hook_that_shares_a_matcher_group() {
+        // Dropping the whole matcher group because one hook inside it
+        // was gaff's destroyed another tool's hook.
+        let d = scratch("shared");
+        let path = d.join(".claude/settings.local.json");
+        std::fs::write(
+            &path,
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"gaff hook"},{"type":"command","command":"other-tool guard"}]}]}}"#,
+        )
+        .unwrap();
+        uninstall(&d, "gaff hook").unwrap();
+        let after = settings(&d);
+        assert!(after.contains("other-tool guard"), "{after}");
+        assert!(!after.contains("gaff hook"), "{after}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn an_empty_settings_file_is_a_benign_starting_point() {
+        let d = scratch("empty");
+        let path = d.join(".claude/settings.local.json");
+        std::fs::write(&path, "").unwrap();
+        install(&d, "gaff hook").expect("an empty file is not corruption");
+        assert!(settings(&d).contains("PreToolUse"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn the_users_key_order_survives_a_rewrite() {
+        let d = scratch("order");
+        let path = d.join(".claude/settings.local.json");
+        std::fs::write(&path, r#"{"zeta":1,"alpha":2,"model":"opus"}"#).unwrap();
+        install(&d, "gaff hook").unwrap();
+        let after = settings(&d);
+        let zeta = after.find("zeta").expect("zeta kept");
+        let alpha = after.find("alpha").expect("alpha kept");
+        assert!(zeta < alpha, "alphabetizing a user's file is noise: {after}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn install_and_uninstall_return_the_file_to_its_bytes() {
+        let d = scratch("roundtrip");
+        let path = d.join(".claude/settings.local.json");
+        let original = "{\n  \"zeta\": 1,\n  \"alpha\": 2\n}\n";
+        std::fs::write(&path, original).unwrap();
+        install(&d, "gaff hook").unwrap();
+        uninstall(&d, "gaff hook").unwrap();
+        assert_eq!(settings(&d), original);
+        std::fs::remove_dir_all(&d).ok();
     }
 }

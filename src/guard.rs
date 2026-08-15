@@ -710,6 +710,11 @@ pub fn first_refusal<'a>(
     guards
         .iter()
         .filter(|g| g.problems().is_empty())
+        // Check the tool before the field. A guard that does not name
+        // this tool has no business reading the payload, and looking
+        // first meant every Bash guard reported a missing `command`
+        // field on every Read call.
+        .filter(|g| g.matches_tool(tool))
         // A guard with no pattern refuses every call to its tool, and a
         // call that omits the field is still a call. Requiring the
         // field here meant such a guard silently passed anything whose

@@ -167,10 +167,21 @@ pub fn names() -> String {
 /// default adapter, because gaff degrades rather than blocks.
 #[must_use]
 pub fn detect(explicit: Option<&str>, payload: &Value) -> &'static Adapter {
-    if let Some(name) = explicit
-        && let Some(found) = by_name(name)
-    {
-        return found;
+    if let Some(name) = explicit {
+        if let Some(found) = by_name(name) {
+            return found;
+        }
+        // Falling back is the safe direction, and doing it in silence
+        // is not. A typo in GAFF_HOST reads as a working setting while
+        // gaff parses somebody else's payload shape.
+        eprintln!(
+            "gaff: no adapter named `{name}` (implemented: {}). Detecting the host from the payload instead.",
+            ADAPTERS
+                .iter()
+                .map(|a| a.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     ADAPTERS
         .iter()
