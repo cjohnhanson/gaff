@@ -233,13 +233,19 @@ pub fn uninstall(cwd: &Path) -> std::io::Result<Vec<String>> {
     let mut removed = Vec::new();
     for hook in KNOWN_HOOKS {
         let path = dir.join(hook);
+        let kept = dir.join(format!("{hook}.local"));
         if path.exists() && is_ours(&path) {
             std::fs::remove_file(&path)?;
-            let kept = dir.join(format!("{hook}.local"));
             if kept.exists() {
                 std::fs::rename(&kept, &path)?;
             }
             removed.push((*hook).to_string());
+        } else if kept.exists() && !path.exists() {
+            // gaff's own hook is gone, and the file it displaced is
+            // still parked. Put it back rather than leaving the user's
+            // hook stranded forever.
+            std::fs::rename(&kept, &path)?;
+            removed.push(format!("{hook} (restored a kept hook)"));
         }
     }
     Ok(removed)

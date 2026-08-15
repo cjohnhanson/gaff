@@ -306,6 +306,9 @@ fn run_init(args: &[String]) -> ExitCode {
         }
     }
     if git {
+        if host.is_some() {
+            return fail("--host applies to the agent hooks, not to --git");
+        }
         return run_init_git(uninstall);
     }
     if github {
@@ -1088,8 +1091,18 @@ fn check_github() -> ExitCode {
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => return fail(&err),
     };
-    if let Some(code) = report_github_problems(&cfg) {
-        return code;
+    let mut problems: Vec<String> = cfg.git.iter().flat_map(crate::githook::GitHook::problems).collect();
+    for wf in &cfg.github {
+        problems.extend(wf.problems(&cfg.git));
+    }
+    if !problems.is_empty() {
+        // A workflow can reuse a git entry, so a broken entry breaks
+        // the workflow. Reporting only workflow problems let a CI job
+        // that ran this command miss it.
+        for p in &problems {
+            eprintln!("gaff: {p}");
+        }
+        return ExitCode::FAILURE;
     }
     if cfg.github.is_empty() {
         println!("no workflows declared");
@@ -1130,7 +1143,14 @@ fn run_githook(args: &[String]) -> ExitCode {
     };
     let cfg = match config::load_layered(&cwd) {
         Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
-        Loaded::Absent => config::Config::default(),
+        Loaded::Absent => {
+            // The hook exists, so a config existed when it was
+            // installed. Passing silently would run no check at all.
+            eprintln!(
+                "gaff: {hook}: no config found, so no check ran. Remove the hook with `gaff init --git --uninstall`, or restore the config."
+            );
+            return ExitCode::FAILURE;
+        }
         Loaded::Broken(err) => {
             // A broken config must not silently pass a check that was
             // meant to run.
