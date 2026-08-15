@@ -95,6 +95,20 @@ pub fn valid_session_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
 }
 
+/// A stop hold the session set for itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hold {
+    pub id: String,
+    /// What the model reads when the stop is refused.
+    pub text: String,
+    /// How many refusals before the hold lets go on its own. `None`
+    /// holds until it is cleared, or until the session-wide escape
+    /// hatch opens.
+    pub times: Option<u32>,
+    /// Refusals so far.
+    pub refused: u32,
+}
+
 /// A file-safe form of a caller-supplied id.
 ///
 /// An id reaches this from the command line, and it names a file in the
@@ -407,30 +421,70 @@ impl Store {
     /// # Errors
     /// Returns the IO error when the session directory cannot be
     /// written.
-    pub fn write_hold(&self, session: &str, id: &str, text: &str) -> std::io::Result<()> {
+    pub fn write_hold(
+        &self,
+        session: &str,
+        id: &str,
+        text: &str,
+        times: Option<u32>,
+    ) -> std::io::Result<()> {
         let dir = self.session_dir(session).join("holds");
         std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join(sanitize(id)), text)
+        let record = serde_json::json!({"text": text, "times": times, "refused": 0});
+        std::fs::write(dir.join(sanitize(id)), record.to_string())
     }
 
     /// The stop holds this session set for itself, by id.
     #[must_use]
-    pub fn holds(&self, session: &str) -> Vec<(String, String)> {
+    pub fn holds(&self, session: &str) -> Vec<Hold> {
         let Ok(entries) = std::fs::read_dir(self.session_dir(session).join("holds")) else {
             return Vec::new();
         };
-        let mut out: Vec<(String, String)> = entries
+        let mut out: Vec<Hold> = entries
             .filter_map(Result::ok)
             .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                let text = std::fs::read_to_string(e.path()).ok()?;
-                Some((name, text))
+                let id = e.file_name().to_string_lossy().to_string();
+                let raw = std::fs::read_to_string(e.path()).ok()?;
+                let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+                Some(Hold {
+                    text: v.get("text")?.as_str()?.to_string(),
+                    times: v
+                        .get("times")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|n| u32::try_from(n).ok()),
+                    refused: v
+                        .get("refused")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|n| u32::try_from(n).ok())
+                        .unwrap_or(0),
+                    id,
+                })
             })
             .collect();
         // A stable order, so the same session reports the same first
         // hold every time rather than whatever the directory yields.
-        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out.sort_by(|a, b| a.id.cmp(&b.id));
         out
+    }
+
+    /// Count one refusal against a hold, and say whether it has spent
+    /// its budget. A hold with no budget never spends it.
+    pub fn refuse_hold(&self, session: &str, id: &str) -> bool {
+        let path = self.session_dir(session).join("holds").join(sanitize(id));
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return false;
+        };
+        let refused = v.get("refused").and_then(serde_json::Value::as_u64).unwrap_or(0) + 1;
+        v["refused"] = serde_json::json!(refused);
+        let _ = std::fs::write(&path, v.to_string());
+        // Spent once the budget is exceeded, not met. `--times 3` means
+        // three refusals happen and the fourth stop goes through.
+        v.get("times")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|budget| refused > budget)
     }
 
     /// Release a stop hold by id. `None` releases every one.
@@ -756,11 +810,12 @@ mod hold_tests {
     #[test]
     fn a_hold_survives_until_it_is_released() {
         let s = store("basic");
-        s.write_hold("sess", "intent", "finish the work").unwrap();
-        assert_eq!(
-            s.holds("sess"),
-            vec![("intent".to_string(), "finish the work".to_string())]
-        );
+        s.write_hold("sess", "intent", "finish the work", None).unwrap();
+        let held = s.holds("sess");
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].id, "intent");
+        assert_eq!(held[0].text, "finish the work");
+        assert_eq!(held[0].times, None);
         s.clear_hold("sess", Some("intent"));
         assert!(s.holds("sess").is_empty());
     }
@@ -770,19 +825,39 @@ mod hold_tests {
         // The same session must name the same first hold every time,
         // rather than whatever the directory happens to yield.
         let s = store("many");
-        s.write_hold("sess", "b", "second").unwrap();
-        s.write_hold("sess", "a", "first").unwrap();
-        let names: Vec<String> = s.holds("sess").into_iter().map(|(n, _)| n).collect();
+        s.write_hold("sess", "b", "second", None).unwrap();
+        s.write_hold("sess", "a", "first", None).unwrap();
+        let names: Vec<String> = s.holds("sess").into_iter().map(|h| h.id).collect();
         assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]
     fn rewriting_an_id_replaces_rather_than_stacks() {
         let s = store("rewrite");
-        s.write_hold("sess", "intent", "old").unwrap();
-        s.write_hold("sess", "intent", "new").unwrap();
+        s.write_hold("sess", "intent", "old", None).unwrap();
+        s.write_hold("sess", "intent", "new", None).unwrap();
         assert_eq!(s.holds("sess").len(), 1);
-        assert_eq!(s.holds("sess")[0].1, "new");
+        assert_eq!(s.holds("sess")[0].text, "new");
+    }
+
+    #[test]
+    fn a_budgeted_hold_spends_itself() {
+        // "Push back this many times, then let me stop."
+        let s = store("budget");
+        s.write_hold("sess", "nudge", "are you sure", Some(3)).unwrap();
+        assert!(!s.refuse_hold("sess", "nudge"), "refusal 1 of 3");
+        assert!(!s.refuse_hold("sess", "nudge"), "refusal 2 of 3");
+        assert!(!s.refuse_hold("sess", "nudge"), "refusal 3 of 3");
+        assert!(s.refuse_hold("sess", "nudge"), "the fourth stop goes through");
+    }
+
+    #[test]
+    fn an_unbudgeted_hold_never_spends_itself() {
+        let s = store("forever");
+        s.write_hold("sess", "hard", "not done", None).unwrap();
+        for _ in 0..50 {
+            assert!(!s.refuse_hold("sess", "hard"));
+        }
     }
 
     #[test]
@@ -790,11 +865,11 @@ mod hold_tests {
         // An id arrives from the command line and names a file. A `/`
         // or a `..` in one would put that file somewhere else.
         let s = store("escape");
-        s.write_hold("sess", "../../etc/passwd", "nope").unwrap();
+        s.write_hold("sess", "../../etc/passwd", "nope", None).unwrap();
         let held = s.holds("sess");
         assert_eq!(held.len(), 1);
-        assert!(!held[0].0.contains('/'), "{:?}", held[0].0);
-        assert!(!held[0].0.contains(".."), "{:?}", held[0].0);
+        assert!(!held[0].id.contains('/'), "{:?}", held[0].id);
+        assert!(!held[0].id.contains(".."), "{:?}", held[0].id);
     }
 
     #[test]

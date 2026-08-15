@@ -201,6 +201,14 @@ such right.
 A session may hold several times under different ids. The first one
 still held refuses the stop.
 
+`--times N` shapes the hold: it refuses N stops and lets the next one
+through on its own. That is "push back this many times, then let me
+stop", as against a hard hold that lasts until cleared.
+
+```
+gaff remind "Are you sure every reviewer converged?" --at stop --times 2 --id sure
+```
+
 ### Neither can wedge a session
 
 A stop hook that can never be satisfied would end a session's ability to

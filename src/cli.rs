@@ -65,7 +65,7 @@ Usage: gaff <command> [options]
 Commands:
   hook             Handle one hook event from stdin (the harness calls this)
   remind <text>    Schedule a one-shot reminder N tool calls ahead
-                   (--at stop holds the stop until --clear)
+                   (--at stop holds the stop; --times N lets go after N)
   status           Show counters, pending entries, and one-shots
   init [--host H]  Register the agent hooks in the host's settings file
   init --git       Write the git hook scripts declared in the config
@@ -269,11 +269,37 @@ fn refuse_stop(
         }
     }
 
-    if let Some((id, text)) = store.holds(session).first() {
+    if let Some(hold) = store.holds(session).first() {
+        let id = &hold.id;
         let streak = store.record_stop_refusal(session);
         if streak <= MAX_STOP_REFUSALS {
+            // A hold with a budget lets go on its own once it is spent.
+            // That is how a session says "push back this many times,
+            // then let me stop" rather than "hold until cleared".
+            let spent = store.refuse_hold(session, id);
+            if spent {
+                eprintln!(
+                    "gaff: the hold `{id}` has pushed back {} time(s), which is what it asked for. Letting the stop through.",
+                    hold.refused
+                );
+                store.clear_hold(session, Some(id));
+                store.clear_stop_refusals(session);
+                return None;
+            }
+            let remaining = hold
+                .times
+                .map(|t| {
+                    let left = t.saturating_sub(hold.refused + 1);
+                    if left == 0 {
+                        " (the next stop goes through)".to_string()
+                    } else {
+                        format!(" ({left} more, then it lets go)")
+                    }
+                })
+                .unwrap_or_default();
             eprintln!(
-                "gaff: held by `{id}`. Clear it with `gaff remind --clear --id {id}` once it is true.\n\n{text}"
+                "gaff: held by `{id}`{remaining}. Clear it with `gaff remind --clear --id {id}` once it is true.\n\n{}",
+                hold.text
             );
             return Some(ExitCode::from(2));
         }
@@ -298,6 +324,7 @@ fn run_remind(args: &[String]) -> ExitCode {
     let mut session_flag: Option<String> = None;
     let mut at_stop = false;
     let mut clear = false;
+    let mut times: Option<u32> = None;
 
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -317,6 +344,12 @@ fn run_remind(args: &[String]) -> ExitCode {
                 None => return fail("--at requires a value"),
             },
             "--clear" => clear = true,
+            // How many stops the hold refuses before it lets go on its
+            // own. Without it, the hold lasts until cleared.
+            "--times" => match it.next().map(|v| v.parse::<u32>()) {
+                Some(Ok(n)) if n > 0 => times = Some(n),
+                _ => return fail("--times requires a positive integer"),
+            },
             "--id" => match it.next() {
                 Some(v) => id = Some(v.clone()),
                 None => return fail("--id requires a value"),
@@ -349,11 +382,21 @@ fn run_remind(args: &[String]) -> ExitCode {
         );
     };
 
+    if times.is_some() && !at_stop {
+        return fail("--times applies to --at stop");
+    }
     if at_stop {
         let id = id.unwrap_or_else(|| "hold".to_string());
-        return match store.write_hold(&session, &id, &text) {
+        return match store.write_hold(&session, &id, &text, times) {
             Ok(()) => {
-                println!("holding the stop as `{id}`. Release it with `gaff remind --clear --id {id}`.");
+                match times {
+                    Some(n) => println!(
+                        "holding the stop as `{id}` for {n} refusal(s). Release it early with `gaff remind --clear --id {id}`."
+                    ),
+                    None => println!(
+                        "holding the stop as `{id}`. Release it with `gaff remind --clear --id {id}`."
+                    ),
+                }
                 ExitCode::SUCCESS
             }
             Err(e) => fail(&format!("cannot write the hold: {e}")),
