@@ -9,7 +9,7 @@ transitions:
       test -f .github/workflows/ci.yml || { echo "FAIL: no workflow written"; exit 1; }
 
       # The step that reuses the git entry carries that entry's command.
-      grep -q 'run: cargo test' .github/workflows/ci.yml || { echo "FAIL: the reused command is missing"; exit 1; }
+      grep -qE '^ +cargo test$' .github/workflows/ci.yml || { echo "FAIL: the reused command is missing"; exit 1; }
 
       # A clean tree checks clean, and the check is usable in CI.
       gaff check --github > /dev/null 2>&1 || { echo "FAIL: a fresh render must check clean"; exit 1; }

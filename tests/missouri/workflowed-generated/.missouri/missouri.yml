@@ -5,4 +5,4 @@ assertions:
   - name: "the workflow checks clean"
     command: "gaff check --github"
   - name: "the reused git command is rendered"
-    command: "grep -q 'run: cargo test' .github/workflows/ci.yml"
+    command: "grep -qE '^ +cargo test$' .github/workflows/ci.yml"

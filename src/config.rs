@@ -287,7 +287,7 @@ pub fn user_config_path() -> Option<std::path::PathBuf> {
 pub fn load_layered(cwd: &Path) -> Loaded {
     let user = match user_config_path() {
         Some(p) => match std::fs::read_to_string(&p) {
-            Ok(text) => match serde_yml::from_str::<Config>(&text) {
+            Ok(text) => match serde_yaml_ng::from_str::<Config>(&text) {
                 Ok(cfg) => Some(cfg),
                 Err(e) => {
                     return Loaded::Broken(format!("{}: {e}", p.display()));
@@ -390,7 +390,7 @@ pub fn load(cwd: &Path) -> Loaded {
     let Ok(bytes) = std::fs::read_to_string(&path) else {
         return Loaded::Absent;
     };
-    match serde_yml::from_str::<Config>(&bytes) {
+    match serde_yaml_ng::from_str::<Config>(&bytes) {
         Ok(cfg) => Loaded::Ok(cfg),
         // Name this one, because the generic serde message does not say
         // where handlers belong, and the reader has to know that a repo
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn parses_reminders_and_cap() {
-        let cfg: Config = serde_yml::from_str(
+        let cfg: Config = serde_yaml_ng::from_str(
             "max_inject_bytes: 64\nreminders:\n  - name: a\n    every:\n      tool_calls: 3\n    text: hi\n",
         )
         .unwrap();
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn cap_defaults_when_absent() {
-        let cfg: Config = serde_yml::from_str("reminders: []\n").unwrap();
+        let cfg: Config = serde_yaml_ng::from_str("reminders: []\n").unwrap();
         assert_eq!(cfg.max_inject_bytes, DEFAULT_MAX_INJECT_BYTES);
     }
 
@@ -442,7 +442,7 @@ mod profile_tests {
     use super::*;
 
     fn base() -> Config {
-        serde_yml::from_str(
+        serde_yaml_ng::from_str(
             "reminders:\n  - name: a\n    every: {tool_calls: 5}\n    text: A\n  - name: b\n    every: {tool_calls: 7}\n    text: B\nsections:\n  - name: s\n    file: s.md\n    refresh: {prompts: 3}\nprofiles:\n  focus:\n    only: [a]\n    cadence:\n      a: {tool_calls: 2}\n  quiet:\n    disable: [a, b, s]\n    max_inject_bytes: 100\ndefault_profile: focus\ntransitions:\n  agent_may_set: [focus]\n",
         )
         .expect("the fixture config must parse")
@@ -521,7 +521,7 @@ mod layer_tests {
     use super::*;
 
     fn cfg(yaml: &str) -> Config {
-        serde_yml::from_str(yaml).expect("the fixture must parse")
+        serde_yaml_ng::from_str(yaml).expect("the fixture must parse")
     }
 
     #[test]
@@ -592,7 +592,7 @@ mod guard_layering_tests {
     use super::*;
 
     fn user_with_guard() -> Config {
-        serde_yml::from_str(
+        serde_yaml_ng::from_str(
             "guards:\n  - name: no-mass-stage\n    tool: Bash\n    matches: 'git add -A'\n    message: Stage by name.\n",
         )
         .expect("the user fixture must parse")
@@ -602,7 +602,7 @@ mod guard_layering_tests {
     fn a_repo_cannot_declare_a_guard() {
         // A cloned repo is untrusted content. A repo-declared guard
         // would let it refuse any tool call its reader makes.
-        let repo: Config = serde_yml::from_str(
+        let repo: Config = serde_yaml_ng::from_str(
             "guards:\n  - name: repo-owns-you\n    tool: '.*'\n    message: blocked\n",
         )
         .unwrap();
@@ -613,7 +613,7 @@ mod guard_layering_tests {
 
     #[test]
     fn a_repo_cannot_remove_a_user_guard() {
-        let repo: Config = serde_yml::from_str("guards: []\n").unwrap();
+        let repo: Config = serde_yaml_ng::from_str("guards: []\n").unwrap();
         let merged = user_with_guard().overlaid_with(repo);
         assert_eq!(merged.guards.len(), 1);
     }
@@ -622,7 +622,7 @@ mod guard_layering_tests {
     fn a_repo_cannot_shadow_a_user_guard_by_name() {
         // A same-name guard with a pattern that matches nothing would
         // otherwise defuse the user's rule.
-        let repo: Config = serde_yml::from_str(
+        let repo: Config = serde_yaml_ng::from_str(
             "guards:\n  - name: no-mass-stage\n    tool: Bash\n    matches: 'zzz'\n    message: neutered\n",
         )
         .unwrap();
@@ -637,7 +637,7 @@ mod transition_layering_tests {
     use super::*;
 
     fn cfg(y: &str) -> Config {
-        serde_yml::from_str(y).expect("fixture must parse")
+        serde_yaml_ng::from_str(y).expect("fixture must parse")
     }
 
     #[test]

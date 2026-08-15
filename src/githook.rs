@@ -144,10 +144,29 @@ fn is_ours(path: &Path) -> bool {
         .is_ok_and(|s| s.lines().nth(1).is_some_and(|l| l == BANNER))
 }
 
-/// The `.git/hooks` directory for a repo, following a worktree's
-/// `gitdir:` file.
+/// The directory git actually reads hooks from.
+///
+/// git resolves hooks against the *common* directory, not a worktree's
+/// own git dir. A worktree's `.git` file points at
+/// `<common>/worktrees/<name>`, and a hook written there is never run.
+/// It reports as installed and silently does nothing, which is the
+/// worst failure a blocking check can have.
 #[must_use]
 pub fn hooks_dir(cwd: &Path) -> Option<PathBuf> {
+    // Ask git first. It knows about every layout, including ones this
+    // function has not met.
+    if let Ok(out) = std::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(cwd)
+        .output()
+        && out.status.success()
+    {
+        let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir).join("hooks"));
+        }
+    }
+
     let dot_git = cwd.join(".git");
     if dot_git.is_dir() {
         return Some(dot_git.join("hooks"));
@@ -156,7 +175,13 @@ pub fn hooks_dir(cwd: &Path) -> Option<PathBuf> {
     let rest = text.trim().strip_prefix("gitdir:")?.trim();
     let p = PathBuf::from(rest);
     let git_dir = if p.is_absolute() { p } else { cwd.join(p) };
-    Some(git_dir.join("hooks"))
+    // Strip back to the common dir when this is a worktree's git dir.
+    let common = git_dir
+        .parent()
+        .filter(|p| p.file_name().is_some_and(|n| n == "worktrees"))
+        .and_then(Path::parent)
+        .map_or_else(|| git_dir.clone(), Path::to_path_buf);
+    Some(common.join("hooks"))
 }
 
 /// Install one script per declared hook.
@@ -165,6 +190,14 @@ pub fn hooks_dir(cwd: &Path) -> Option<PathBuf> {
 /// script calls it first. An install never discards another tool's
 /// work.
 pub fn install(cwd: &Path, entries: &[GitHook], command: &str) -> std::io::Result<Vec<String>> {
+    // Resolve the command to this binary's absolute path. A bare name
+    // would be resolved through PATH at commit time, and direnv, mise,
+    // and node_modules/.bin all put a repo-controlled directory there.
+    // A shadowed `gaff` would report success and run nothing.
+    let command = &match (std::env::current_exe(), command.strip_prefix("gaff ")) {
+        (Ok(exe), Some(rest)) => format!("{} {rest}", exe.display()),
+        _ => command.to_string(),
+    };
     let dir =
         hooks_dir(cwd).ok_or_else(|| std::io::Error::other("this is not a git repository"))?;
     std::fs::create_dir_all(&dir)?;
@@ -231,11 +264,29 @@ fn set_executable(path: &Path) -> std::io::Result<()> {
 /// to block, so gaff reports the failure rather than swallowing it.
 #[must_use]
 pub fn run(cwd: &Path, entries: &[GitHook], hook: &str, args: &[String]) -> i32 {
+    // A malformed entry must not vanish. Skipping it silently means a
+    // check the operator declared stops running, and the commit lands
+    // as though it passed.
+    let mut broken = Vec::new();
     let due: Vec<&GitHook> = entries
         .iter()
         .filter(|e| e.runs_on(hook))
-        .filter(|e| e.problems().is_empty())
+        .filter(|e| {
+            let problems = e.problems();
+            if problems.is_empty() {
+                return true;
+            }
+            broken.extend(problems);
+            false
+        })
         .collect();
+    if !broken.is_empty() {
+        for p in &broken {
+            eprintln!("gaff: {hook}: {p}");
+        }
+        eprintln!("gaff: {hook}: refusing, because a declared check could not run.");
+        return 1;
+    }
     if due.is_empty() {
         return 0;
     }
