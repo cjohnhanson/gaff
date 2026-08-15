@@ -85,6 +85,87 @@ fn dedup(items: &[&str]) -> Vec<String> {
     out
 }
 
+/// The literal text a pattern must match, when it is plain enough to
+/// say.
+///
+/// Returns `None` for anything with real regex structure. A group or an
+/// alternation means part of the pattern is optional, and then a
+/// substring of the pattern text is not necessarily present in a string
+/// the pattern matches: `a(b|c)d` matches `acd`, which holds no `b`.
+/// Only patterns with no such structure yield a core.
+fn literal_core(pattern: &str) -> Option<String> {
+    let body = pattern
+        .strip_prefix('^')
+        .unwrap_or(pattern)
+        .strip_suffix('$')
+        .unwrap_or_else(|| pattern.strip_prefix('^').unwrap_or(pattern));
+    let mut out = String::new();
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                // An escaped metacharacter stands for itself.
+                Some(n) if !n.is_alphanumeric() => out.push(n),
+                // `\d`, `\b`, `\s` and friends are structure.
+                _ => return None,
+            }
+            continue;
+        }
+        if ".[]|()*+?{}^$".contains(c) {
+            return None;
+        }
+        out.push(c);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Why a pattern can never match, when that is decidable cheaply.
+///
+/// The regex crate exposes no emptiness oracle, so this covers the two
+/// shapes an operator actually writes: an end anchor in the middle of a
+/// pattern, and a word boundary between two word characters. Both read
+/// as working rules and match nothing.
+fn unsatisfiable(pattern: &str) -> Option<String> {
+    if pattern.contains("(?m") {
+        return None;
+    }
+    let bytes: Vec<char> = pattern.chars().collect();
+    for (i, c) in bytes.iter().enumerate() {
+        let escaped = i > 0 && bytes[i - 1] == '\\';
+        // `x$y`: nothing follows the end of the text.
+        //
+        // An end anchor closing an alternation branch is ordinary and
+        // common — `($|[^a-z])` is exactly how a terminator is
+        // written — so only a literal following the anchor counts.
+        if *c == '$'
+            && !escaped
+            && let Some(next) = bytes.get(i + 1)
+            && !")|*?+{".contains(*next)
+        {
+            return Some("`$` is the end of the text and something follows it".to_string());
+        }
+        // `a\bb`: there is no word boundary between two word characters.
+        if *c == 'b'
+            && escaped
+            && i >= 2
+            && i + 1 < bytes.len()
+            && bytes[i - 2].is_alphanumeric()
+            && bytes[i + 1].is_alphanumeric()
+        {
+            return Some(
+                "`\\b` needs a word boundary and it sits between two word characters".to_string(),
+            );
+        }
+    }
+    if let Some(at) = pattern.find("\\z")
+        && !pattern[at + 2..].is_empty()
+        && !pattern[at + 2..].starts_with([')', '|'])
+    {
+        return Some("`\\z` is the end of the text and something follows it".to_string());
+    }
+    None
+}
+
 /// One refusal rule.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -150,7 +231,9 @@ impl Guard {
         // This is a hard failure only when EVERY tool the pattern names
         // is dead on the field. A pattern naming several tools where
         // one is live still works, and that case is a warning instead.
-        if let Ok(re) = Regex::new(&format!("^(?:{})$", self.tool)) {
+        if self.matches.is_some()
+            && let Ok(re) = Regex::new(&format!("^(?:{})$", self.tool))
+        {
             let named: Vec<&(&str, &[&str])> =
                 TOOL_FIELDS.iter().filter(|(t, _)| re.is_match(t)).collect();
             let live = |fields: &[&str]| fields.contains(&self.field.as_str());
@@ -185,6 +268,32 @@ impl Guard {
         {
             out.push(format!(
                 "guard `{}`: the unless pattern matches everything, so the guard can never fire.",
+                self.name
+            ));
+        }
+        // An `unless` that covers everything `matches` catches makes
+        // the guard decorative, and the probe corpus cannot see it:
+        // `matches: 'git add'` with `unless: 'git'` exempts all of its
+        // own hits, and no probe in the corpus has to contain `git`.
+        // Compare the two patterns directly instead. This is a
+        // heuristic over literal text, so it reports only the cases it
+        // is certain of and stays quiet otherwise.
+        if let (Some(m), Some(u)) = (&self.matches, &self.unless)
+            && let Some(core) = literal_core(m)
+            && u.split('|')
+                .filter(|a| !a.is_empty())
+                .any(|alt| literal_core(alt).is_some_and(|a| core.contains(&a)))
+        {
+            out.push(format!(
+                "guard `{}`: the unless pattern `{u}` covers everything `{m}` catches, so the guard can never fire.",
+                self.name
+            ));
+        }
+        if let Some(m) = &self.matches
+            && let Some(reason) = unsatisfiable(m)
+        {
+            out.push(format!(
+                "guard `{}`: the matches pattern can never match, because {reason}.",
                 self.name
             ));
         }
@@ -224,6 +333,9 @@ impl Guard {
         // A pattern naming several tools can be live for some and dead
         // for the rest. Name the dead ones, and only when at least one
         // is live — otherwise `problems` already reported it as fatal.
+        if self.matches.is_none() {
+            return out;
+        }
         let dead: Vec<&str> = named
             .iter()
             .filter(|(_, f)| !f.contains(&self.field.as_str()))
@@ -272,7 +384,19 @@ pub fn first_refusal<'a>(
     guards
         .iter()
         .filter(|g| g.problems().is_empty())
-        .find(|g| field_value(&g.field).is_some_and(|v| g.refuses(tool, &v)))
+        // A guard with no pattern refuses every call to its tool, and a
+        // call that omits the field is still a call. Requiring the
+        // field here meant such a guard silently passed anything whose
+        // payload did not carry it, and made a tool that sends no
+        // matchable field impossible to refuse at all. The unit test
+        // asserted on `refuses` directly, one layer below this, so it
+        // passed while the shipped behaviour differed.
+        .find(|g| {
+            field_value(&g.field).map_or_else(
+                || g.matches.is_none() && g.matches_tool(tool),
+                |v| g.refuses(tool, &v),
+            )
+        })
 }
 
 #[cfg(test)]
@@ -283,7 +407,7 @@ mod tests {
         Guard {
             name: "no-mass-stage".into(),
             tool: "Bash".into(),
-            matches: Some(r#"git(\s+-\S+(\s+\S+)?)*\s+(add|stage)(\s+(?:"[^"]*"|'[^']*'|\S+))*?\s+["']?(-[A-Za-z]*A[A-Za-z]*|--all|\.\.?/*\*?|:/\.?|:\(top\)|\*)["']?($|[^A-Za-z0-9_/.-])"#.into()),
+            matches: Some(r#"git(\s+-[^\s"';&|()<>]+(\s+[^\s"';&|()<>]+)?)*\s+(add|stage)(\s+(?:"[^"]*"|'[^']*'|[^\s"';&|()<>]+))*?\s+["']?(-[A-Za-z]*A[A-Za-z]*|--all|\.\.?/*\*?|:/\.?|:\(top\)|\*)["']?($|[^A-Za-z0-9_/.-])"#.into()),
             field: "command".into(),
             unless: None,
             message: "Stage files by name.".into(),
@@ -366,6 +490,11 @@ mod tests {
             // git pathspec magic, which stages from the repo root.
             "git add :(top)",
             "git add :/.",
+            // Separators must stop the scan. The argument list of one
+            // command must not be read across `&&`, `;`, or `|` into
+            // the next, and a quoted argument must not be split open.
+            "cd /x && git add ./",
+            "git add -v ./",
         ] {
             if cmd == "git add 'A'" {
                 continue;
@@ -635,6 +764,104 @@ mod validation_tests {
                 g("Bash", "command", Some(pattern)).problems().is_empty(),
                 "pattern {pattern:?} is legitimate"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod inert_tests {
+    use super::*;
+
+    fn g(tool: &str, field: &str, matches: Option<&str>, unless: Option<&str>) -> Guard {
+        Guard {
+            name: "g".into(),
+            tool: tool.into(),
+            matches: matches.map(Into::into),
+            field: field.into(),
+            unless: unless.map(Into::into),
+            message: "no".into(),
+        }
+    }
+
+    #[test]
+    fn a_guard_with_no_pattern_refuses_a_tool_that_sends_no_field() {
+        // The docs promise this is how a tool is refused outright. The
+        // field lookup sat above `refuses`, so the guard was skipped
+        // whenever the payload carried no matching field, and a tool
+        // with no matchable field could not be guarded at all.
+        for tool in ["TodoWrite", "BashOutput", "KillShell"] {
+            let guard = g(tool, "command", None, None);
+            assert!(
+                guard.problems().is_empty(),
+                "{tool}: {:?}",
+                guard.problems()
+            );
+            let none = |_: &str| None;
+            assert!(
+                first_refusal(std::slice::from_ref(&guard), tool, &none).is_some(),
+                "{tool} must be refusable"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pattern_less_guard_refuses_a_call_that_omits_the_field() {
+        let guard = g("Bash", "command", None, None);
+        let absent = |_: &str| None;
+        assert!(first_refusal(std::slice::from_ref(&guard), "Bash", &absent).is_some());
+        // And it still only names its own tool.
+        assert!(first_refusal(std::slice::from_ref(&guard), "Read", &absent).is_none());
+    }
+
+    #[test]
+    fn an_unless_that_covers_its_own_matches_is_caught() {
+        for (m, u) in [
+            ("git add", "git"),
+            ("rm -rf", "rm|ls|cd"),
+            ("rm -rf", "rm -rf"),
+            (r"\.pem$", "pem"),
+        ] {
+            let problems = g("Bash", "command", Some(m), Some(u)).problems();
+            assert!(
+                problems.iter().any(|p| p.contains("covers everything")),
+                "matches {m:?} unless {u:?} should be caught, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_unless_is_left_alone() {
+        for (m, u) in [
+            ("git add", "--dry-run"),
+            (r"\.pem$", "example"),
+            ("rm -rf", "--help"),
+        ] {
+            let problems = g("Bash", "command", Some(m), Some(u)).problems();
+            assert!(
+                problems.is_empty(),
+                "matches {m:?} unless {u:?} is legitimate, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pattern_that_can_never_match_is_caught() {
+        for m in ["x$y", r"a\bb", r"\Ax\z\Ay"] {
+            let problems = g("Bash", "command", Some(m), None).problems();
+            assert!(
+                problems.iter().any(|p| p.contains("can never match")),
+                "{m:?} should be caught, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_end_anchor_closing_an_alternation_is_not_flagged() {
+        // `($|[^a-z])` is how a terminator is written, and an earlier
+        // version of the check called it unsatisfiable.
+        for m in [r"git add ($|[^a-z])", r"foo(x|$)", r"bar$"] {
+            let problems = g("Bash", "command", Some(m), None).problems();
+            assert!(problems.is_empty(), "{m:?} is fine, got {problems:?}");
         }
     }
 }
