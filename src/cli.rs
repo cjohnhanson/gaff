@@ -143,7 +143,7 @@ fn run_hook() -> ExitCode {
     // on state gaff might fail to reach, and neither can select a
     // guard anyway.
     if envelope.kind == crate::event::Kind::PreToolCall
-        && let Some(refusal) = guard_refusal(&cfg, &envelope)
+        && let Some(refusal) = guard_refusal(&cfg, &envelope, adapter)
     {
         eprintln!("{refusal}");
         return ExitCode::from(2);
@@ -1365,68 +1365,34 @@ fn run_githook(args: &[String]) -> ExitCode {
     u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }
 
-/// Render one argv element as the shell text that produces it.
-///
-/// A guard pattern reads a command line, and a host that sends argv has
-/// none. Joining the elements with a space invents one, and an argument
-/// holding a space then reads as two, which is a different command from
-/// the one the host is about to run.
-fn shell_quote(arg: &str) -> String {
-    let plain = !arg.is_empty()
-        && arg
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@+,".contains(c));
-    if plain {
-        arg.to_string()
-    } else {
-        format!("'{}'", arg.replace('\'', r"'\''"))
-    }
-}
-
 /// The message of the first guard that refuses this call.
 ///
 /// This is the only path in gaff that leads to exit 2. Every failure
 /// path, including a broken guard, still degrades, because a gaff
 /// fault must never block a session.
-fn guard_refusal(cfg: &config::Config, envelope: &crate::event::Envelope) -> Option<String> {
+fn guard_refusal(
+    cfg: &config::Config,
+    envelope: &crate::event::Envelope,
+    adapter: &crate::adapter::Adapter,
+) -> Option<String> {
     let tool = envelope.tool_name.as_deref()?;
-    // A field may arrive as a string or as an argv array. Reading only
-    // the string shape meant a host that sends `["git","add","-A"]`
-    // disarmed every Bash guard, with no warning. Flatten an array to
-    // the command line it stands for, so one guard covers both shapes.
+    // The adapter owns the mapping from a payload shape to a named
+    // field. A guard names a normalized tool and a field, so reading
+    // the payload here would tie every guard to one host's schema.
     let value = |field: &str| {
-        let raw = envelope.raw.get("tool_input").and_then(|i| i.get(field))?;
-        match raw {
-            serde_json::Value::String(s) => Some(s.clone()),
-            serde_json::Value::Array(items) => {
-                // Every element must be a string. Dropping the ones
-                // that are not and joining the rest invented a command
-                // line the host never sent, and the invented one did
-                // not match, so the guard passed in silence.
-                let parts: Option<Vec<&str>> = items.iter().map(serde_json::Value::as_str).collect();
-                if parts.is_none() {
-                    eprintln!(
-                        "gaff: the `{field}` field of this {tool} call is not text gaff can read, so no guard was matched against it."
-                    );
-                }
-                // Quote each element on the way in. Joining with a bare
-                // space made an argument that holds a space read as
-                // several, so an argv host was refused where a string
-                // host was not, for the same call.
-                parts.map(|p| {
-                    p.iter()
-                        .map(|a| shell_quote(a))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-            }
-            _ => {
-                eprintln!(
-                    "gaff: the `{field}` field of this {tool} call is not text gaff can read, so no guard was matched against it."
-                );
-                None
-            }
+        let found = (adapter.tool_field)(&envelope.raw, field);
+        if found.is_none()
+            && envelope
+                .raw
+                .get("tool_input")
+                .and_then(|i| i.get(field))
+                .is_some()
+        {
+            eprintln!(
+                "gaff: the `{field}` field of this {tool} call is not text gaff can read, so no guard was matched against it."
+            );
         }
+        found
     };
     let hit = crate::guard::first_refusal(&cfg.guards, tool, &value)?;
     Some(format!(

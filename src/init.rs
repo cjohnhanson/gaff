@@ -91,14 +91,17 @@ pub fn uninstall_for(
     })
 }
 
+/// The `hooks` object.
+///
+/// `edit_settings` refuses a file whose `hooks` key holds anything
+/// else, so the key is either absent or an object by the time this
+/// runs.
 fn hooks_map(settings: &mut Map<String, Value>) -> &mut Map<String, Value> {
-    let hooks = settings
+    settings
         .entry("hooks".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if !hooks.is_object() {
-        *hooks = Value::Object(Map::new());
-    }
-    hooks.as_object_mut().expect("just ensured object")
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .expect("edit_settings refuses a non-object hooks key")
 }
 
 /// True when a matcher-group entry holds a hook with exactly this
@@ -117,7 +120,12 @@ fn edit_settings(
     root: &Path,
     mutate: impl FnOnce(&mut Map<String, Value>) -> bool,
 ) -> std::io::Result<Outcome> {
-    let path = root.join(settings_path);
+    let declared = root.join(settings_path);
+    // A dotfile manager installs this file as a link into a managed
+    // store. Renaming over it severs the link, leaves the store file
+    // untouched, and reports success. `read_user_config_file` goes out
+    // of its way to support that layout; this path has to match.
+    let path = std::fs::canonicalize(&declared).unwrap_or(declared);
     let mut settings: Map<String, Value> = match std::fs::read_to_string(&path) {
         Ok(bytes) => serde_json::from_str(&bytes).map_err(|e| {
             std::io::Error::new(
@@ -130,6 +138,19 @@ fn edit_settings(
         })?,
         Err(_) => Map::new(),
     };
+
+    // Replacing a non-object `hooks` value dropped whatever the user
+    // had there, silently and at exit 0, which contradicts the promise
+    // that gaff keeps every key it does not own.
+    if settings.get("hooks").is_some_and(|h| !h.is_object()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{}: the `hooks` key is not an object. Refusing to rewrite the file, because that would drop what is there.",
+                path.display()
+            ),
+        ));
+    }
 
     if !mutate(&mut settings) {
         return Ok(Outcome::Unchanged);

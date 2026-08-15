@@ -34,6 +34,15 @@ pub struct Adapter {
     pub settings_path: &'static str,
     /// The events gaff subscribes to on this host.
     pub hook_events: &'static [&'static str],
+    /// Read one tool-input field out of this host's raw payload.
+    ///
+    /// A guard names a normalized tool and a field, not a payload
+    /// shape, so the mapping from one to the other belongs to the
+    /// adapter. It was read straight off `tool_input` in the CLI
+    /// instead, which meant a host that nests tool input anywhere else
+    /// would disarm every guard while `check` and `doctor` both
+    /// reported them active.
+    pub tool_field: fn(&Value, &str) -> Option<String>,
 }
 
 /// The events gaff needs on Claude Code: the prime and flush points,
@@ -53,7 +62,43 @@ pub const CLAUDE_CODE: Adapter = Adapter {
     sniff: |json| json.get("hook_event_name").is_some(),
     settings_path: ".claude/settings.local.json",
     hook_events: CLAUDE_CODE_EVENTS,
+    tool_field: claude_code_tool_field,
 };
+
+/// Claude Code puts the tool input under `tool_input`.
+///
+/// A field may arrive as a string or as an argv array. Every element of
+/// an array must be a string: dropping the ones that are not and
+/// joining the rest invents a command line the host never sent, and the
+/// invented one does not match, so the guard passes in silence.
+fn claude_code_tool_field(raw: &Value, field: &str) -> Option<String> {
+    match raw.get("tool_input").and_then(|i| i.get(field))? {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(items) => {
+            let parts: Option<Vec<&str>> = items.iter().map(Value::as_str).collect();
+            parts.map(|p| p.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" "))
+        }
+        _ => None,
+    }
+}
+
+/// Render one argv element as the shell text that produces it.
+///
+/// A guard pattern reads a command line, and a host that sends argv has
+/// none. Joining the elements with a space invents one, and an argument
+/// holding a space then reads as two, which is a different command from
+/// the one the host is about to run.
+fn shell_quote(arg: &str) -> String {
+    let plain = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@+,".contains(c));
+    if plain {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
 
 /// Every implemented adapter.
 pub const ADAPTERS: &[&Adapter] = &[&CLAUDE_CODE];
@@ -216,6 +261,83 @@ mod kind_tests {
     fn a_normalized_name_round_trips_through_a_config() {
         for k in [Kind::SessionStart, Kind::Prompt, Kind::ToolCall, Kind::ToolBatch, Kind::Stop] {
             assert_eq!(Kind::parse(k.as_str()), k);
+        }
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    /// Guards gate on `Kind::PreToolCall`, and an unrecognized event
+    /// falls through to `Kind::Other`. An adapter whose pre-tool event
+    /// is named differently and never mapped gets zero guards, with
+    /// nothing said. That is a whole feature off on a new host, so the
+    /// mapping is asserted rather than assumed.
+    #[test]
+    fn every_adapter_maps_some_event_to_a_pre_tool_call() {
+        for adapter in ADAPTERS {
+            let mapped = adapter.hook_events.iter().any(|event| {
+                let payload = serde_json::json!({
+                    "hook_event_name": event,
+                    "session_id": "s",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "x"},
+                });
+                (adapter.parse)(payload).kind == crate::event::Kind::PreToolCall
+            });
+            assert!(
+                mapped,
+                "adapter `{}` subscribes to no event that becomes a pre-tool call, so no guard can ever fire on it",
+                adapter.name
+            );
+        }
+    }
+
+    /// A guard names a normalized tool and a field. Reading the payload
+    /// in the CLI instead tied every guard to one host's schema, so a
+    /// second adapter would have disarmed all of them while `check` and
+    /// `doctor` reported them active.
+    #[test]
+    fn every_adapter_can_read_a_tool_field() {
+        for adapter in ADAPTERS {
+            let payload = serde_json::json!({
+                "hook_event_name": adapter.hook_events[0],
+                "session_id": "s",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git status"},
+            });
+            assert_eq!(
+                (adapter.tool_field)(&payload, "command").as_deref(),
+                Some("git status"),
+                "adapter `{}` cannot read the field a guard names",
+                adapter.name
+            );
+            assert_eq!(
+                (adapter.tool_field)(&payload, "file_path"),
+                None,
+                "adapter `{}` invented a field the payload lacks",
+                adapter.name
+            );
+        }
+    }
+
+    #[test]
+    fn an_argv_shaped_field_reads_as_the_command_line_it_stands_for() {
+        for adapter in ADAPTERS {
+            let payload = serde_json::json!({
+                "tool_input": {"command": ["git", "add", "release notes.md"]},
+            });
+            assert_eq!(
+                (adapter.tool_field)(&payload, "command").as_deref(),
+                Some("git add 'release notes.md'"),
+                "adapter `{}` lost the quoting an argv element needs",
+                adapter.name
+            );
+            // A non-string element means the value is not a command
+            // line. Inventing one from the survivors passed the guard.
+            let mixed = serde_json::json!({"tool_input": {"command": ["git", 7]}});
+            assert_eq!((adapter.tool_field)(&mixed, "command"), None);
         }
     }
 }
