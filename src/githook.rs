@@ -116,16 +116,57 @@ pub fn hooks_declared(entries: &[GitHook]) -> Vec<String> {
     out
 }
 
+/// The hooks git feeds work to on standard input.
+///
+/// Only these get the stdin capture in the generated script. A hook
+/// that receives nothing on stdin must not read it, because git leaves
+/// stdin attached to the terminal for some of them and a read would
+/// hang the commit.
+const STDIN_HOOKS: &[&str] = &["pre-push"];
+
 /// The script gaff writes for one hook.
+///
+/// For a hook that receives its work on stdin, the stream is captured
+/// once and both readers are fed from the copy. A stream is consumed by
+/// whoever reads it first: a kept `pre-push.local` that inspected the
+/// ref list left gaff reading an empty stdin, so a protected-branch
+/// guard saw no refs and allowed every push. It failed open, silently,
+/// and only when a kept hook existed.
 fn script(hook: &str, command: &str) -> String {
-    format!(
+    let head = format!(
         "#!/bin/sh\n\
          {BANNER}\n\
-         # gaff keeps a hook it did not write as {hook}.local and calls it first.\n\
+         # gaff keeps a hook it did not write as {hook}.local and calls it first.\n"
+    );
+    if !STDIN_HOOKS.contains(&hook) {
+        return format!(
+            "{head}\
+             if [ -x \"$(dirname \"$0\")/{hook}.local\" ]; then\n\
+             \t\"$(dirname \"$0\")/{hook}.local\" \"$@\" || exit $?\n\
+             fi\n\
+             exec {command} {hook} \"$@\"\n"
+        );
+    }
+    // No `exec` on this path: the temp file has to be removed after the
+    // command returns, so the exit code is carried by hand.
+    format!(
+        "{head}\
+         # git sends this hook its work on stdin, and a stream is spent by\n\
+         # the first reader. Capture it once and feed both from the copy.\n\
+         gaff_stdin=$(mktemp) || exit 1\n\
+         cat >\"$gaff_stdin\"\n\
          if [ -x \"$(dirname \"$0\")/{hook}.local\" ]; then\n\
-         \t\"$(dirname \"$0\")/{hook}.local\" \"$@\" || exit $?\n\
+         \t\"$(dirname \"$0\")/{hook}.local\" \"$@\" <\"$gaff_stdin\"\n\
+         \tgaff_kept=$?\n\
+         \tif [ $gaff_kept -ne 0 ]; then\n\
+         \t\trm -f \"$gaff_stdin\"\n\
+         \t\texit $gaff_kept\n\
+         \tfi\n\
          fi\n\
-         exec {command} {hook} \"$@\"\n"
+         {command} {hook} \"$@\" <\"$gaff_stdin\"\n\
+         gaff_status=$?\n\
+         rm -f \"$gaff_stdin\"\n\
+         exit $gaff_status\n"
     )
 }
 
@@ -201,20 +242,46 @@ pub fn install(cwd: &Path, entries: &[GitHook], command: &str) -> std::io::Resul
     let dir =
         hooks_dir(cwd).ok_or_else(|| std::io::Error::other("this is not a git repository"))?;
     std::fs::create_dir_all(&dir)?;
+    let declared = hooks_declared(entries);
+    // Check every hook before writing any. A refusal found halfway
+    // through used to leave the repo half-configured, and which half
+    // depended on the order the entries happened to be declared in.
+    let mut blocked = Vec::new();
+    for hook in &declared {
+        let path = dir.join(hook);
+        if path.exists()
+            && !is_ours(&path)
+            && dir.join(format!("{hook}.local")).exists()
+        {
+            blocked.push(hook.clone());
+        }
+    }
+    if !blocked.is_empty() {
+        // Two foreign hooks and one slot to keep them in. Overwriting
+        // loses the second one for good, so gaff refuses and names the
+        // files involved.
+        return Err(std::io::Error::other(format!(
+            "{} was written by another tool, and {} is already taken. \
+             gaff will not overwrite it, and installed nothing. \
+             Move or merge {}, then run this again.",
+            blocked.join(", "),
+            blocked
+                .iter()
+                .map(|h| format!("{h}.local"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            blocked
+                .iter()
+                .map(|h| format!("{h}.local"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        )));
+    }
     let mut written = Vec::new();
-    for hook in hooks_declared(entries) {
+    for hook in declared {
         let path = dir.join(&hook);
         if path.exists() && !is_ours(&path) {
             let kept = dir.join(format!("{hook}.local"));
-            if kept.exists() {
-                // Two foreign hooks and one slot to keep them in.
-                // Overwriting loses the second one for good, so gaff
-                // refuses and names both files.
-                return Err(std::io::Error::other(format!(
-                    "{hook} was written by another tool, and {hook}.local is already taken. \
-                     gaff will not overwrite it. Move or merge {hook}.local, then run this again."
-                )));
-            }
             std::fs::rename(&path, &kept)?;
             eprintln!("gaff: kept the existing {hook} as {hook}.local, and calls it first.");
         }
@@ -223,6 +290,30 @@ pub fn install(cwd: &Path, entries: &[GitHook], command: &str) -> std::io::Resul
         written.push(hook);
     }
     Ok(written)
+}
+
+/// Hooks whose script is installed while the config declares no entry
+/// for them.
+///
+/// gaff's script exists only because someone ran `gaff init --git`
+/// against a config that declared the hook. If the config no longer
+/// does, the two have drifted, and the check the user installed stops
+/// running without a word. `githook` refuses on this rather than pass.
+#[must_use]
+pub fn stale_installs(cwd: &Path, entries: &[GitHook]) -> Vec<String> {
+    let Some(dir) = hooks_dir(cwd) else {
+        return Vec::new();
+    };
+    let declared = hooks_declared(entries);
+    KNOWN_HOOKS
+        .iter()
+        .filter(|h| !declared.iter().any(|d| d == *h))
+        .filter(|h| {
+            let p = dir.join(*h);
+            p.exists() && is_ours(&p)
+        })
+        .map(|h| (*h).to_string())
+        .collect()
 }
 
 /// Remove the scripts gaff wrote, and restore a kept hook.
@@ -497,5 +588,106 @@ mod ownership_tests {
         let d = repo("own");
         install(&d, &[entry()], "gaff githook").unwrap();
         assert!(is_ours(&d.join(".git/hooks/pre-commit")));
+    }
+}
+
+#[cfg(test)]
+mod stdin_tests {
+    use super::*;
+
+    fn repo(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("gaff-stdin-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(d.join(".git/hooks")).unwrap();
+        d
+    }
+
+    #[test]
+    fn pre_push_captures_stdin_so_a_kept_hook_cannot_drain_it() {
+        // git sends pre-push its ref list on stdin, and a stream is
+        // spent by whoever reads it first. A kept hook that inspected
+        // the refs left gaff reading nothing, so a protected-branch
+        // guard saw no refs and allowed every push. It failed open.
+        let s = script("pre-push", "/bin/gaff hook");
+        assert!(s.contains("gaff_stdin=$(mktemp)"), "stdin is captured");
+        assert!(
+            s.contains("pre-push.local\" \"$@\" <\"$gaff_stdin\""),
+            "the kept hook reads the copy"
+        );
+        assert!(
+            s.contains("/bin/gaff hook pre-push \"$@\" <\"$gaff_stdin\""),
+            "gaff reads the copy too"
+        );
+        assert!(s.contains("rm -f \"$gaff_stdin\""), "the copy is removed");
+        assert!(
+            !s.contains("exec /bin/gaff"),
+            "no exec, because the copy must be removed after the command returns"
+        );
+    }
+
+    #[test]
+    fn a_hook_that_receives_no_stdin_never_reads_it() {
+        // git leaves stdin on the terminal for some hooks. A read there
+        // would hang the commit.
+        for hook in ["pre-commit", "commit-msg", "post-merge"] {
+            let s = script(hook, "/bin/gaff hook");
+            assert!(!s.contains("mktemp"), "{hook} must not capture stdin");
+            assert!(!s.contains("cat >"), "{hook} must not read stdin");
+        }
+    }
+
+    #[test]
+    fn a_kept_hooks_failure_still_stops_the_push() {
+        let s = script("pre-push", "/bin/gaff hook");
+        assert!(
+            s.contains("exit $gaff_kept"),
+            "a kept hook's non-zero code still ends the run"
+        );
+    }
+
+    #[test]
+    fn an_installed_hook_with_no_entry_is_reported_as_stale() {
+        // gaff's script exists only because someone ran `gaff init
+        // --git` against a config that declared the hook. If the config
+        // no longer does, the check silently stopped running.
+        let d = repo("stale");
+        let entries: Vec<GitHook> =
+            serde_yaml_ng::from_str("- name: scan\n  on: [pre-commit]\n  command: [/bin/true]\n")
+                .unwrap();
+        install(&d, &entries, "gaff hook").unwrap();
+        assert!(stale_installs(&d, &entries).is_empty(), "declared is not stale");
+        assert_eq!(
+            stale_installs(&d, &[]),
+            vec!["pre-commit".to_string()],
+            "an installed hook with no entry is stale"
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_foreign_hook_is_never_reported_as_stale() {
+        let d = repo("foreign");
+        std::fs::write(d.join(".git/hooks/pre-commit"), "#!/bin/sh\n# someone else\n").unwrap();
+        assert!(stale_installs(&d, &[]).is_empty());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn install_writes_nothing_when_any_hook_is_blocked() {
+        // A refusal found halfway through used to leave the repo half
+        // configured, and which half depended on declaration order.
+        let d = repo("atomic");
+        std::fs::write(d.join(".git/hooks/pre-push"), "#!/bin/sh\n# theirs\n").unwrap();
+        std::fs::write(d.join(".git/hooks/pre-push.local"), "#!/bin/sh\n# taken\n").unwrap();
+        let entries: Vec<GitHook> = serde_yaml_ng::from_str(
+            "- name: a\n  on: [pre-commit]\n  command: [/bin/true]\n- name: b\n  on: [pre-push]\n  command: [/bin/true]\n",
+        )
+        .unwrap();
+        assert!(install(&d, &entries, "gaff hook").is_err());
+        assert!(
+            !d.join(".git/hooks/pre-commit").exists(),
+            "the unblocked hook is not written either"
+        );
+        std::fs::remove_dir_all(&d).ok();
     }
 }
