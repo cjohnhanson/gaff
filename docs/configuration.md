@@ -305,14 +305,14 @@ user-level config and it applies in every repo.
 guards:
   - name: no-mass-stage
     tool: Bash
-    matches: 'git(\s+-[^\s"'';&|()<>]+(\s+[^\s"'';&|()<>]+)?)*\s+(add|stage)(\s+(?:"[^"]*"|''[^'']*''|[^\s"'';&|()<>]+))*?\s+["'']?(-[A-Za-z]*A[A-Za-z]*|--all|\.\.?/*\*?|:/\.?|:\(top\)|\*)["'']?($|[^A-Za-z0-9_/.-])'
+    matches: 'git((?:[ \t]|\\\r?\n)+-[^\s"'';&|()<>]+((?:[ \t]|\\\r?\n)+[^\s"'';&|()<>]+)?)*(?:[ \t]|\\\r?\n)+(add|stage)((?:[ \t]|\\\r?\n)+(?:"[^"]*"|''[^'']*''|[^\s"'';&|()<>]+))*?(?:[ \t]|\\\r?\n)+["'']?(-[A-Za-z]*A[A-Za-z]*|--all|\.\.?/*\*?|:/\.?|:\(top\)|\*)["'']?($|[^A-Za-z0-9_/.-])'
     unless: '--dry-run'
     message: >-
       Stage files by name. Run `git status` first, then name each path.
 
   - name: no-commit-all
     tool: Bash
-    matches: 'git(\s+-[^\s"'';&|()<>]+(\s+[^\s"'';&|()<>]+)?)*\s+commit(\s+(?:"[^"]*"|''[^'']*''|[^\s"'';&|()<>]+))*?\s+(--all|-[A-Za-z]*a[A-Za-z]*)($|[^A-Za-z0-9_-])'
+    matches: 'git((?:[ \t]|\\\r?\n)+-[^\s"'';&|()<>]+((?:[ \t]|\\\r?\n)+[^\s"'';&|()<>]+)?)*(?:[ \t]|\\\r?\n)+commit((?:[ \t]|\\\r?\n)+(?:"[^"]*"|''[^'']*''|[^\s"'';&|()<>]+))*?(?:[ \t]|\\\r?\n)+(--all|-[A-Za-z]*a[A-Za-z]*)($|[^A-Za-z0-9_-])'
     message: >-
       `git commit -a` stages every tracked change. Stage the paths you
       mean, then commit without -a.

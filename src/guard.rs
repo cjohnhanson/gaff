@@ -93,30 +93,79 @@ fn dedup(items: &[&str]) -> Vec<String> {
 /// substring of the pattern text is not necessarily present in a string
 /// the pattern matches: `a(b|c)d` matches `acd`, which holds no `b`.
 /// Only patterns with no such structure yield a core.
-fn literal_core(pattern: &str) -> Option<String> {
-    let body = pattern
-        .strip_prefix('^')
-        .unwrap_or(pattern)
-        .strip_suffix('$')
-        .unwrap_or_else(|| pattern.strip_prefix('^').unwrap_or(pattern));
+fn representative(pattern: &str) -> Option<String> {
+    // Structure that makes part of the pattern optional means no single
+    // string stands for every match, so there is nothing to conclude.
+    if pattern.contains('|') || pattern.contains('?') || pattern.contains('*') {
+        return None;
+    }
     let mut out = String::new();
-    let mut chars = body.chars();
+    let mut chars = pattern.chars();
     while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                // An escaped metacharacter stands for itself.
+        match c {
+            // An anchor constrains the match further and a group is
+            // punctuation. Neither removes text from the match, so the
+            // example is unaffected.
+            '^' | '$' | '(' | ')' | '+' => {}
+            '\\' => match chars.next() {
+                Some('s') => out.push(' '),
+                Some('d') => out.push('0'),
+                Some('w') => out.push('a'),
+                // A zero-width assertion adds nothing to the text.
+                Some('b' | 'A' | 'z') => {}
                 Some(n) if !n.is_alphanumeric() => out.push(n),
-                // `\d`, `\b`, `\s` and friends are structure.
                 _ => return None,
+            },
+            '.' => out.push('x'),
+            // One character from the class stands for the class. A
+            // negated class is skipped, because picking a member of it
+            // is not a one-liner.
+            '[' => {
+                let mut first = None;
+                for n in chars.by_ref() {
+                    if n == ']' {
+                        break;
+                    }
+                    if first.is_none() && n != '^' && n != '-' {
+                        first = Some(n);
+                    }
+                }
+                out.push(first?);
             }
-            continue;
+            // `{n,m}` repeats what came before, which the example
+            // already holds once, so the count is skipped.
+            '{' => {
+                for n in chars.by_ref() {
+                    if n == '}' {
+                        break;
+                    }
+                }
+            }
+            _ => out.push(c),
         }
-        if ".[]|()*+?{}^$".contains(c) {
-            return None;
-        }
-        out.push(c);
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// Whether `unless` exempts every string `matches` can catch.
+///
+/// Built from an example string that `matches` must produce, so a
+/// pattern with real structure is covered too: `git\s+add` yields
+/// `git add`, and an `unless` of `git` matches it, so the guard is
+/// decorative.
+///
+/// An anchored `unless` is never treated as subsuming. `^rm` exempts
+/// only a command that starts with `rm`, so it is strictly narrower
+/// than the bare literal, and reading it as subsuming both rejected a
+/// working guard and switched it off.
+fn unless_subsumes(matches: &str, unless: &str) -> bool {
+    if unless.contains('^') || unless.contains('$') || unless.contains("\\A") {
+        return false;
+    }
+    let Some(example) = representative(matches) else {
+        return false;
+    };
+    Regex::new(unless).is_ok_and(|re| re.is_match(&example))
 }
 
 /// Why a pattern can never match, when that is decidable cheaply.
@@ -126,44 +175,89 @@ fn literal_core(pattern: &str) -> Option<String> {
 /// pattern, and a word boundary between two word characters. Both read
 /// as working rules and match nothing.
 fn unsatisfiable(pattern: &str) -> Option<String> {
-    if pattern.contains("(?m") {
-        return None;
-    }
-    let bytes: Vec<char> = pattern.chars().collect();
-    for (i, c) in bytes.iter().enumerate() {
-        let escaped = i > 0 && bytes[i - 1] == '\\';
+    let chars: Vec<char> = pattern.chars().collect();
+    let multiline = pattern.contains("(?m");
+    // Track character-class context. A `$` inside `[...]` is the
+    // literal dollar sign, and reading it as an end anchor rejected an
+    // ordinary guard on a shell variable and switched it off.
+    let mut in_class = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let escaped = i > 0 && chars[i - 1] == '\\' && !(i > 1 && chars[i - 2] == '\\');
+        if !escaped {
+            if c == '[' && !in_class {
+                in_class = true;
+                i += 1;
+                continue;
+            }
+            if c == ']' && in_class {
+                in_class = false;
+                i += 1;
+                continue;
+            }
+        }
+        if in_class {
+            i += 1;
+            continue;
+        }
         // `x$y`: nothing follows the end of the text.
         //
         // An end anchor closing an alternation branch is ordinary and
         // common — `($|[^a-z])` is exactly how a terminator is
         // written — so only a literal following the anchor counts.
-        if *c == '$'
+        if c == '$'
             && !escaped
-            && let Some(next) = bytes.get(i + 1)
+            && !multiline
+            && let Some(next) = chars.get(i + 1)
             && !")|*?+{".contains(*next)
         {
             return Some("`$` is the end of the text and something follows it".to_string());
         }
         // `a\bb`: there is no word boundary between two word characters.
-        if *c == 'b'
+        // `(?m)` does not affect `\b`, so this check runs regardless.
+        if c == 'b'
             && escaped
-            && i >= 2
-            && i + 1 < bytes.len()
-            && bytes[i - 2].is_alphanumeric()
-            && bytes[i + 1].is_alphanumeric()
+            && let Some(next) = chars.get(i + 1)
+            && next.is_alphanumeric()
+            && word_before(&chars, i - 1)
         {
             return Some(
                 "`\\b` needs a word boundary and it sits between two word characters".to_string(),
             );
         }
+        i += 1;
     }
-    if let Some(at) = pattern.find("\\z")
+    if !multiline
+        && let Some(at) = pattern.find("\\z")
         && !pattern[at + 2..].is_empty()
         && !pattern[at + 2..].starts_with([')', '|'])
     {
         return Some("`\\z` is the end of the text and something follows it".to_string());
     }
     None
+}
+
+/// Whether the pattern text ending just before `at` can only produce a
+/// word character.
+///
+/// `at` indexes the backslash of a `\b`. A literal is read directly. A
+/// closing `]` means a character class, and a class of nothing but word
+/// characters can only match one.
+fn word_before(chars: &[char], at: usize) -> bool {
+    let Some(prev) = at.checked_sub(1).and_then(|i| chars.get(i)) else {
+        return false;
+    };
+    if *prev != ']' {
+        return prev.is_alphanumeric();
+    }
+    let Some(open) = chars[..at - 1].iter().rposition(|c| *c == '[') else {
+        return false;
+    };
+    let body = &chars[open + 1..at - 1];
+    !body.is_empty()
+        && body[0] != '^'
+        && body.iter().all(|c| c.is_alphanumeric() || *c == '-')
 }
 
 /// One refusal rule.
@@ -279,10 +373,9 @@ impl Guard {
         // heuristic over literal text, so it reports only the cases it
         // is certain of and stays quiet otherwise.
         if let (Some(m), Some(u)) = (&self.matches, &self.unless)
-            && let Some(core) = literal_core(m)
             && u.split('|')
                 .filter(|a| !a.is_empty())
-                .any(|alt| literal_core(alt).is_some_and(|a| core.contains(&a)))
+                .any(|alt| unless_subsumes(m, alt))
         {
             out.push(format!(
                 "guard `{}`: the unless pattern `{u}` covers everything `{m}` catches, so the guard can never fire.",
@@ -407,7 +500,7 @@ mod tests {
         Guard {
             name: "no-mass-stage".into(),
             tool: "Bash".into(),
-            matches: Some(r#"git(\s+-[^\s"';&|()<>]+(\s+[^\s"';&|()<>]+)?)*\s+(add|stage)(\s+(?:"[^"]*"|'[^']*'|[^\s"';&|()<>]+))*?\s+["']?(-[A-Za-z]*A[A-Za-z]*|--all|\.\.?/*\*?|:/\.?|:\(top\)|\*)["']?($|[^A-Za-z0-9_/.-])"#.into()),
+            matches: Some(r#"git((?:[ \t]|\\\r?\n)+-[^\s"';&|()<>]+((?:[ \t]|\\\r?\n)+[^\s"';&|()<>]+)?)*(?:[ \t]|\\\r?\n)+(add|stage)((?:[ \t]|\\\r?\n)+(?:"[^"]*"|'[^']*'|[^\s"';&|()<>]+))*?(?:[ \t]|\\\r?\n)+["']?(-[A-Za-z]*A[A-Za-z]*|--all|\.\.?/*\*?|:/\.?|:\(top\)|\*)["']?($|[^A-Za-z0-9_/.-])"#.into()),
             field: "command".into(),
             unless: None,
             message: "Stage files by name.".into(),
@@ -495,6 +588,12 @@ mod tests {
             // the next, and a quoted argument must not be split open.
             "cd /x && git add ./",
             "git add -v ./",
+            // A newline ends a command in shell, so the scan must stop
+            // at one. A backslash continues the line, and then the
+            // command genuinely spans it.
+            "cd /x\ngit add -A",
+            "git add \\\n-A",
+            "git \\\n  add \\\n  -A",
         ] {
             if cmd == "git add 'A'" {
                 continue;
@@ -863,5 +962,110 @@ mod inert_tests {
             let problems = g("Bash", "command", Some(m), None).problems();
             assert!(problems.is_empty(), "{m:?} is fine, got {problems:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod validator_tests {
+    use super::*;
+
+    fn g(matches: Option<&str>, unless: Option<&str>) -> Guard {
+        Guard {
+            name: "g".into(),
+            tool: "Bash".into(),
+            matches: matches.map(Into::into),
+            field: "command".into(),
+            unless: unless.map(Into::into),
+            message: "no".into(),
+        }
+    }
+
+    #[test]
+    fn an_anchored_unless_is_never_read_as_subsuming() {
+        // `^rm` exempts only a command that starts with `rm`, so it is
+        // narrower than the bare literal. Reading it as subsuming both
+        // rejected a working guard and switched it off, which is the
+        // worst pair of outcomes here.
+        for (m, u) in [("rm", "^rm"), ("rm$", "^rm"), ("rm", "rm$")] {
+            let problems = g(Some(m), Some(u)).problems();
+            assert!(
+                problems.is_empty(),
+                "matches {m:?} unless {u:?} is a working guard, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subsumption_is_found_through_pattern_structure() {
+        // A real guard's `matches` is mostly structure, so a check that
+        // only fired on two bare literals never fired in practice.
+        for (m, u) in [
+            (r"git\s+add", "git"),
+            (r"rm\s+-rf", "rm"),
+            ("rm[ ]-rf", "rm"),
+            ("rm -rf", "rm.-rf"),
+            ("rm -rf", "r[m]"),
+            ("rm -rf", "rm|ls|cd"),
+            (r"\.pem$", "pem"),
+        ] {
+            let problems = g(Some(m), Some(u)).problems();
+            assert!(
+                problems.iter().any(|p| p.contains("covers everything")),
+                "matches {m:?} unless {u:?} should be caught, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrower_unless_is_left_alone() {
+        for (m, u) in [
+            (r"git\s+add", "--dry-run"),
+            (r"\.pem$", "example"),
+            ("rm -rf", "--help"),
+            ("rm -rf", "deploy-preview"),
+        ] {
+            let problems = g(Some(m), Some(u)).problems();
+            assert!(
+                problems.is_empty(),
+                "matches {m:?} unless {u:?} is legitimate, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dollar_inside_a_character_class_is_not_an_anchor() {
+        // A guard on a shell variable is an ordinary thing to write,
+        // and reading `[$]` as an end anchor rejected it and switched
+        // it off.
+        for m in ["rm -rf [$]HOME", "[$]x", r"\$5", r"\$[0-9]"] {
+            let problems = g(Some(m), None).problems();
+            assert!(problems.is_empty(), "{m:?} is fine, got {problems:?}");
+        }
+    }
+
+    #[test]
+    fn a_word_boundary_after_a_word_class_is_caught() {
+        // `[0-9]` can only match a word character, so there is no
+        // boundary between it and the `x`.
+        assert!(
+            g(Some(r"[0-9]\bx"), None)
+                .problems()
+                .iter()
+                .any(|p| p.contains("can never match"))
+        );
+    }
+
+    #[test]
+    fn multiline_does_not_switch_off_the_word_boundary_check() {
+        // `(?m)` changes what `$` means. It does nothing to `\b`, so it
+        // must not be a blanket escape from the whole check.
+        assert!(
+            g(Some(r"(?m)a\bb"), None)
+                .problems()
+                .iter()
+                .any(|p| p.contains("can never match"))
+        );
+        // And it does excuse a mid-pattern `$`.
+        assert!(g(Some("(?m)x$y"), None).problems().is_empty());
     }
 }
