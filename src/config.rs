@@ -290,7 +290,13 @@ pub fn load_layered(cwd: &Path) -> Loaded {
                     return Loaded::Broken(format!("{}: {e}", p.display()));
                 }
             },
-            Err(_) => None,
+            // An absent file is the ordinary case. Any other error means
+            // the file exists and gaff cannot read it, and treating that
+            // as "no guards" would silently disarm every refusal.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Loaded::Broken(format!("{}: {e}", p.display()));
+            }
         },
         None => None,
     };
@@ -298,7 +304,14 @@ pub fn load_layered(cwd: &Path) -> Loaded {
         (None, repo) => repo,
         (Some(user), Loaded::Absent) => Loaded::Ok(user),
         (Some(user), Loaded::Ok(repo)) => Loaded::Ok(user.overlaid_with(repo)),
-        (Some(_), broken @ Loaded::Broken(_)) => broken,
+        // A repo that cannot be parsed contributes nothing. It must
+        // not delete what the user declared, because the user's guards
+        // are refusals and a repo could otherwise switch them all off
+        // with one bad line.
+        (Some(user), Loaded::Broken(err)) => {
+            eprintln!("gaff: {CONFIG_PATH} is not valid: {err}. Using the user config alone.");
+            Loaded::Ok(user)
+        }
     }
 }
 
@@ -328,9 +341,20 @@ impl Config {
         self.github
             .retain(|u| !repo.github.iter().any(|r| r.name == u.name));
         self.github.extend(repo.github);
-        // A repo may add a guard, and it may not remove or weaken one
-        // the user declared. A guard is a refusal the operator wrote.
-        self.guards.extend(repo.guards);
+        // A guard comes from the user config only. A repo cannot add
+        // one, and a repo cannot remove one.
+        //
+        // Guards are the single blocking feature, and a repo is
+        // untrusted content. A repo-declared guard is a cloned
+        // repository deciding which tool calls its reader may make, and
+        // a repo declaring `tool: '.*'` would refuse every call. The
+        // repo's guards are dropped here rather than merged.
+        if !repo.guards.is_empty() {
+            eprintln!(
+                "gaff: the repo config declares {} guard(s). A repo may not declare a guard, so they are ignored. Guards belong in $HOME/.config/gaff/gaff.yml.",
+                repo.guards.len()
+            );
+        }
 
         if repo.max_inject_bytes != DEFAULT_MAX_INJECT_BYTES {
             self.max_inject_bytes = repo.max_inject_bytes;
@@ -545,5 +569,50 @@ mod layer_tests {
         let merged = user.overlaid_with(repo);
         assert_eq!(merged.max_inject_bytes, 100, "the repo set no cap");
         assert_eq!(merged.default_profile.as_deref(), Some("userdef"));
+    }
+}
+
+#[cfg(test)]
+mod guard_layering_tests {
+    use super::*;
+
+    fn user_with_guard() -> Config {
+        serde_yml::from_str(
+            "guards:\n  - name: no-mass-stage\n    tool: Bash\n    matches: 'git add -A'\n    message: Stage by name.\n",
+        )
+        .expect("the user fixture must parse")
+    }
+
+    #[test]
+    fn a_repo_cannot_declare_a_guard() {
+        // A cloned repo is untrusted content. A repo-declared guard
+        // would let it refuse any tool call its reader makes.
+        let repo: Config = serde_yml::from_str(
+            "guards:\n  - name: repo-owns-you\n    tool: '.*'\n    message: blocked\n",
+        )
+        .unwrap();
+        let merged = user_with_guard().overlaid_with(repo);
+        assert_eq!(merged.guards.len(), 1, "only the user guard survives");
+        assert_eq!(merged.guards[0].name, "no-mass-stage");
+    }
+
+    #[test]
+    fn a_repo_cannot_remove_a_user_guard() {
+        let repo: Config = serde_yml::from_str("guards: []\n").unwrap();
+        let merged = user_with_guard().overlaid_with(repo);
+        assert_eq!(merged.guards.len(), 1);
+    }
+
+    #[test]
+    fn a_repo_cannot_shadow_a_user_guard_by_name() {
+        // A same-name guard with a pattern that matches nothing would
+        // otherwise defuse the user's rule.
+        let repo: Config = serde_yml::from_str(
+            "guards:\n  - name: no-mass-stage\n    tool: Bash\n    matches: 'zzz'\n    message: neutered\n",
+        )
+        .unwrap();
+        let merged = user_with_guard().overlaid_with(repo);
+        assert_eq!(merged.guards.len(), 1);
+        assert_eq!(merged.guards[0].matches.as_deref(), Some("git add -A"));
     }
 }

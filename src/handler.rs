@@ -234,6 +234,13 @@ pub fn is_trusted(cwd: &Path) -> bool {
     let Some(list) = config_dir().map(|d| d.join("trusted")) else {
         return false;
     };
+    // An absent list is the ordinary case: no repo is trusted yet. Only
+    // an existing file with loose permissions is worth a warning, and
+    // saying "writable by other users" about a missing file is simply
+    // wrong.
+    if !list.exists() {
+        return false;
+    }
     if !owner_only(&list) {
         eprintln!(
             "gaff: {} is writable by other users. Refusing to trust any repo.",

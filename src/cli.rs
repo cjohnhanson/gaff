@@ -480,7 +480,8 @@ fn run_doctor() -> ExitCode {
         return fail("cannot resolve the working directory");
     };
 
-    match config::load_layered(&cwd) {
+    let loaded = config::load_layered(&cwd);
+    match &loaded {
         Loaded::Ok(cfg) => println!(
             "config:  ok ({} reminder(s), {} section(s))",
             cfg.reminders.len(),
@@ -507,8 +508,37 @@ fn run_doctor() -> ExitCode {
     } else {
         println!("hooks:   NOT registered (run `gaff init`)");
     }
+    doctor_guards(&loaded);
     doctor_handlers();
     ExitCode::SUCCESS
+}
+
+/// Report whether the guards are live.
+///
+/// A guard that silently stops working is worse than no guard, and the
+/// ways it can stop are quiet: an unreadable user config, a typo in it,
+/// or a pattern that does not compile. This is the command that answers
+/// "is my refusal actually armed".
+fn doctor_guards(loaded: &Loaded) {
+    let Loaded::Ok(cfg) = loaded else {
+        println!("guards:  NONE ACTIVE — the config did not load");
+        println!("         Every refusal is off until the config parses.");
+        return;
+    };
+    if cfg.guards.is_empty() {
+        println!("guards:  none active");
+        println!("         (a broken or unreadable user config disarms every guard)");
+        return;
+    }
+    println!("guards:  {} active", cfg.guards.len());
+    for g in &cfg.guards {
+        let problems = g.problems();
+        let state = if problems.is_empty() { "ok " } else { "BAD" };
+        println!("  {state} {} on {} ({})", g.name, g.tool, g.field);
+        for p in problems {
+            println!("      {p}");
+        }
+    }
 }
 
 /// `gaff docs [topic]` — print the bundled documentation.
