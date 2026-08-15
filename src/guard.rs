@@ -728,14 +728,65 @@ pub fn builtin() -> Vec<Guard> {
     }]
 }
 
-/// The command with every heredoc body removed.
+/// Whether the command before a heredoc opener will execute the body.
 ///
-/// A heredoc body is data the shell hands to a command's stdin. It is
-/// not executed, so a guard that reads it as a command line refuses a
-/// commit message that documents the guard. This walks the string, and
-/// on a `<<WORD` opener drops every line up to and including the line
-/// that is exactly WORD. What survives is what the shell would run,
-/// including a real invocation placed after a terminator.
+/// Reads the last simple command on the line: the text after the last
+/// separator, with leading environment assignments and `sudo`-style
+/// wrappers skipped. A shell, `eval`, or `source` there means the body
+/// is code.
+fn feeds_a_shell(before_opener: &str) -> bool {
+    const SHELLS: [&str; 10] = [
+        "sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "exec",
+    ];
+    const STDIN_INTERPRETERS: [&str; 5] = ["python", "python3", "perl", "ruby", "node"];
+    let last_cmd = before_opener
+        .rsplit(['|', ';', '&', '(', '`'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    // Words of the last simple command, with env assignments and
+    // wrapper commands skipped, flags kept so a bare `-` is visible.
+    let words: Vec<&str> = last_cmd
+        .split_whitespace()
+        .filter(|w| !w.contains('=') || w.starts_with('-'))
+        .collect();
+    let mut i = 0;
+    while i < words.len()
+        && matches!(
+            words[i],
+            "sudo" | "env" | "time" | "nohup" | "nice" | "xargs" | "uv" | "npx" | "pnpm" | "bunx"
+        )
+    {
+        i += 1;
+        if i < words.len() && matches!(words[i], "run" | "exec") {
+            i += 1;
+        }
+    }
+    let Some(head) = words.get(i) else {
+        return false;
+    };
+    let base = head.rsplit('/').next().unwrap_or(head);
+    if SHELLS.contains(&base) {
+        return true;
+    }
+    // `python - <<EOF` and friends execute stdin.
+    STDIN_INTERPRETERS.contains(&base) && words[i + 1..].contains(&"-")
+}
+
+/// The command with every heredoc body that is *data* removed.
+///
+/// A heredoc body is text the shell hands to a command's stdin. For
+/// most commands it is not executed, so a guard that reads it as a
+/// command line refuses a commit message that documents the guard.
+/// This walks the string, and on a `<<WORD` opener drops every line up
+/// to and including the line that is exactly WORD. What survives is
+/// what the shell would run, including a real invocation placed after
+/// a terminator.
+///
+/// The exception is a heredoc that feeds a shell. `sh <<EOF`, `bash
+/// <<'EOF'`, `eval`, `source`, and `.` execute their input, so those
+/// bodies stay. `git add -A` inside `sh <<'EOF'` is real, and the
+/// mass-stage guard must still see it.
 #[must_use]
 pub fn without_heredocs(command: &str) -> String {
     let mut out = String::with_capacity(command.len());
@@ -749,6 +800,10 @@ pub fn without_heredocs(command: &str) -> String {
         let Some(pos) = line.find("<<") else {
             continue;
         };
+        // A body headed for a shell executes. Keep it visible.
+        if feeds_a_shell(&line[..pos]) {
+            continue;
+        }
         let rest = &line[pos + 2..];
         let rest = rest.strip_prefix('-').unwrap_or(rest);
         let word: String = rest
@@ -795,12 +850,15 @@ pub fn first_refusal<'a>(
             field_value(&g.field).map_or_else(
                 || g.matches.is_none() && g.matches_tool(tool),
                 |v| {
-                    // The built-in reads the command with heredoc bodies
-                    // removed, so a commit message that documents the
-                    // guard is not read as an invocation of it. Every
-                    // other guard keeps the raw command: `git add -A`
-                    // inside a heredoc headed for `sh` is still real.
-                    if g.name == BUILTIN_NAME {
+                    // Every guard reads the command with data heredocs
+                    // removed, so a commit message or a doc edit that
+                    // mentions `git add -A` or `gaff allow` is not read
+                    // as an invocation of it. A heredoc that feeds a
+                    // shell keeps its body, so the real thing inside
+                    // `sh <<'EOF'` is still caught. Only the `command`
+                    // field is a shell string; other fields are read
+                    // as they are.
+                    if g.field == "command" {
                         g.refuses(tool, &without_heredocs(&v))
                     } else {
                         g.refuses(tool, &v)
@@ -1728,10 +1786,10 @@ mod heredoc_tests {
     }
 
     #[test]
-    fn a_heredoc_does_not_shield_the_other_guards() {
-        // `git add -A` inside a heredoc headed for `sh` is still real,
-        // and the mass-stage guard reads the raw command. Only the
-        // built-in strips heredocs.
+    fn a_heredoc_that_feeds_a_shell_keeps_its_body() {
+        // `git add -A` inside a heredoc headed for `sh` executes, and
+        // the mass-stage guard must still see it. Data heredocs are
+        // stripped; code heredocs are not.
         let g = Guard {
             name: "no-mass-stage".into(),
             tool: "Bash".into(),
@@ -1743,6 +1801,51 @@ mod heredoc_tests {
         let cmd = "sh <<'EOF'\ngit add -A\nEOF";
         let value = |f: &str| (f == "command").then(|| cmd.to_string());
         assert!(first_refusal(std::slice::from_ref(&g), "Bash", &value).is_some());
+    }
+
+    #[test]
+    fn a_data_heredoc_shields_every_guard() {
+        // The commit-message case, for a user guard: `git add -A` in a
+        // message body is a mention.
+        let g = Guard {
+            name: "no-mass-stage".into(),
+            tool: "Bash".into(),
+            matches: Some(r"git\s+add\s+-A".into()),
+            field: "command".into(),
+            unless: None,
+            message: "no".into(),
+        };
+        for cmd in [
+            "git commit -F - <<'MSG'\nfix: stop git add -A\nMSG",
+            "cat > notes.md <<EOF\nnever git add -A\nEOF",
+            "uv run python - <<'PY'\nprint('git add -A')\nPY",
+        ] {
+            let value = |f: &str| (f == "command").then(|| cmd.to_string());
+            // The python case is code: python executes stdin. It must
+            // still be caught. The other two are data.
+            let expect_refused = cmd.contains("python");
+            assert_eq!(
+                first_refusal(std::slice::from_ref(&g), "Bash", &value).is_some(),
+                expect_refused,
+                "{cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn feeds_a_shell_reads_the_last_simple_command() {
+        assert!(feeds_a_shell("sh "));
+        assert!(feeds_a_shell("bash -e "));
+        assert!(feeds_a_shell("cat x | bash "));
+        assert!(feeds_a_shell("sudo bash "));
+        assert!(feeds_a_shell("FOO=1 sh "));
+        assert!(feeds_a_shell("/bin/sh "));
+        assert!(feeds_a_shell("uv run python - "));
+        assert!(feeds_a_shell("eval "));
+        assert!(!feeds_a_shell("cat "));
+        assert!(!feeds_a_shell("git commit -F - "));
+        assert!(!feeds_a_shell("uv run python script.py "));
+        assert!(!feeds_a_shell("tee out.txt "));
     }
 
     #[test]
