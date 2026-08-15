@@ -367,21 +367,53 @@ pub fn read_section_body(section: &Section, gaff_dir: &Path) -> Result<String, S
     // user section may be a link, for the same reason the user config
     // may: a dotfile manager installs it that way, and anyone who can
     // write inside `$HOME/.config/gaff` already owns the machine.
-    let meta = if section.user {
-        std::fs::metadata(&path)
-    } else {
-        let raw = std::fs::symlink_metadata(&path)
-            .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
-        if raw.file_type().is_symlink() {
+    // A repo section must resolve to a file that is really inside the
+    // repo's `.gaff/`. Testing the last component alone was not enough:
+    // any directory along the way could be a link, and the filesystem
+    // resolves it before the test runs. A committed `.gaff/sub -> /`,
+    // or `.gaff` itself as a link, moved the whole root out of the repo
+    // while the path string stayed clean. The comparison has to be
+    // positional, so both sides are canonicalized.
+    if !section.user {
+        // `.gaff` itself must be a real directory in the repo. If it is
+        // a link, canonicalizing it would follow the link and then
+        // every file under the target would compare as "inside", which
+        // is the same hole one level up.
+        if std::fs::symlink_metadata(gaff_dir)
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
             return Err(format!(
-                "section `{}`: {} is a symlink. A repo section reads a regular file only, because a link can point at any file gaff can read.",
+                "section `{}`: {} is a symlink. gaff reads a repo section from a real directory in the repo.",
                 section.name,
-                path.display()
+                gaff_dir.display()
             ));
         }
-        Ok(raw)
+        let root = std::fs::canonicalize(gaff_dir).map_err(|e| {
+            format!(
+                "section `{}`: cannot resolve {}: {e}",
+                section.name,
+                gaff_dir.display()
+            )
+        })?;
+        let real = std::fs::canonicalize(&path).map_err(|e| {
+            format!(
+                "section `{}`: cannot resolve {}: {e}",
+                section.name,
+                path.display()
+            )
+        })?;
+        if !real.starts_with(&root) {
+            return Err(format!(
+                "section `{}`: {} resolves to {}, outside {}. A repo section reads a file inside .gaff/ only, because a link can point at any file gaff can read.",
+                section.name,
+                path.display(),
+                real.display(),
+                root.display()
+            ));
+        }
     }
-    .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
+    let meta = std::fs::metadata(&path)
+        .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
     if !meta.is_file() {
         return Err(format!(
             "section `{}`: {} is not a regular file",
@@ -488,6 +520,16 @@ pub fn load_layered(cwd: &Path) -> Loaded {
             // the worst one for a rule that blocks.
             eprintln!(
                 "gaff: no HOME, so the user config could not be read. Any guard declared there is not active."
+            );
+            None
+        }
+        // HOME is set but is not a directory. That is an environment
+        // fault rather than "the user declared nothing", and it has the
+        // same effect on a guard, so it gets the same warning.
+        Some(p) if !std::env::var("HOME").is_ok_and(|h| Path::new(&h).is_dir()) => {
+            eprintln!(
+                "gaff: HOME does not name a directory, so {} could not be read. Any guard declared there is not active.",
+                p.display()
             );
             None
         }

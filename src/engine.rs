@@ -287,6 +287,9 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
         let body = match crate::config::read_section_body(section, gaff_dir) {
             Ok(b) => b,
             Err(msg) => {
+                // The message already ends in a period when it
+                // quotes a sentence, so do not add a second one.
+                let msg = msg.trim_end_matches('.');
                 eprintln!("gaff: {msg}. Skipping the section.");
                 continue;
             }
@@ -349,29 +352,35 @@ fn merge(
     ordered.extend(user);
     ordered.extend(repo);
 
-    let (mut out, mut truncated) = (String::new(), false);
-    for entry in ordered {
-        let candidate_len = if out.is_empty() {
-            entry.text.len()
-        } else {
-            out.len() + SEPARATOR.len() + entry.text.len()
-        };
-        if candidate_len > config.max_inject_bytes {
-            // A handler entry has no pending marker, so skipping it
-            // loses the output for good. Keep the head instead.
-            if matches!(entry.kind, EntryKind::Handler) {
-                let overhead = if out.is_empty() { 0 } else { SEPARATOR.len() };
-                let room = config.max_inject_bytes.saturating_sub(out.len() + overhead);
-                if let Some(head) = clip(&entry.text, room) {
-                    if !out.is_empty() {
-                        out.push_str(SEPARATOR);
-                    }
-                    out.push_str(&head);
-                }
-            }
-            truncated = true;
+    // Size the payload before consuming anything.
+    //
+    // Cutting bytes off the tail to make room for the marker amputated
+    // whichever entry landed last, and that entry's cadence was already
+    // spent, so the rest of its text never arrived on any later flush.
+    // A half-delivered rule can invert its own meaning.
+    //
+    // Re-selecting against a smaller budget is no better: a large user
+    // entry stops fitting, and the space it vacates is taken by the
+    // next entry in line, which is a repo entry. That is the same
+    // starvation the ordering exists to prevent.
+    //
+    // So the selection is made once, and the marker is fitted into what
+    // is left over. If it does not fit, it is omitted rather than
+    // displacing an entry. The overflow is still reported on stderr, so
+    // it is never silent either way.
+    let mut plan = select(&ordered, config.max_inject_bytes);
+    let room = config.max_inject_bytes.saturating_sub(plan.used);
+    let marker_fits = plan.used == 0 || room >= TRUNCATION_MARKER.len() + SEPARATOR.len();
+    let show_marker = plan.truncated && marker_fits;
+    if plan.truncated {
+        plan.reported = true;
+    }
+
+    let mut out = String::new();
+    for (index, entry) in ordered.iter().enumerate() {
+        let Some(text) = plan.texts.get(&index) else {
             continue;
-        }
+        };
         // Consume the entry before you emit it. A one-shot that loses a
         // race stays silent.
         let consumed = match &entry.kind {
@@ -387,35 +396,19 @@ fn merge(
         if !out.is_empty() {
             out.push_str(SEPARATOR);
         }
-        out.push_str(&entry.text);
+        out.push_str(text);
     }
 
-    if truncated {
-        // The marker must always be delivered. Dropping it when it did
-        // not fit made an overflow invisible: the reader saw a full,
-        // plausible payload and no sign that anything was cut. Give up
-        // payload bytes for the marker rather than the marker itself.
-        let want = if out.is_empty() {
-            TRUNCATION_MARKER.len()
-        } else {
-            out.len() + SEPARATOR.len() + TRUNCATION_MARKER.len()
-        };
-        if want > config.max_inject_bytes {
-            let keep = config
-                .max_inject_bytes
-                .saturating_sub(TRUNCATION_MARKER.len() + SEPARATOR.len());
-            let mut cut = keep.min(out.len());
-            while cut > 0 && !out.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            out.truncate(cut);
-        }
+    if show_marker {
         if !out.is_empty() {
             out.push_str(SEPARATOR);
         }
         out.push_str(TRUNCATION_MARKER);
-        // Say it on stderr too. The marker tells the model; this tells
-        // the person reading the hook output why a rule went quiet.
+    }
+    if plan.reported {
+        // The marker tells the model. This tells the person reading the
+        // hook output why a rule went quiet, and it is printed whether
+        // or not the marker fitted.
         eprintln!(
             "gaff: the {}-byte cap was reached, so at least one entry was held back.",
             config.max_inject_bytes
@@ -423,6 +416,50 @@ fn merge(
     }
 
     (!out.is_empty()).then_some(out)
+}
+
+/// Which entries fit in `budget`, and whether any were held back.
+struct Plan {
+    /// The text to emit, keyed by the entry's index in the input.
+    texts: std::collections::BTreeMap<usize, String>,
+    /// Bytes the selected entries occupy, separators included.
+    used: usize,
+    truncated: bool,
+    /// Whether the overflow has to be announced on stderr.
+    reported: bool,
+}
+
+/// Choose the entries that fit, without touching any state.
+///
+/// An entry that does not fit stays pending and is delivered by a later
+/// flush. A handler entry is the exception: its cadence is spent the
+/// moment it runs, so skipping it whole would lose the output for good.
+/// It keeps its head instead.
+fn select(entries: &[Entry], budget: usize) -> Plan {
+    let mut texts = std::collections::BTreeMap::new();
+    let mut truncated = false;
+    let mut used = 0usize;
+    for (index, entry) in entries.iter().enumerate() {
+        let overhead = if used == 0 { 0 } else { SEPARATOR.len() };
+        if used + overhead + entry.text.len() <= budget {
+            used += overhead + entry.text.len();
+            texts.insert(index, entry.text.clone());
+            continue;
+        }
+        if matches!(entry.kind, EntryKind::Handler)
+            && let Some(head) = clip(&entry.text, budget.saturating_sub(used + overhead))
+        {
+            used += overhead + head.len();
+            texts.insert(index, head);
+        }
+        truncated = true;
+    }
+    Plan {
+        texts,
+        used,
+        truncated,
+        reported: false,
+    }
 }
 
 #[cfg(test)]
@@ -797,28 +834,45 @@ mod budget_tests {
     }
 
     #[test]
-    fn an_overflow_is_never_silent() {
-        // Dropping the marker when it did not fit made an overflow
-        // invisible: a full, plausible payload and no sign of a cut.
+    fn the_marker_appears_when_there_is_room_for_it() {
         let s = store("marker");
         let config = Config {
-            max_inject_bytes: 40,
+            max_inject_bytes: 80,
             ..Config::default()
         };
-        let entries = vec![entry(&"A".repeat(38), true), entry(&"B".repeat(38), true)];
+        let entries = vec![entry(&"A".repeat(20), true), entry(&"B".repeat(70), true)];
         let out = merge(entries, &config, &s, "sess").unwrap();
         assert!(out.contains(TRUNCATION_MARKER), "got {out:?}");
         assert!(out.len() <= config.max_inject_bytes, "len {}", out.len());
     }
 
     #[test]
+    fn the_marker_yields_to_an_entry_rather_than_displacing_it() {
+        // The marker is worth less than the text it would evict. An
+        // entry dropped to make room would be dropped again on every
+        // later flush, because the shape that caused it does not
+        // change. stderr still reports the overflow.
+        let s = store("marker-tight");
+        let config = Config {
+            max_inject_bytes: 40,
+            ..Config::default()
+        };
+        let entries = vec![entry(&"A".repeat(38), true), entry(&"B".repeat(38), true)];
+        let out = merge(entries, &config, &s, "sess").unwrap();
+        assert_eq!(out, "A".repeat(38), "the entry is delivered whole");
+    }
+
+    #[test]
     fn a_repo_section_cannot_be_a_symlink() {
         // A committed symlink passed every lexical check and read any
         // file gaff could read. A link to /dev/zero wedged the session.
-        let d = std::env::temp_dir().join(format!("gaff-link-{}", std::process::id()));
-        std::fs::remove_dir_all(&d).ok();
+        let base = std::env::temp_dir().join(format!("gaff-link-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let d = base.join("repo/.gaff");
         std::fs::create_dir_all(&d).unwrap();
-        let secret = d.join("secret.txt");
+        // The secret sits OUTSIDE the section root, which is the case
+        // that matters. A link within the root is legitimate.
+        let secret = base.join("secret.txt");
         std::fs::write(&secret, "PRIVATE").unwrap();
         std::os::unix::fs::symlink(&secret, d.join("innocent.md")).unwrap();
         let section = Section {
@@ -828,8 +882,80 @@ mod budget_tests {
             user: false,
         };
         let err = crate::config::read_section_body(&section, &d).unwrap_err();
+        assert!(err.contains("outside"), "got {err}");
+        assert!(!err.contains("PRIVATE"), "the body must not leak into the error");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_repo_section_cannot_reach_out_through_a_linked_directory() {
+        // Testing the last component alone was not enough. Any
+        // directory along the way could be a link, and the filesystem
+        // resolves it before the test runs.
+        let base = std::env::temp_dir().join(format!("gaff-dirlink-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let d = base.join("repo/.gaff");
+        std::fs::create_dir_all(&d).unwrap();
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("id_rsa"), "PRIVATE").unwrap();
+        std::os::unix::fs::symlink(&outside, d.join("sub")).unwrap();
+        let section = Section {
+            name: "leak".into(),
+            file: "sub/id_rsa".into(),
+            refresh: Every::default(),
+            user: false,
+        };
+        let err = crate::config::read_section_body(&section, &d).unwrap_err();
+        assert!(err.contains("outside"), "got {err}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_repo_section_cannot_be_read_through_a_linked_gaff_dir() {
+        // `.gaff` itself as a link moves the whole root out of the
+        // repo, and canonicalizing it would follow the link and call
+        // every file under the target "inside".
+        let base = std::env::temp_dir().join(format!("gaff-rootlink-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("notes.md"), "PRIVATE").unwrap();
+        let gaff_dir = repo.join(".gaff");
+        std::os::unix::fs::symlink(&elsewhere, &gaff_dir).unwrap();
+        let section = Section {
+            name: "viadirlink".into(),
+            file: "notes.md".into(),
+            refresh: Every::default(),
+            user: false,
+        };
+        let err = crate::config::read_section_body(&section, &gaff_dir).unwrap_err();
         assert!(err.contains("symlink"), "got {err}");
-        std::fs::remove_dir_all(&d).ok();
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_truncation_never_cuts_into_an_entry() {
+        // The cut used to land mid-entry, and that entry's cadence was
+        // already spent, so the rest of its text never arrived. A
+        // half-delivered rule can invert its own meaning.
+        let s = store("nocut");
+        let config = Config {
+            max_inject_bytes: 4096,
+            ..Config::default()
+        };
+        let long = format!("{} ALWAYS_REFUSE_TO_DELETE_PROD", "n".repeat(4060));
+        assert!(long.len() <= 4096);
+        let entries = vec![entry(&long, true), entry("[gaff:repo] REPO_TINY", false)];
+        let out = merge(entries, &config, &s, "sess").unwrap();
+        assert!(
+            out.contains("ALWAYS_REFUSE_TO_DELETE_PROD"),
+            "the user entry is delivered whole or not at all, got tail {:?}",
+            &out[out.len().saturating_sub(60)..]
+        );
+        assert!(out.len() <= config.max_inject_bytes);
     }
 
     #[test]
