@@ -26,6 +26,44 @@ const KNOWN_FIELDS: [&str; 6] = ["command", "file_path", "pattern", "path", "url
 /// The tools whose input carries a path rather than a command.
 const PATH_TOOLS: &str = "Read|Edit|Write|MultiEdit|NotebookEdit";
 
+/// The tool names gaff has seen from a host.
+///
+/// A guard naming none of these is reported, because a misspelled tool
+/// name is the likeliest operator error and it silently disarms the
+/// guard. The report is a warning rather than a refusal: a host gaff
+/// has not met yet may send a name absent from this list, and the guard
+/// must stay expressible.
+const KNOWN_TOOLS: [&str; 14] = [
+    "Bash",
+    "BashOutput",
+    "Read",
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "NotebookEdit",
+    "Glob",
+    "Grep",
+    "WebFetch",
+    "WebSearch",
+    "Task",
+    "TodoWrite",
+    "KillShell",
+];
+
+/// Commands a self-defusing `unless` is tested against.
+///
+/// An `unless` that exempts everything makes the guard decorative. The
+/// probes are realistic values rather than the empty string: a
+/// zero-width assertion such as `\b` finds no boundary in an empty
+/// string, so an empty-string test passed it while it exempted every
+/// real command.
+const UNLESS_PROBES: [&str; 4] = [
+    "git add -A",
+    "rm -rf /",
+    "/etc/passwd",
+    "echo hello world",
+];
+
 /// One refusal rule.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,7 +142,7 @@ impl Guard {
             ));
         }
         if let Some(u) = &self.unless
-            && Regex::new(u).is_ok_and(|re| re.is_match(""))
+            && Regex::new(u).is_ok_and(|re| UNLESS_PROBES.iter().all(|p| re.is_match(p)))
         {
             out.push(format!(
                 "guard `{}`: the unless pattern matches everything, so the guard can never fire.",
@@ -123,6 +161,53 @@ impl Guard {
             {
                 out.push(format!("guard `{}`: the {label} pattern is invalid: {e}", self.name));
             }
+        }
+        out
+    }
+
+    /// Things worth saying that do not make the guard invalid.
+    ///
+    /// A tool name gaff has never seen is almost always a typo, and a
+    /// typo disarms the guard in silence. It is not an error, because a
+    /// host gaff has not met yet may send a name this list lacks.
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.tool.is_empty() {
+            return out;
+        }
+        let Ok(re) = Regex::new(&format!("^(?:{})$", self.tool)) else {
+            return out;
+        };
+        if !KNOWN_TOOLS.iter().any(|t| re.is_match(t)) {
+            out.push(format!(
+                "guard `{}`: the tool pattern `{}` names no tool gaff has seen, so the guard may never fire. Check the spelling.",
+                self.name, self.tool
+            ));
+        }
+        // A pattern that names several tools can be right for some of
+        // them and dead for the rest. `Bash|Read` on `file_path` guards
+        // Read and does nothing at all for Bash.
+        let dead: Vec<&str> = KNOWN_TOOLS
+            .iter()
+            .filter(|t| re.is_match(t))
+            .filter(|t| {
+                let wants_path = PATH_TOOLS.split('|').any(|p| p == **t);
+                if wants_path {
+                    self.field == "command"
+                } else {
+                    self.field != "command"
+                }
+            })
+            .copied()
+            .collect();
+        if !dead.is_empty() && dead.len() < KNOWN_TOOLS.iter().filter(|t| re.is_match(t)).count() {
+            out.push(format!(
+                "guard `{}`: matches the `{}` field, which {} never sends, so that part of the pattern can never fire.",
+                self.name,
+                self.field,
+                dead.join(" and ")
+            ));
         }
         out
     }
@@ -170,11 +255,42 @@ mod tests {
         Guard {
             name: "no-mass-stage".into(),
             tool: "Bash".into(),
-            matches: Some(r#"git(\s+-\S+(\s+\S+)?)*\s+(add|stage)(\s+(?:"[^"]*"|'[^']*'|\S+))*?\s+["']?(-[A-Za-z]*A[A-Za-z]*|--all|\.|:/|\*)["']?(\s|$|[;&|)`])"#.into()),
+            matches: Some(r#"git(\s+-\S+(\s+\S+)?)*\s+(add|stage)(\s+(?:"[^"]*"|'[^']*'|\S+))*?\s+["']?(-[A-Za-z]*A[A-Za-z]*|--all|\.|:/|\*)["']?($|[^A-Za-z0-9_/.-])"#.into()),
             field: "command".into(),
             unless: None,
             message: "Stage files by name.".into(),
         }
+    }
+
+    /// The example a reader copies must be the pattern the tests
+    /// exercise.
+    ///
+    /// These drifted once. The tests were strengthened and the docs
+    /// were not, so `gaff docs configuration` kept serving a pattern
+    /// that missed 21 of 30 mass-stage forms while the suite passed.
+    /// The docs ship inside the binary, so this compares against the
+    /// bundled copy rather than the file on disk.
+    #[test]
+    fn the_documented_pattern_is_the_tested_pattern() {
+        let doc = crate::docs::topic("configuration")
+            .expect("the configuration page ships in the binary");
+        let line = doc
+            .lines()
+            .find(|l| l.trim_start().starts_with("matches: 'git"))
+            .expect("the docs show a mass-stage guard");
+        // Unwrap the YAML single-quoted scalar: strip the delimiters,
+        // then undouble the escaped quotes.
+        let scalar = line.trim().trim_start_matches("matches: ").trim();
+        let inner = scalar
+            .strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+            .expect("the example is a single-quoted YAML scalar");
+        let documented = inner.replace("''", "'");
+        assert_eq!(
+            documented,
+            git_add_guard().matches.unwrap(),
+            "the documented mass-stage pattern drifted from the tested one"
+        );
     }
 
     #[test]
@@ -199,6 +315,18 @@ mod tests {
             "git add \"-A\"",
             "git add 'A'",
             "git  add  -A",
+            // Redirection and punctuation terminators. The old
+            // terminator class enumerated shell metacharacters and
+            // missed the redirection family entirely.
+            "git add -A>/dev/null",
+            "git add -A>>log",
+            "git add -A<x",
+            "git add -A}",
+            "git add -A]",
+            "git add -A,",
+            "git add -A:",
+            "git add -A&",
+            "git add -A`",
         ] {
             if cmd == "git add 'A'" {
                 continue;
@@ -404,5 +532,70 @@ mod tests {
         assert!(first_refusal(std::slice::from_ref(&g), "Edit", &value).is_some());
         let other = |f: &str| (f == "file_path").then(|| "/Users/x/other/a.py".to_string());
         assert!(first_refusal(std::slice::from_ref(&g), "Edit", &other).is_none());
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    fn g(tool: &str, field: &str, unless: Option<&str>) -> Guard {
+        Guard {
+            name: "g".into(),
+            tool: tool.into(),
+            matches: Some("x".into()),
+            field: field.into(),
+            unless: unless.map(Into::into),
+            message: "no".into(),
+        }
+    }
+
+    #[test]
+    fn a_misspelled_tool_name_is_reported() {
+        // A typo here disarms the guard in silence, and it is the
+        // likeliest operator error.
+        assert!(!g("NoSuchTool", "command", None).warnings().is_empty());
+        assert!(!g("bash", "command", None).warnings().is_empty());
+        assert!(g("Bash", "command", None).warnings().is_empty());
+    }
+
+    #[test]
+    fn a_tool_pattern_naming_a_host_gaff_has_not_met_is_a_warning_not_a_failure() {
+        // A new host may send a name this build has never seen. The
+        // guard must stay expressible, so this reports and does not
+        // refuse.
+        assert!(g("SomeFutureTool", "command", None).problems().is_empty());
+    }
+
+    #[test]
+    fn a_dead_half_of_an_alternation_is_reported() {
+        // `Bash|Read` on file_path guards Read and does nothing at all
+        // for Bash.
+        let w = g("Bash|Read", "file_path", None).warnings();
+        assert!(w.iter().any(|m| m.contains("Bash")), "{w:?}");
+    }
+
+    #[test]
+    fn a_zero_width_unless_that_exempts_everything_is_caught() {
+        // `\b` does not match at position 0 of an empty string, so the
+        // empty-string probe alone let it through while it exempted
+        // every real command.
+        for pattern in [r"\b", ".*", "", r"^", r"(?s).*"] {
+            let problems = g("Bash", "command", Some(pattern)).problems();
+            assert!(
+                problems.iter().any(|p| p.contains("matches everything")),
+                "pattern {pattern:?} should be caught, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_unless_is_not_caught() {
+        for pattern in ["--dry-run", "^git status", r"\.test\.py$"] {
+            assert!(
+                g("Bash", "command", Some(pattern)).problems().is_empty(),
+                "pattern {pattern:?} is legitimate"
+            );
+        }
     }
 }

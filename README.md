@@ -102,5 +102,7 @@ gaff changes. gaff does not ship a guessed schema for a host
 nobody has tested.
 
 A missouri state-graph suite of 15 paths and the cargo unit tests cover
-this. The suite's error-surface path checks that every failure exits 1,
-never the blocking code 2.
+this. The suite's error-surface path checks that every failure exits 0
+or 1, never the blocking code 2. Exit 2 is reserved for the two places
+that mean it: a guard refusing a tool call, and `gaff githook` relaying
+the failing command's own code.

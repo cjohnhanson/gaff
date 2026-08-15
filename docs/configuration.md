@@ -15,17 +15,35 @@ gaff reads two data configs and lays one over the other.
 | `$HOME/.config/gaff/trusted` | every repo | The repos that may run handlers |
 
 A person works in many repos and wants some reminders everywhere. Put
-those in the user config. The repo is the more specific scope, so a repo
-entry wins the name it shadows.
+those in the user config. A repo adds to what the user declared, and it
+never overrides it.
 
-- `reminders`, `sections`, and `profiles` merge by name. A repo entry
-  replaces the user entry with the same name. Every other entry from
-  both files stays active.
-- `max_inject_bytes` and `default_profile` take the repo value when the
-  repo sets one.
-- `transitions` is the exception. The user value wins whenever the user
-  sets one. That field says which profiles an agent may grant itself,
-  and a repo must never widen it.
+The rule is one sentence: **a repo may add, and it may not take a name
+the user already used.** A clone is untrusted content. If a repo could
+take a user entry's name, it would decide what that entry says while
+keeping the user's label on it.
+
+- `reminders`, `sections`, `profiles`, `git`, and `github` merge by
+  name. A repo entry under a name the user declared is refused with a
+  warning, and the user's entry stands. Every other entry from both
+  files stays active.
+- `guards` are user-only. A repo that declares one is warned about and
+  ignored, because a guard is the only thing that blocks.
+- A repo section resolves its `file` against `.gaff/`. A user section
+  resolves against `$HOME/.config/gaff/`. Each reads only from its own
+  directory.
+- `max_inject_bytes` takes the repo value, but never below the user's
+  when the user declared any entry. A one-byte cap would silence them
+  all.
+- `default_profile` takes the repo value, unless it names a profile the
+  user declared. The same holds for a committed `.gaff/profile`. A repo
+  may select its own profiles, not the user's.
+- A repo profile filters and retimes the repo's own entries. Its `only`,
+  `disable`, `cadence`, and `max_inject_bytes` do not reach a user
+  entry.
+- `transitions`: the user value wins whenever the user sets one. That
+  field says which profiles an agent may grant itself, and a repo must
+  never widen it.
 
 Only the user config may hold handlers, and they live in their own file.
 That keeps the security boundary easy to check: a command can only come
@@ -280,7 +298,7 @@ user-level config and it applies in every repo.
 guards:
   - name: no-mass-stage
     tool: Bash
-    matches: 'git\s+add\s+(\S+\s+)*(-A|--all|\.)(\s|$)'
+    matches: 'git(\s+-\S+(\s+\S+)?)*\s+(add|stage)(\s+(?:"[^"]*"|''[^'']*''|\S+))*?\s+["'']?(-[A-Za-z]*A[A-Za-z]*|--all|\.|:/|\*)["'']?($|[^A-Za-z0-9_/.-])'
     unless: '--dry-run'
     message: >-
       Stage files by name. Run `git status` first, then name each path.
@@ -453,8 +471,15 @@ from its documentation.
 
 ## Exit codes
 
-Every gaff invocation exits 0 for success or 1 for an internal error. It
-never exits 2, the code that blocks an agent session. A broken config
+A gaff *failure* exits 0 or 1, never 2. Exit 2 is the code that blocks
+an agent session, and no fault of gaff's may block one. A broken config
 prints a warning on stderr, writes a `degraded` marker in the state
 directory, and gaff continues without reminders. Run `gaff doctor` to see
 the degradation.
+
+Two things exit 2 on purpose, and neither is a failure:
+
+- A **guard** that refuses a tool call. That is the operator saying "not
+  this call", and exit 2 is the only way the harness hears it.
+- `gaff githook`, which relays the failing command's own exit code. A
+  hook command that exits 2 makes gaff exit 2.
