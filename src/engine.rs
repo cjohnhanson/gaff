@@ -274,17 +274,18 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
         if mode == SectionMode::PendingOnly && pending.is_none() {
             continue;
         }
-        let Ok(path) = crate::config::confine_section_path(gaff_dir, &section.file) else {
-            eprintln!(
-                "gaff: section `{}`: the path {} leaves .gaff/. Skipping the section.",
-                section.name, section.file
-            );
-            continue;
+        let path = match crate::config::section_path(section, gaff_dir) {
+            Ok(p) => p,
+            Err(msg) => {
+                eprintln!("gaff: {msg}. Skipping the section.");
+                continue;
+            }
         };
         let Ok(body) = std::fs::read_to_string(&path) else {
             eprintln!(
                 "gaff: section `{}`: cannot read {}. Skipping the section.",
-                section.name, section.file
+                section.name,
+                path.display()
             );
             continue;
         };
@@ -577,6 +578,7 @@ mod tests {
             sections: vec![crate::config::Section {
                 name: "conv".to_string(),
                 file: "conv.md".to_string(),
+                user: false,
                 refresh: Every {
                     tool_calls: Some(2),
                     prompts: None,
@@ -617,6 +619,7 @@ mod tests {
             sections: vec![crate::config::Section {
                 name: "ghost".to_string(),
                 file: "nope.md".to_string(),
+                user: false,
                 refresh: Every::default(),
             }],
             max_inject_bytes: 4096,
@@ -642,6 +645,7 @@ mod tests {
                 sections: vec![crate::config::Section {
                     name: "leak".to_string(),
                     file: bad.to_string(),
+                    user: false,
                     refresh: Every::default(),
                 }],
                 max_inject_bytes: 4096,

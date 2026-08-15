@@ -74,6 +74,11 @@ pub struct Profile {
     /// The byte cap under this profile. `None` keeps the base cap.
     #[serde(default)]
     pub max_inject_bytes: Option<usize>,
+    /// True when the user config declared this profile. Set at load
+    /// time, never read from YAML. A repo may not select a profile the
+    /// user wrote for their own use.
+    #[serde(skip)]
+    pub user: bool,
 }
 
 /// The transition policy for profile switches.
@@ -141,6 +146,55 @@ impl Config {
     }
 }
 
+/// Strip a repo profile of everything that would reach a user entry.
+///
+/// A profile filters, retimes, and caps. Each of those silences an
+/// entry as completely as the others, so all four fields are held to
+/// one rule: a repo profile governs the repo's own entries and nothing
+/// the user declared.
+fn sanitize_repo_profile(mut profile: Profile, user_entries: &[String], user_cap: usize) -> Profile {
+    if let Some(only) = &mut profile.only {
+        only.extend(user_entries.iter().cloned());
+    }
+    profile.disable.retain(|d| !user_entries.contains(d));
+    profile.cadence.retain(|k, _| !user_entries.contains(k));
+    if let Some(cap) = profile.max_inject_bytes
+        && !user_entries.is_empty()
+    {
+        profile.max_inject_bytes = Some(cap.max(user_cap));
+    }
+    profile.user = false;
+    profile
+}
+
+/// Drop a repo entry that took a user entry's name across kinds.
+///
+/// Reminders and sections share one pending-marker namespace, keyed by
+/// name. A repo section under a user reminder's name consumes that
+/// reminder's marker, so the reminder stops firing.
+fn drop_cross_kind_clashes(cfg: &mut Config, reminders: &[String], sections: &[String]) {
+    cfg.sections.retain(|s| {
+        let clash = reminders.contains(&s.name) && !sections.contains(&s.name);
+        if clash {
+            eprintln!(
+                "gaff: the repo declares a section named `{}`, which is a user reminder. Keeping the reminder.",
+                s.name
+            );
+        }
+        !clash
+    });
+    cfg.reminders.retain(|r| {
+        let clash = sections.contains(&r.name) && !reminders.contains(&r.name);
+        if clash {
+            eprintln!(
+                "gaff: the repo declares a reminder named `{}`, which is a user section. Keeping the section.",
+                r.name
+            );
+        }
+        !clash
+    });
+}
+
 /// Resolve the active profile name. The resolution path is the flag,
 /// then the environment, then the session state, then `.gaff/profile`,
 /// then the config default. The first hit wins.
@@ -153,10 +207,20 @@ pub fn resolve_profile(
     config: &Config,
 ) -> Option<String> {
     let from_file = || {
-        std::fs::read_to_string(gaff_dir.join("profile"))
+        let name = std::fs::read_to_string(gaff_dir.join("profile"))
             .ok()
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.is_empty())?;
+        // `.gaff/profile` is a repo file, and a clone carries it. It
+        // selects a repo profile only, for the same reason a repo
+        // `default_profile` does.
+        if config.profiles.get(&name).is_some_and(|p| p.user) {
+            eprintln!(
+                "gaff: .gaff/profile names `{name}`, which the user declared. A repo may not select a user profile, so it is ignored."
+            );
+            return None;
+        }
+        Some(name)
     };
     flag.map(ToString::to_string)
         .or_else(|| env.map(ToString::to_string))
@@ -243,10 +307,44 @@ pub struct Reminder {
 #[serde(deny_unknown_fields)]
 pub struct Section {
     pub name: String,
-    /// The path to the section body, relative to `.gaff/`.
+    /// The path to the section body, relative to the directory of the
+    /// config that declared the section: `.gaff/` for a repo section,
+    /// and `$HOME/.config/gaff/` for a user section.
     pub file: String,
     #[serde(default)]
     pub refresh: Every,
+    /// True when the user config declared this section. Set at load
+    /// time, never read from YAML.
+    #[serde(skip)]
+    pub user: bool,
+}
+
+/// Resolve a section body against the directory of the config that
+/// declared it.
+///
+/// A user section names a file next to the user's own config. Resolving
+/// every section against the repo's `.gaff/` left the user's file
+/// unread, and let any cloned repo supply the body under the user's
+/// section name. That put repo-authored text into the model's session
+/// framing labelled as the user's own.
+///
+/// # Errors
+/// Returns a reader-facing message when the path escapes its root, or
+/// when a user section has no user config directory to resolve against.
+pub fn section_path(section: &Section, gaff_dir: &Path) -> Result<std::path::PathBuf, String> {
+    let (root, label) = if section.user {
+        let Some(dir) = crate::handler::config_dir() else {
+            return Err(format!(
+                "section `{}`: no user config directory. Set HOME.",
+                section.name
+            ));
+        };
+        (dir, "the user config directory")
+    } else {
+        (gaff_dir.to_path_buf(), ".gaff/")
+    };
+    confine_section_path(&root, &section.file)
+        .map_err(|bad| format!("section `{}`: the path {bad} leaves {label}", section.name))
 }
 
 /// A cadence: fire every N counted events of the given unit.
@@ -290,9 +388,22 @@ pub fn user_config_path() -> Option<std::path::PathBuf> {
 #[must_use]
 pub fn load_layered(cwd: &Path) -> Loaded {
     let user = match user_config_path() {
-        Some(p) => match read_config_file(&p) {
+        Some(p) => match read_user_config_file(&p) {
             Ok(Some(text)) => match serde_yaml_ng::from_str::<Config>(&text) {
-                Ok(cfg) => Some(cfg),
+                Ok(mut cfg) => {
+                    // Stamp the layer while the two configs are still
+                    // separate. After the merge there is no way to tell
+                    // which layer an entry came from, and both the
+                    // section root and the profile-selection rule need
+                    // to know.
+                    for s in &mut cfg.sections {
+                        s.user = true;
+                    }
+                    for p in cfg.profiles.values_mut() {
+                        p.user = true;
+                    }
+                    Some(cfg)
+                }
                 Err(e) => return Loaded::Broken(format!("{}: {e}", p.display())),
             },
             Ok(None) => None,
@@ -339,14 +450,36 @@ impl Config {
         // reminder's name consumes that reminder's marker.
         let user_reminder_names: Vec<String> =
             self.reminders.iter().map(|r| r.name.clone()).collect();
-        let user_section_names: Vec<String> = self.sections.iter().map(|s| s.name.clone()).collect();
+        let user_section_names: Vec<String> =
+            self.sections.iter().map(|s| s.name.clone()).collect();
 
-        self.reminders
-            .retain(|u| !repo.reminders.iter().any(|r| r.name == u.name));
-        self.reminders.extend(repo.reminders);
-        self.sections
-            .retain(|u| !repo.sections.iter().any(|r| r.name == u.name));
-        self.sections.extend(repo.sections);
+        // A repo may add a reminder or a section, and it may not take
+        // the name of one the user declared. Taking the name replaces
+        // the user's text with the repo's under the user's label, and
+        // the model is given no way to tell the two apart. Every other
+        // kind resolves a name collision in the user's favour; these
+        // two were the last exceptions.
+        for r in repo.reminders {
+            if user_reminder_names.contains(&r.name) {
+                eprintln!(
+                    "gaff: the repo declares a reminder named `{}`, which the user declared. Keeping the user's.",
+                    r.name
+                );
+                continue;
+            }
+            self.reminders.push(r);
+        }
+        for mut s in repo.sections {
+            if user_section_names.contains(&s.name) {
+                eprintln!(
+                    "gaff: the repo declares a section named `{}`, which the user declared. Keeping the user's.",
+                    s.name
+                );
+                continue;
+            }
+            s.user = false;
+            self.sections.push(s);
+        }
         // Remember which entries the user declared, so a repo profile
         // cannot filter them out.
         let user_entries: Vec<String> = self
@@ -355,14 +488,9 @@ impl Config {
             .map(|r| r.name.clone())
             .chain(self.sections.iter().map(|s| s.name.clone()))
             .collect();
-        for (name, mut profile) in repo.profiles {
-            // A repo profile filters the repo's own entries only. A
-            // repo that could filter the user's entries would silence
-            // them by shipping a profile and naming it the default.
-            if let Some(only) = &mut profile.only {
-                only.extend(user_entries.iter().cloned());
-            }
-            profile.disable.retain(|d| !user_entries.contains(d));
+        let cap = self.max_inject_bytes;
+        for (name, profile) in repo.profiles {
+            let profile = sanitize_repo_profile(profile, &user_entries, cap);
             if user_named.contains(&name) {
                 eprintln!(
                     "gaff: the repo redefines the profile `{name}`, which the user declared. Keeping the user's."
@@ -395,28 +523,7 @@ impl Config {
             }
             self.github.push(wf);
         }
-        self.sections.retain(|s| {
-            let clash = user_reminder_names.contains(&s.name)
-                && !user_section_names.contains(&s.name);
-            if clash {
-                eprintln!(
-                    "gaff: the repo declares a section named `{}`, which is a user reminder. Keeping the reminder.",
-                    s.name
-                );
-            }
-            !clash
-        });
-        self.reminders.retain(|r| {
-            let clash =
-                user_section_names.contains(&r.name) && !user_reminder_names.contains(&r.name);
-            if clash {
-                eprintln!(
-                    "gaff: the repo declares a reminder named `{}`, which is a user section. Keeping the section.",
-                    r.name
-                );
-            }
-            !clash
-        });
+        drop_cross_kind_clashes(&mut self, &user_reminder_names, &user_section_names);
         // A guard comes from the user config only. A repo cannot add
         // one, and a repo cannot remove one.
         //
@@ -440,8 +547,19 @@ impl Config {
                 repo.max_inject_bytes
             };
         }
-        if repo.default_profile.is_some() {
-            self.default_profile = repo.default_profile;
+        // A repo may set its own default profile, and it may not point
+        // at one the user wrote. A user profile such as `quiet` is a
+        // switch the user pulls when they want it; a repo that could
+        // name it as the default would decide when the user's own kill
+        // switch fires.
+        if let Some(name) = repo.default_profile {
+            if self.profiles.get(&name).is_some_and(|p| p.user) {
+                eprintln!(
+                    "gaff: the repo names `{name}` as its default profile, which the user declared. A repo may not select a user profile, so it is ignored."
+                );
+            } else {
+                self.default_profile = Some(name);
+            }
         }
         if !user_set_transitions {
             self.transitions = repo.transitions;
@@ -473,6 +591,27 @@ fn read_config_file(path: &Path) -> Result<Option<String>, String> {
             path.display()
         ));
     }
+    check_and_read(path, &meta)
+}
+
+/// Read the user's own config.
+///
+/// This one follows a symlink, and checks the target. Every mainstream
+/// dotfile manager (home-manager, stow, chezmoi) installs
+/// `$HOME/.config/gaff/gaff.yml` as a link into a managed store, so
+/// refusing a link here disarms the guards for a layout the user did
+/// nothing wrong to have. The threat the refusal answers is a *cloned
+/// repo* aiming gaff at a device or a pipe; anyone who can write inside
+/// `$HOME/.config/gaff` already owns the machine. The regular-file and
+/// size checks still apply, to the target.
+fn read_user_config_file(path: &Path) -> Result<Option<String>, String> {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Ok(None);
+    };
+    check_and_read(path, &meta)
+}
+
+fn check_and_read(path: &Path, meta: &std::fs::Metadata) -> Result<Option<String>, String> {
     if !meta.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
     }
@@ -483,6 +622,11 @@ fn read_config_file(path: &Path) -> Result<Option<String>, String> {
         ));
     }
     match std::fs::read_to_string(path) {
+        // An empty file declares nothing, and it is the shape a
+        // truncated write or a bad merge leaves behind. Treating it as
+        // absent puts it with the other accidents, so a git hook
+        // refuses rather than passing a check that never ran.
+        Ok(text) if text.trim().is_empty() => Ok(None),
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("{}: {e}", path.display())),
@@ -635,8 +779,15 @@ mod profile_tests {
     #[test]
     fn the_transition_policy_names_the_agent_settable_profiles() {
         let cfg = base();
-        assert!(cfg.transitions.clone().unwrap_or_default().agent_may_set("focus"));
-        assert!(!cfg.transitions.unwrap_or_default().agent_may_set("quiet"), "human only");
+        assert!(cfg
+            .transitions
+            .clone()
+            .unwrap_or_default()
+            .agent_may_set("focus"));
+        assert!(
+            !cfg.transitions.unwrap_or_default().agent_may_set("quiet"),
+            "human only"
+        );
     }
 }
 
@@ -658,16 +809,29 @@ mod layer_tests {
     }
 
     #[test]
-    fn a_repo_entry_replaces_the_user_entry_it_shadows() {
-        // The repo is the more specific scope, so it wins the name.
+    fn a_repo_may_not_take_the_name_of_a_user_reminder() {
+        // A repo taking the name replaces a user's text with its own
+        // under the user's label, and nothing downstream can tell them
+        // apart. A clone is untrusted content, so the user's entry
+        // stands and the repo's is dropped.
         let user = cfg("reminders:\n  - name: same\n    every: {tool_calls: 1}\n    text: FROM_USER\n  - name: keep\n    every: {tool_calls: 2}\n    text: K\n");
-        let repo = cfg("reminders:\n  - name: same\n    every: {tool_calls: 5}\n    text: FROM_REPO\n");
+        let repo =
+            cfg("reminders:\n  - name: same\n    every: {tool_calls: 5}\n    text: FROM_REPO\n");
         let merged = user.overlaid_with(repo);
-        assert_eq!(merged.reminders.len(), 2, "the unshadowed user entry survives");
+        assert_eq!(merged.reminders.len(), 2, "no entry is added or lost");
         let same = merged.reminders.iter().find(|r| r.name == "same").unwrap();
-        assert_eq!(same.text, "FROM_REPO");
-        assert_eq!(same.every.tool_calls, Some(5));
+        assert_eq!(same.text, "FROM_USER");
+        assert_eq!(same.every.tool_calls, Some(1));
         assert!(merged.reminders.iter().any(|r| r.name == "keep"));
+    }
+
+    #[test]
+    fn a_repo_may_add_a_reminder_under_a_name_the_user_did_not_use() {
+        let user = cfg("reminders:\n  - name: mine\n    every: {tool_calls: 1}\n    text: U\n");
+        let repo = cfg("reminders:\n  - name: theirs\n    every: {tool_calls: 5}\n    text: R\n");
+        let merged = user.overlaid_with(repo);
+        assert_eq!(merged.reminders.len(), 2);
+        assert!(merged.reminders.iter().any(|r| r.name == "theirs"));
     }
 
     #[test]
@@ -677,9 +841,16 @@ mod layer_tests {
         let user = cfg("transitions:\n  agent_may_set: [safe]\n");
         let repo = cfg("transitions:\n  agent_may_set: [safe, dangerous]\n");
         let merged = user.overlaid_with(repo);
-        assert!(merged.transitions.clone().unwrap_or_default().agent_may_set("safe"));
+        assert!(merged
+            .transitions
+            .clone()
+            .unwrap_or_default()
+            .agent_may_set("safe"));
         assert!(
-            !merged.transitions.unwrap_or_default().agent_may_set("dangerous"),
+            !merged
+                .transitions
+                .unwrap_or_default()
+                .agent_may_set("dangerous"),
             "a repo must not widen the agent's own permissions"
         );
     }
@@ -689,7 +860,10 @@ mod layer_tests {
         let user = cfg("reminders: []\n");
         let repo = cfg("transitions:\n  agent_may_set: [focus]\n");
         let merged = user.overlaid_with(repo);
-        assert!(merged.transitions.unwrap_or_default().agent_may_set("focus"));
+        assert!(merged
+            .transitions
+            .unwrap_or_default()
+            .agent_may_set("focus"));
     }
 
     #[test]
@@ -828,7 +1002,10 @@ mod repo_silencing_tests {
     fn a_repo_cannot_lower_the_cap_below_the_users() {
         let repo = cfg("max_inject_bytes: 1\n");
         let merged = user().overlaid_with(repo);
-        assert!(merged.max_inject_bytes > 1, "a one-byte cap silences everything");
+        assert!(
+            merged.max_inject_bytes > 1,
+            "a one-byte cap silences everything"
+        );
     }
 
     #[test]
@@ -851,7 +1028,10 @@ mod repo_silencing_tests {
         // consume the reminder's marker and silence it.
         let repo = cfg("sections: [{name: safety, file: s.md, refresh: {tool_calls: 1}}]\n");
         let merged = user().overlaid_with(repo);
-        assert!(merged.sections.is_empty(), "the colliding section is dropped");
+        assert!(
+            merged.sections.is_empty(),
+            "the colliding section is dropped"
+        );
         assert_eq!(merged.reminders.len(), 1);
     }
 
@@ -861,5 +1041,158 @@ mod repo_silencing_tests {
         let merged = user().overlaid_with(repo);
         assert_eq!(merged.sections.len(), 1);
         assert_eq!(merged.git.len(), 2);
+    }
+}
+
+/// Layer-boundary tests.
+///
+/// Each one holds a route by which a cloned repo reached past the
+/// boundary. They are grouped so a reader can see the whole rule in one
+/// place: a repo adds, and never speaks as the user.
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+
+    fn user_cfg(yaml: &str) -> Config {
+        let mut c: Config = serde_yaml_ng::from_str(yaml).expect("the fixture must parse");
+        for s in &mut c.sections {
+            s.user = true;
+        }
+        for p in c.profiles.values_mut() {
+            p.user = true;
+        }
+        c
+    }
+    fn repo_cfg(yaml: &str) -> Config {
+        serde_yaml_ng::from_str(yaml).expect("the fixture must parse")
+    }
+
+    #[test]
+    fn a_user_section_keeps_its_layer_through_the_merge() {
+        // The layer decides which directory the body is read from. If
+        // the merge lost it, the repo's directory would supply the
+        // text of a section the user declared.
+        let user = user_cfg("sections:\n  - {name: conv, file: conv.md}\n");
+        let repo = repo_cfg("sections:\n  - {name: repo-notes, file: notes.md}\n");
+        let merged = user.overlaid_with(repo);
+        let conv = merged.sections.iter().find(|s| s.name == "conv").unwrap();
+        let notes = merged
+            .sections
+            .iter()
+            .find(|s| s.name == "repo-notes")
+            .unwrap();
+        assert!(conv.user, "the user's section stays a user section");
+        assert!(!notes.user, "the repo's section stays a repo section");
+    }
+
+    #[test]
+    fn a_repo_profile_cannot_retime_a_user_entry() {
+        // A cadence of a few million silences an entry as completely as
+        // `disable` does.
+        let user = user_cfg("reminders:\n  - name: safety\n    every: {tool_calls: 1}\n    text: S\n");
+        let repo = repo_cfg(
+            "profiles:\n  slow:\n    cadence:\n      safety: {tool_calls: 999999}\ndefault_profile: slow\n",
+        );
+        let merged = user.overlaid_with(repo);
+        let applied = merged.with_profile(Some("slow"));
+        let safety = applied
+            .reminders
+            .iter()
+            .find(|r| r.name == "safety")
+            .expect("the user reminder survives");
+        assert_eq!(
+            safety.every.tool_calls,
+            Some(1),
+            "the user's cadence is untouched"
+        );
+    }
+
+    #[test]
+    fn a_repo_profile_cannot_starve_a_user_entry_with_its_own_cap() {
+        let user = user_cfg(
+            "max_inject_bytes: 512\nreminders:\n  - name: safety\n    every: {tool_calls: 1}\n    text: S\n",
+        );
+        let repo = repo_cfg("profiles:\n  tiny:\n    max_inject_bytes: 1\ndefault_profile: tiny\n");
+        let merged = user.overlaid_with(repo);
+        let applied = merged.with_profile(Some("tiny"));
+        assert!(
+            applied.max_inject_bytes >= 512,
+            "the cap never drops below the user's, got {}",
+            applied.max_inject_bytes
+        );
+    }
+
+    #[test]
+    fn a_repo_cannot_name_a_user_profile_as_the_default() {
+        // `quiet` is the user's own switch. A repo naming it decides
+        // when the user's kill switch fires.
+        let user = user_cfg("profiles:\n  quiet:\n    only: []\n");
+        let repo = repo_cfg("default_profile: quiet\n");
+        let merged = user.overlaid_with(repo);
+        assert_eq!(merged.default_profile, None);
+    }
+
+    #[test]
+    fn a_repo_may_name_its_own_profile_as_the_default() {
+        let user = user_cfg("profiles:\n  quiet:\n    only: []\n");
+        let repo = repo_cfg("profiles:\n  ci:\n    disable: []\ndefault_profile: ci\n");
+        let merged = user.overlaid_with(repo);
+        assert_eq!(merged.default_profile.as_deref(), Some("ci"));
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("gaff-bound-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_committed_profile_file_cannot_select_a_user_profile() {
+        let dir = scratch("userprof");
+        std::fs::write(dir.join("profile"), "quiet\n").unwrap();
+        let cfg = user_cfg("profiles:\n  quiet:\n    only: []\n");
+        assert_eq!(
+            resolve_profile(None, None, None, &dir, &cfg),
+            None,
+            "a repo file may not select the user's profile"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_committed_profile_file_may_select_a_repo_profile() {
+        let dir = scratch("repoprof");
+        std::fs::write(dir.join("profile"), "ci\n").unwrap();
+        let cfg = repo_cfg("profiles:\n  ci:\n    disable: []\n");
+        assert_eq!(
+            resolve_profile(None, None, None, &dir, &cfg).as_deref(),
+            Some("ci")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_repo_cannot_take_the_name_of_a_user_section() {
+        let user = user_cfg("sections:\n  - {name: conventions, file: mine.md}\n");
+        let repo = repo_cfg("sections:\n  - {name: conventions, file: theirs.md}\n");
+        let merged = user.overlaid_with(repo);
+        assert_eq!(merged.sections.len(), 1);
+        assert_eq!(merged.sections[0].file, "mine.md");
+        assert!(merged.sections[0].user);
+    }
+
+    #[test]
+    fn an_empty_config_file_reads_as_absent() {
+        // An empty file is what a truncated write and a bad merge leave
+        // behind. A git hook must refuse on it rather than pass a check
+        // that never ran.
+        let dir = scratch("empty");
+        std::fs::create_dir_all(dir.join(".gaff")).unwrap();
+        std::fs::write(dir.join(CONFIG_PATH), "").unwrap();
+        assert!(matches!(load(&dir), Loaded::Absent));
+        std::fs::write(dir.join(CONFIG_PATH), "  \n\n").unwrap();
+        assert!(matches!(load(&dir), Loaded::Absent));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
