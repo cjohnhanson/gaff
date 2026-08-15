@@ -1,6 +1,8 @@
 doc: |
   Profiles are overlays on the declared entries. The transition policy
-  refuses the agent-facing path for a human-only profile.
+  refuses every agent-facing path to a human-only profile, including
+  the environment variable: a repo reaches that through direnv or a
+  devcontainer, and an agent reaches it in one Bash call.
 transitions:
   - name: "the overlay filters, and the policy refuses a human-only switch"
     command: |
@@ -26,8 +28,19 @@ transitions:
       for id in p5 p6; do
         printf '{"hook_event_name":"PostToolUse","session_id":"s-p","tool_use_id":"%s"}' "$id" | gaff hook > /dev/null
       done
-      QUIET=$(printf '{"hook_event_name":"PostToolBatch","session_id":"s-p"}' | GAFF_PROFILE=quiet gaff hook)
-      [ -z "$QUIET" ] || { echo "FAIL: quiet must suppress every entry: $QUIET"; exit 1; }
+      # GAFF_PROFILE answers to the same policy as the agent-facing
+      # switch. `quiet` is human-only, so the variable cannot select it
+      # and the entries still deliver.
+      QUIET=$(printf '{"hook_event_name":"PostToolBatch","session_id":"s-p"}' | GAFF_PROFILE=quiet gaff hook 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext')
+      case "$QUIET" in
+        *keep*) ;;
+        *) echo "FAIL: a human-only profile must not be selectable by the environment: $QUIET"; exit 1 ;;
+      esac
+      WARN=$(printf '{"hook_event_name":"PostToolBatch","session_id":"s-p"}' | GAFF_PROFILE=quiet gaff hook 2>&1 >/dev/null)
+      case "$WARN" in
+        *human-only*) ;;
+        *) echo "FAIL: the refusal must say why: $WARN"; exit 1 ;;
+      esac
 
       # An agent (no terminal on stdin) may not select a human-only profile.
       if echo | gaff profile set quiet --session s-p 2>/dev/null; then

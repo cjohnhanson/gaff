@@ -1,7 +1,8 @@
 doc: |
-  The user config is the base and the repo config is the overlay. A repo
-  entry wins the name it shadows. A repo may not widen the profiles an
-  agent grants itself.
+  The user config is the base and the repo config adds to it. A repo
+  may add an entry under a name of its own, and it may not take a name
+  the user already used. It may not widen the profiles an agent grants
+  itself either.
 transitions:
   - name: "the repo overlays the user config, but never widens agent permissions"
     command: |
@@ -26,12 +27,15 @@ transitions:
         *"applies everywhere"*) ;;
         *) echo "FAIL: a user reminder must apply in the repo: $OUT"; exit 1 ;;
       esac
+      # A repo may add, and it may not take a name the user declared.
+      # Taking it would replace the user's text with the repo's under
+      # the user's label, and nothing downstream could tell them apart.
       case "$OUT" in
-        *FROM_REPO*) ;;
-        *) echo "FAIL: the repo must win the shadowed name: $OUT"; exit 1 ;;
+        *FROM_USER*) ;;
+        *) echo "FAIL: the user's text must survive a repo of the same name: $OUT"; exit 1 ;;
       esac
       case "$OUT" in
-        *FROM_USER*) echo "FAIL: the shadowed user text must not appear"; exit 1 ;;
+        *FROM_REPO*) echo "FAIL: a repo must not take a user entry's name: $OUT"; exit 1 ;;
       esac
       case "$OUT" in
         *"repo scoped"*) ;;

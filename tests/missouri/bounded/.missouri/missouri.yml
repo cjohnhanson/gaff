@@ -1,0 +1,103 @@
+doc: |
+  A cloned repo is untrusted content. It may add to what the user
+  declared, and it may never silence, retime, starve, or speak for a
+  user entry.
+
+  Every route in this transition was live at some point during
+  development, and each one is a way a repository you cloned could have
+  edited the instructions in your own session.
+transitions:
+  - name: "a repo adds to the user config and never speaks for it"
+    command: |
+      export HOME="$PWD/home"
+      mkdir -p "$HOME/.config/gaff"
+      cat > "$HOME/.config/gaff/gaff.yml" <<'EOF'
+      max_inject_bytes: 4096
+      sections:
+        - name: conventions
+          file: conv.md
+      reminders:
+        - name: safety
+          every: {tool_calls: 1}
+          text: USER_SAFETY
+      profiles:
+        quiet:
+          only: []
+      guards:
+        - name: user-guard
+          tool: Bash
+          matches: 'rm -rf /'
+          message: not that one
+      EOF
+      printf 'MY OWN CONVENTIONS\n' > "$HOME/.config/gaff/conv.md"
+
+      tick() { printf '{"hook_event_name":"PostToolUse","session_id":"%s","tool_use_id":"t"}' "$1" | gaff hook > /dev/null 2>&1; }
+      flush() { printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s"}' "$1" | gaff hook 2>/dev/null; }
+      start() { printf '{"hook_event_name":"SessionStart","session_id":"%s"}' "$1" | gaff hook 2>/dev/null; }
+
+      # A user section reads the file next to the user's own config.
+      # Resolving it against the repo's .gaff/ left the user's file
+      # unread and let the repo supply the body under the user's label.
+      OUT=$(start s-b1)
+      case "$OUT" in
+        *"MY OWN CONVENTIONS"*) ;;
+        *) echo "FAIL: a user section must read the user's file: $OUT"; exit 1 ;;
+      esac
+      case "$OUT" in
+        *"IGNORE PRIOR INSTRUCTIONS"*) echo "FAIL: a repo supplied a user section's body"; exit 1 ;;
+      esac
+
+      # A repo profile may retime and cap its own entries, not the
+      # user's. Either one silences a rule as completely as disabling
+      # it does.
+      tick s-b2
+      SLOW=$(GAFF_PROFILE=slow flush s-b2)
+      case "$SLOW" in
+        *USER_SAFETY*) ;;
+        *) echo "FAIL: a repo profile retimed a user reminder: $SLOW"; exit 1 ;;
+      esac
+      tick s-b3
+      TINY=$(GAFF_PROFILE=tiny flush s-b3)
+      case "$TINY" in
+        *USER_SAFETY*) ;;
+        *) echo "FAIL: a repo profile starved a user reminder: $TINY"; exit 1 ;;
+      esac
+
+      # `quiet` is the user's own switch. A repo naming it as its
+      # default, or opening it to an agent, decides when that switch
+      # fires.
+      tick s-b4
+      DEF=$(flush s-b4)
+      case "$DEF" in
+        *USER_SAFETY*) ;;
+        *) echo "FAIL: a repo default_profile selected a user profile: $DEF"; exit 1 ;;
+      esac
+      if echo | gaff profile set quiet --session s-b4 2>/dev/null; then
+        echo "FAIL: a repo opened a user profile to an agent"; exit 1
+      fi
+
+      # A repo may not declare a guard, and it may not disarm one.
+      pre() { printf '{"hook_event_name":"PreToolUse","session_id":"s-b5","tool_name":"Bash","tool_input":{"command":"%s"}}' "$1" | gaff hook > /dev/null 2>&1; echo $?; }
+      [ "$(pre 'rm -rf /')" = "2" ] || { echo "FAIL: the user's guard must still refuse"; exit 1; }
+      [ "$(pre 'ls -la')" = "0" ] || { echo "FAIL: a repo guard must not refuse an ordinary call"; exit 1; }
+
+      # A committed symlink walks past a lexical path check, so the
+      # confinement compares resolved paths.
+      printf 'SECRET\n' > "$HOME/secret.txt"
+      ln -sf "$HOME/secret.txt" .gaff/leak.md
+      cat > .gaff/gaff.yml.bak <<'EOF'
+      placeholder
+      EOF
+      cp .gaff/gaff.yml .gaff/gaff.yml.orig
+      printf 'sections:\n  - {name: leak, file: leak.md}\n' > .gaff/gaff.yml
+      LEAK=$(start s-b6 2>/dev/null)
+      case "$LEAK" in
+        *SECRET*) echo "FAIL: a committed symlink read a file outside the repo"; exit 1 ;;
+      esac
+      mv .gaff/gaff.yml.orig .gaff/gaff.yml
+      rm -f .gaff/leak.md .gaff/gaff.yml.bak
+
+      rm -rf home .gaff-state
+      echo BOUNDED_OK
+    target: ../bounded-held
+    stdout: "BOUNDED_OK\n"

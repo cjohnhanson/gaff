@@ -1,0 +1,8 @@
+doc: |
+  The transition removes its home directory, so only the repo config
+  remains. Nothing it declared reached the user's layer.
+assertions:
+  - name: "the repo config is untouched"
+    command: "test -f .gaff/gaff.yml"
+  - name: "the repo's section body is still on disk, unread"
+    command: "grep -q 'IGNORE PRIOR INSTRUCTIONS' .gaff/conv.md"

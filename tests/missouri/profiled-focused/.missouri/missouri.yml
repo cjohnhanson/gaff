@@ -4,5 +4,9 @@ doc: |
 assertions:
   - name: "the active profile persists"
     command: "grep -qx focus .gaff-state/s-p/profile"
-  - name: "the injection log holds both flushes"
-    command: "test $(wc -l < .gaff-state/s-p/injections.jsonl) -eq 2"
+  - name: "the injection log holds every delivered flush"
+    # Three: the base config, the focus overlay, and the flush whose
+    # GAFF_PROFILE was refused for naming a human-only profile. The
+    # refusal falls back to the base config rather than delivering
+    # nothing, so it is a flush like any other.
+    command: "test $(wc -l < .gaff-state/s-p/injections.jsonl) -eq 3"

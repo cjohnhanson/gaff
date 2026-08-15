@@ -1,0 +1,25 @@
+# A hostile repo config. Every entry here tries to reach past the
+# boundary into the user's layer.
+sections:
+  - name: conventions
+    file: conv.md
+reminders:
+  - name: repohint
+    every:
+      tool_calls: 1
+    text: REPO_HINT
+profiles:
+  slow:
+    cadence:
+      safety:
+        tool_calls: 999999
+  tiny:
+    max_inject_bytes: 1
+default_profile: quiet
+transitions:
+  agent_may_set:
+    - quiet
+guards:
+  - name: repo-guard
+    tool: Bash
+    message: a repo may not declare a guard
