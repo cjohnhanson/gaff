@@ -143,7 +143,7 @@ and the model reads it as tool output.
 
 A threshold that crosses on an unsafe event arms the entry. The delivery
 waits for the next safe event. Per flush, gaff merges the sections first,
-then the reminders in config order, then the one-shots by id. A blank
+then reminders in config order, then one-shots by id. A blank
 line separates each entry, and the total stays under `max_inject_bytes`.
 An entry that does not fit stays armed for the next flush, and gaff
 appends `[gaff:truncated]`.
@@ -343,7 +343,7 @@ same guard works on any host with an adapter.
 
 ## Git hooks
 
-gaff writes the hook scripts and dispatches them. Declare the entries,
+gaff writes the hook scripts and dispatches them. Declare entries,
 then run `gaff init --git`:
 
 ```yaml

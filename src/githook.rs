@@ -355,7 +355,7 @@ fn set_executable(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Run the entries declared for one hook.
+/// Run entries declared for one hook.
 ///
 /// The exit code is the first failing command's code. A git hook exists
 /// to block, so gaff reports the failure rather than swallowing it.

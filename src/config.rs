@@ -1,7 +1,7 @@
 //! The repo-level config: `.gaff/gaff.yml`. It holds data only.
 //!
 //! gaff executes nothing that a repo declares. A repo declares the
-//! reminder text and the cadences. Anything that runs code lives in the
+//! reminder text and cadences. Anything that runs code lives in the
 //! user-scoped config. Version 0 has no such config.
 //!
 //! A malformed config degrades loudly, and it never blocks. The caller
@@ -54,7 +54,7 @@ pub struct Config {
     pub guards: Vec<crate::guard::Guard>,
 }
 
-/// A profile: a named overlay on the reminders and the sections.
+/// A profile: a named overlay on reminders and sections.
 ///
 /// A profile never adds an entry. It selects from the entries the base
 /// config already declares, and it may override their cadences. That

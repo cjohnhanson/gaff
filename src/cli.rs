@@ -10,7 +10,7 @@
 //! on. `githook` returns the failing command's own code, because a git
 //! hook exists to block a commit.
 //!
-//! This module parses the arguments by hand for that reason, because
+//! This module parses arguments by hand for that reason, because
 //! clap exits 2 on a usage error. It lives in the library rather than
 //! in `main.rs`, so the CLI is one testable function and another
 //! program can drive gaff without spawning it.
@@ -359,7 +359,7 @@ fn run_init(args: &[String]) -> ExitCode {
 
 /// `gaff check` — validate `.gaff/gaff.yml`. Exit 1 for an invalid
 /// config. This command is the one place where a loud failure is correct.
-/// Validate the reminders and the sections of a config.
+/// Validate a config's reminders and sections.
 ///
 /// Split out of `run_check` so each half stays readable. Every problem
 /// here is a rule that reads as configured but can never fire.
@@ -746,7 +746,7 @@ fn registered_events(path: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// Report whether the guards are live.
+/// Report whether guards are live.
 ///
 /// A guard that silently stops working is worse than no guard, and the
 /// ways it can stop are quiet: an unreadable user config, a typo in it,

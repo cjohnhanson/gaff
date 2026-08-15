@@ -325,7 +325,7 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
     merge(entries, config, store, session)
 }
 
-/// Merge the entries into one string, inside the byte cap.
+/// Merge entries into one string, inside the byte cap.
 ///
 /// gaff consumes an entry only when it emits the entry. An entry that
 /// overflows the cap stays pending, except a handler entry, whose

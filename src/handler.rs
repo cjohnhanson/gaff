@@ -182,7 +182,7 @@ pub fn disabled() -> bool {
     })
 }
 
-/// Load the handlers, and report why loading failed.
+/// Load handlers, and report why loading failed.
 ///
 /// `gaff hook` warns and continues with no handlers. `gaff check
 /// --handlers` reports the failure as an error, so a broken config is
@@ -207,7 +207,7 @@ pub fn load_checked() -> Result<HandlersConfig, String> {
         .map_err(|e| format!("{} is not valid: {e}", path.display()))
 }
 
-/// Load the handlers for the hook path. A problem yields no handlers
+/// Load handlers for the hook path. A problem yields no handlers
 /// and a warning, because gaff degrades rather than blocks.
 #[must_use]
 pub fn load() -> HandlersConfig {
