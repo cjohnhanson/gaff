@@ -334,8 +334,8 @@ pub fn current_branch(cwd: &Path) -> Option<String> {
 
 /// The shared wall-clock budget for one flush.
 #[must_use]
-pub const fn budget_for(event: &str) -> Duration {
-    Duration::from_millis(if matches!(event.as_bytes(), b"SessionStart") {
+pub fn budget_for(event: &str) -> Duration {
+    Duration::from_millis(if crate::event::Kind::parse(event) == crate::event::Kind::SessionStart {
         BUDGET_SESSION_START_MS
     } else {
         BUDGET_FLUSH_MS
@@ -367,10 +367,17 @@ pub fn run_due(
     // A cadence counts tool calls and prompts, and a fresh session has
     // neither. So a SessionStart subscription is due at session start;
     // otherwise the documented example could never fire.
-    let at_session_start = event == "SessionStart";
+    let at_session_start = crate::event::Kind::parse(event) == crate::event::Kind::SessionStart;
     let due: Vec<&Handler> = handlers
         .iter()
-        .filter(|h| h.events.iter().any(|e| e == event))
+        // Compare through Kind, so `prompt` and `agent:prompt` are the
+        // same subscription. Comparing the strings let a config that
+        // validated cleanly never fire.
+        .filter(|h| {
+            h.events
+                .iter()
+                .any(|e| crate::event::Kind::parse(e) == crate::event::Kind::parse(event))
+        })
         .filter(|h| at_session_start || armed(&h.name))
         .filter(|h| h.problems().is_empty())
         .filter(|h| predicates_pass(h.when.as_ref(), cwd))
@@ -718,7 +725,8 @@ mod tests {
 
     #[test]
     fn the_session_start_budget_exceeds_the_flush_budget() {
-        assert!(budget_for("SessionStart") > budget_for("PostToolBatch"));
+        assert!(budget_for("session_start") > budget_for("tool_batch"));
+        assert!(budget_for("agent:session_start") > budget_for("tool_batch"), "the prefix form too");
     }
 
     #[test]

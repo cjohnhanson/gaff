@@ -433,6 +433,7 @@ fn run_check(args: &[String]) -> ExitCode {
     for guard in &cfg.guards {
         problems.extend(guard.problems());
     }
+    problems.extend(cross_reference_problems(&cfg));
     for entry in &cfg.git {
         problems.extend(entry.problems());
     }
@@ -501,16 +502,156 @@ fn run_doctor() -> ExitCode {
         None => println!("state:   UNRESOLVABLE (set GAFF_STATE_DIR or HOME)"),
     }
 
-    let settings = cwd.join(init::SETTINGS_PATH);
-    let registered = std::fs::read_to_string(&settings).is_ok_and(|s| s.contains("gaff hook"));
-    if registered {
-        println!("hooks:   registered in {}", init::SETTINGS_PATH);
-    } else {
-        println!("hooks:   NOT registered (run `gaff init`)");
-    }
+    doctor_hooks(&cwd);
     doctor_guards(&loaded);
     doctor_handlers();
     ExitCode::SUCCESS
+}
+
+
+/// Problems where one part of the config names another part that does
+/// not exist, or names the same thing twice.
+///
+/// Each of these is a rule that never fires, and each was accepted
+/// silently before.
+fn cross_reference_problems(cfg: &config::Config) -> Vec<String> {
+    let mut problems = Vec::new();
+    // A name that points at nothing is a rule that never fires. Every
+    // one of these was accepted silently before.
+    let entry_names: Vec<&String> = cfg
+        .reminders
+        .iter()
+        .map(|r| &r.name)
+        .chain(cfg.sections.iter().map(|s| &s.name))
+        .collect();
+    for (pname, profile) in &cfg.profiles {
+        let referenced = profile
+            .only
+            .iter()
+            .flatten()
+            .chain(profile.disable.iter())
+            .chain(profile.cadence.keys());
+        for name in referenced {
+            if !entry_names.contains(&name) {
+                problems.push(format!(
+                    "profile `{pname}`: `{name}` names no reminder or section"
+                ));
+            }
+        }
+    }
+    if let Some(d) = &cfg.default_profile
+        && !cfg.profiles.contains_key(d)
+    {
+        problems.push(format!("default_profile `{d}` names no profile"));
+    }
+    for name in &cfg.transitions.clone().unwrap_or_default().agent_may_set {
+        if !cfg.profiles.contains_key(name) {
+            problems.push(format!(
+                "transitions.agent_may_set `{name}` names no profile"
+            ));
+        }
+    }
+    for (label, names) in [
+        ("guard", cfg.guards.iter().map(|g| &g.name).collect::<Vec<_>>()),
+        ("git entry", cfg.git.iter().map(|g| &g.name).collect()),
+        ("workflow", cfg.github.iter().map(|w| &w.name).collect()),
+    ] {
+        for (i, n) in names.iter().enumerate() {
+            if names[..i].contains(n) {
+                problems.push(format!("duplicate {label} name `{n}`"));
+            }
+        }
+    }
+    for wf in &cfg.github {
+        problems.extend(wf.problems(&cfg.git));
+    }
+    problems
+}
+
+/// Report where gaff is registered, across every scope the host merges.
+///
+/// A substring search of one file answered this before, so gaff read as
+/// unregistered whenever it was registered at the user scope, and the
+/// remedy it printed would have registered it a second time. It also
+/// read a file that merely mentioned the command, including one that
+/// banned it, as a registration.
+fn doctor_hooks(cwd: &std::path::Path) {
+    let scopes = [
+        (
+            "user".to_string(),
+            std::env::var("HOME").ok().map(|h| {
+                std::path::Path::new(&h)
+                    .join(".claude")
+                    .join("settings.json")
+            }),
+        ),
+        (
+            "repo".to_string(),
+            Some(cwd.join(".claude").join("settings.json")),
+        ),
+        (
+            "local".to_string(),
+            Some(cwd.join(init::SETTINGS_PATH)),
+        ),
+    ];
+    let mut found = false;
+    for (label, path) in scopes.into_iter().filter_map(|(l, p)| p.map(|p| (l, p))) {
+        let events = registered_events(&path);
+        if events.is_empty() {
+            continue;
+        }
+        found = true;
+        let missing: Vec<&str> = crate::adapter::CLAUDE_CODE
+            .hook_events
+            .iter()
+            .copied()
+            .filter(|e| !events.iter().any(|got| got == e))
+            .collect();
+        if missing.is_empty() {
+            println!("hooks:   registered ({label}, all {} events)", events.len());
+        } else {
+            println!(
+                "hooks:   PARTIAL ({label}); missing {}",
+                missing.join(", ")
+            );
+        }
+    }
+    if !found {
+        println!("hooks:   NOT registered (run `gaff init`)");
+    }
+}
+
+/// The events a settings file registers `gaff hook` on.
+///
+/// This walks the structure rather than searching the text, so a file
+/// that only mentions the command does not read as a registration.
+fn registered_events(path: &std::path::Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(hooks) = json.get("hooks").and_then(|h| h.as_object()) else {
+        return Vec::new();
+    };
+    hooks
+        .iter()
+        .filter(|(_, groups)| {
+            groups.as_array().is_some_and(|gs| {
+                gs.iter().any(|g| {
+                    g.get("hooks").and_then(|h| h.as_array()).is_some_and(|hs| {
+                        hs.iter().any(|h| {
+                            h.get("command")
+                                .and_then(|c| c.as_str())
+                                .is_some_and(|c| c.ends_with("gaff hook"))
+                        })
+                    })
+                })
+            })
+        })
+        .map(|(event, _)| event.clone())
+        .collect()
 }
 
 /// Report whether the guards are live.
@@ -915,6 +1056,10 @@ fn check_github() -> ExitCode {
                 drifted = true;
             }
         }
+    }
+    for orphan in crate::ghworkflow::orphans(&cwd, &cfg.github) {
+        println!("ORPHAN  {orphan} (generated by gaff, declared by nothing)");
+        drifted = true;
     }
     if drifted { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
