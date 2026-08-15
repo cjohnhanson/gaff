@@ -629,7 +629,7 @@ fn run_profile(args: &[String]) -> ExitCode {
                 println!("(no profiles declared in .gaff/gaff.yml)");
             }
             for name in cfg.profiles.keys() {
-                let who = if cfg.transitions.agent_may_set(name) {
+                let who = if cfg.transitions.clone().unwrap_or_default().agent_may_set(name) {
                     "agent or human"
                 } else {
                     "human only"
@@ -709,7 +709,7 @@ fn set_profile(
     let Some(session) = session else {
         return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID");
     };
-    if !std::io::stdin().is_terminal() && !cfg.transitions.agent_may_set(&name) {
+    if !std::io::stdin().is_terminal() && !cfg.transitions.clone().unwrap_or_default().agent_may_set(&name) {
         return fail(&format!(
             "profile `{name}` is human-only. Add it to transitions.agent_may_set to allow an agent switch."
         ));

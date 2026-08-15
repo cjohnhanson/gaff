@@ -36,8 +36,11 @@ pub struct Config {
     #[serde(default)]
     pub default_profile: Option<String>,
     /// Which profile switches an agent may make on its own session.
+    /// An absent value and an empty list mean different things. An
+    /// empty `agent_may_set` says the agent may set nothing, and a
+    /// repo must not be able to overrule that by looking unset.
     #[serde(default)]
-    pub transitions: Transitions,
+    pub transitions: Option<Transitions>,
     /// The git-hook entries. gaff writes the hook scripts, and they
     /// call back into gaff, so one config covers both domains.
     #[serde(default)]
@@ -174,7 +177,7 @@ impl Default for Config {
             max_inject_bytes: DEFAULT_MAX_INJECT_BYTES,
             profiles: std::collections::BTreeMap::new(),
             default_profile: None,
-            transitions: Transitions::default(),
+            transitions: None,
             git: Vec::new(),
             github: Vec::new(),
             guards: Vec::new(),
@@ -327,7 +330,11 @@ impl Config {
     /// itself, and a repo must not widen it.
     #[must_use]
     pub fn overlaid_with(mut self, repo: Self) -> Self {
-        let user_set_transitions = !self.transitions.agent_may_set.is_empty();
+        let user_set_transitions = self.transitions.is_some();
+        // A repo may not redefine a profile the user declared. The user
+        // sanctions a profile by name, and a repo that could rewrite
+        // that name would decide what the sanctioned profile does.
+        let user_named: Vec<String> = self.profiles.keys().cloned().collect();
 
         self.reminders
             .retain(|u| !repo.reminders.iter().any(|r| r.name == u.name));
@@ -335,7 +342,15 @@ impl Config {
         self.sections
             .retain(|u| !repo.sections.iter().any(|r| r.name == u.name));
         self.sections.extend(repo.sections);
-        self.profiles.extend(repo.profiles);
+        for (name, profile) in repo.profiles {
+            if user_named.contains(&name) {
+                eprintln!(
+                    "gaff: the repo redefines the profile `{name}`, which the user declared. Keeping the user's."
+                );
+                continue;
+            }
+            self.profiles.insert(name, profile);
+        }
         self.git.retain(|u| !repo.git.iter().any(|r| r.name == u.name));
         self.git.extend(repo.git);
         self.github
@@ -496,8 +511,8 @@ mod profile_tests {
     #[test]
     fn the_transition_policy_names_the_agent_settable_profiles() {
         let cfg = base();
-        assert!(cfg.transitions.agent_may_set("focus"));
-        assert!(!cfg.transitions.agent_may_set("quiet"), "human only");
+        assert!(cfg.transitions.clone().unwrap_or_default().agent_may_set("focus"));
+        assert!(!cfg.transitions.unwrap_or_default().agent_may_set("quiet"), "human only");
     }
 }
 
@@ -538,9 +553,9 @@ mod layer_tests {
         let user = cfg("transitions:\n  agent_may_set: [safe]\n");
         let repo = cfg("transitions:\n  agent_may_set: [safe, dangerous]\n");
         let merged = user.overlaid_with(repo);
-        assert!(merged.transitions.agent_may_set("safe"));
+        assert!(merged.transitions.clone().unwrap_or_default().agent_may_set("safe"));
         assert!(
-            !merged.transitions.agent_may_set("dangerous"),
+            !merged.transitions.unwrap_or_default().agent_may_set("dangerous"),
             "a repo must not widen the agent's own permissions"
         );
     }
@@ -550,7 +565,7 @@ mod layer_tests {
         let user = cfg("reminders: []\n");
         let repo = cfg("transitions:\n  agent_may_set: [focus]\n");
         let merged = user.overlaid_with(repo);
-        assert!(merged.transitions.agent_may_set("focus"));
+        assert!(merged.transitions.unwrap_or_default().agent_may_set("focus"));
     }
 
     #[test]
@@ -614,5 +629,51 @@ mod guard_layering_tests {
         let merged = user_with_guard().overlaid_with(repo);
         assert_eq!(merged.guards.len(), 1);
         assert_eq!(merged.guards[0].matches.as_deref(), Some("git add -A"));
+    }
+}
+
+#[cfg(test)]
+mod transition_layering_tests {
+    use super::*;
+
+    fn cfg(y: &str) -> Config {
+        serde_yml::from_str(y).expect("fixture must parse")
+    }
+
+    #[test]
+    fn an_explicit_empty_list_means_the_agent_may_set_nothing() {
+        // Absent and empty are different. A repo must not be able to
+        // overrule "nothing" by looking unset.
+        let user = cfg("profiles: {safe: {}}\ntransitions: {agent_may_set: []}\n");
+        let repo = cfg("profiles: {wide: {}}\ntransitions: {agent_may_set: [wide, safe]}\n");
+        let merged = user.overlaid_with(repo);
+        let t = merged.transitions.unwrap_or_default();
+        assert!(!t.agent_may_set("wide"), "a repo may not widen the list");
+        assert!(!t.agent_may_set("safe"), "the user allowed nothing");
+    }
+
+    #[test]
+    fn a_repo_cannot_redefine_a_profile_the_user_declared() {
+        // The user sanctions a profile by name. A repo that rewrote
+        // that name would decide what the sanctioned profile does.
+        let user = cfg("reminders: [{name: safety, every: {tool_calls: 1}, text: KEEP}]\nprofiles: {safe: {}}\ntransitions: {agent_may_set: [safe]}\n");
+        let repo = cfg("profiles: {safe: {only: []}}\n");
+        let merged = user.overlaid_with(repo);
+        let effective = merged.with_profile(Some("safe"));
+        assert_eq!(
+            effective.reminders.len(),
+            1,
+            "the repo must not empty the user's profile"
+        );
+        assert_eq!(effective.reminders[0].text, "KEEP");
+    }
+
+    #[test]
+    fn a_repo_may_still_add_a_profile_of_its_own() {
+        let user = cfg("profiles: {safe: {}}\n");
+        let repo = cfg("profiles: {repoonly: {}}\n");
+        let merged = user.overlaid_with(repo);
+        assert!(merged.profiles.contains_key("safe"));
+        assert!(merged.profiles.contains_key("repoonly"));
     }
 }

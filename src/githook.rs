@@ -120,7 +120,7 @@ pub fn hooks_declared(entries: &[GitHook]) -> Vec<String> {
 fn script(hook: &str, command: &str) -> String {
     format!(
         "#!/bin/sh\n\
-         # Installed by gaff. Edit .gaff/gaff.yml, then run `gaff init --git`.\n\
+         {BANNER}\n\
          # gaff keeps a hook it did not write as {hook}.local and calls it first.\n\
          if [ -x \"$(dirname \"$0\")/{hook}.local\" ]; then\n\
          \t\"$(dirname \"$0\")/{hook}.local\" \"$@\" || exit $?\n\
@@ -129,9 +129,19 @@ fn script(hook: &str, command: &str) -> String {
     )
 }
 
+/// The exact second line of a script gaff wrote. It is the ownership
+/// marker, and it is compared whole.
+const BANNER: &str = "# Installed by gaff. Edit .gaff/gaff.yml, then run `gaff init --git`.";
+
 /// Whether gaff wrote this file.
+///
+/// The line must match exactly and sit where gaff puts it. A substring
+/// test anywhere in the file would claim a foreign hook that merely
+/// mentions gaff in a comment, and claiming it means overwriting it and
+/// then deleting it on uninstall.
 fn is_ours(path: &Path) -> bool {
-    std::fs::read_to_string(path).is_ok_and(|s| s.contains("Installed by gaff"))
+    std::fs::read_to_string(path)
+        .is_ok_and(|s| s.lines().nth(1).is_some_and(|l| l == BANNER))
 }
 
 /// The `.git/hooks` directory for a repo, following a worktree's
@@ -163,10 +173,17 @@ pub fn install(cwd: &Path, entries: &[GitHook], command: &str) -> std::io::Resul
         let path = dir.join(&hook);
         if path.exists() && !is_ours(&path) {
             let kept = dir.join(format!("{hook}.local"));
-            if !kept.exists() {
-                std::fs::rename(&path, &kept)?;
-                eprintln!("gaff: kept the existing {hook} as {hook}.local, and calls it first.");
+            if kept.exists() {
+                // Two foreign hooks and one slot to keep them in.
+                // Overwriting loses the second one for good, so gaff
+                // refuses and names both files.
+                return Err(std::io::Error::other(format!(
+                    "{hook} was written by another tool, and {hook}.local is already taken. \
+                     gaff will not overwrite it. Move or merge {hook}.local, then run this again."
+                )));
             }
+            std::fs::rename(&path, &kept)?;
+            eprintln!("gaff: kept the existing {hook} as {hook}.local, and calls it first.");
         }
         std::fs::write(&path, script(&hook, command))?;
         set_executable(&path)?;
@@ -359,5 +376,69 @@ mod tests {
     fn a_hook_with_no_entries_passes() {
         let d = repo("empty");
         assert_eq!(run(&d, &[], "pre-commit", &[]), 0);
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    fn repo(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("gaff-own-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(d.join(".git/hooks")).unwrap();
+        d
+    }
+
+    fn entry() -> GitHook {
+        GitHook {
+            name: "c".into(),
+            on: vec!["pre-commit".into()],
+            command: vec!["true".into()],
+            required: true,
+        }
+    }
+
+    #[test]
+    fn a_second_foreign_hook_is_refused_rather_than_destroyed() {
+        // gaff installs, another tool installs over it, gaff runs again.
+        // The second tool's hook has nowhere to be kept, so gaff must
+        // refuse instead of overwriting it.
+        let d = repo("second");
+        std::fs::write(d.join(".git/hooks/pre-commit"), "#!/bin/sh\necho ORIGINAL\n").unwrap();
+        install(&d, &[entry()], "gaff githook").unwrap();
+        std::fs::write(d.join(".git/hooks/pre-commit"), "#!/bin/sh\necho SECOND\n").unwrap();
+
+        let err = install(&d, &[entry()], "gaff githook").unwrap_err();
+        assert!(err.to_string().contains("already taken"), "{err}");
+        let still = std::fs::read_to_string(d.join(".git/hooks/pre-commit")).unwrap();
+        assert!(still.contains("SECOND"), "the second tool's hook survives");
+        let kept = std::fs::read_to_string(d.join(".git/hooks/pre-commit.local")).unwrap();
+        assert!(kept.contains("ORIGINAL"), "the first one is still kept");
+    }
+
+    #[test]
+    fn a_foreign_hook_that_merely_mentions_gaff_is_not_claimed() {
+        // A substring test would claim this file, overwrite it, and then
+        // delete it on uninstall.
+        let d = repo("mention");
+        let foreign = "#!/bin/sh\n# replaces the one Installed by gaff, on purpose.\necho MINE\n";
+        std::fs::write(d.join(".git/hooks/pre-commit"), foreign).unwrap();
+        assert!(!is_ours(&d.join(".git/hooks/pre-commit")));
+
+        install(&d, &[entry()], "gaff githook").unwrap();
+        let kept = std::fs::read_to_string(d.join(".git/hooks/pre-commit.local")).unwrap();
+        assert!(kept.contains("MINE"), "it was kept, not claimed");
+
+        uninstall(&d).unwrap();
+        let back = std::fs::read_to_string(d.join(".git/hooks/pre-commit")).unwrap();
+        assert!(back.contains("MINE"), "and restored");
+    }
+
+    #[test]
+    fn gaff_recognizes_its_own_script() {
+        let d = repo("own");
+        install(&d, &[entry()], "gaff githook").unwrap();
+        assert!(is_ours(&d.join(".git/hooks/pre-commit")));
     }
 }
