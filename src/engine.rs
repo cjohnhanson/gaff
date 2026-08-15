@@ -439,12 +439,27 @@ fn select(entries: &[Entry], budget: usize) -> Plan {
     let mut texts = std::collections::BTreeMap::new();
     let mut truncated = false;
     let mut used = 0usize;
+    let mut user_held_back = false;
     for (index, entry) in entries.iter().enumerate() {
+        // Once a user entry has been held back, the repo layer is
+        // closed. Selection is greedy, so a repo entry would otherwise
+        // be admitted into the space the user's entry could not use —
+        // the same starvation the ordering exists to prevent, reached
+        // in one pass. It also let a repo size an entry to fill the
+        // room the truncation marker needed, removing the model's only
+        // in-band sign that a user rule was missing.
+        if user_held_back && !entry.user {
+            truncated = true;
+            continue;
+        }
         let overhead = if used == 0 { 0 } else { SEPARATOR.len() };
         if used + overhead + entry.text.len() <= budget {
             used += overhead + entry.text.len();
             texts.insert(index, entry.text.clone());
             continue;
+        }
+        if entry.user {
+            user_held_back = true;
         }
         if matches!(entry.kind, EntryKind::Handler)
             && let Some(head) = clip(&entry.text, budget.saturating_sub(used + overhead))

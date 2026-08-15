@@ -411,8 +411,26 @@ pub fn read_section_body(section: &Section, gaff_dir: &Path) -> Result<String, S
                 root.display()
             ));
         }
+        // Read the confined path rather than the name that was
+        // checked. They are the same file unless something swapped the
+        // name in between, and then this reads the one that passed.
+        return read_confined(section, &real);
     }
-    let meta = std::fs::metadata(&path)
+    read_confined(section, &path)
+}
+
+/// Open a section body and answer every check from the one descriptor.
+fn read_confined(section: &Section, path: &Path) -> Result<String, String> {
+    // Open once, and answer every question from that one descriptor.
+    //
+    // Resolving the path a second time for `metadata` and a third for
+    // the read left two windows in which the name could be swapped for
+    // a link pointing out of the repo. The checks then described a
+    // different file from the one that was read.
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
+    let meta = file
+        .metadata()
         .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
     if !meta.is_file() {
         return Err(format!(
@@ -428,8 +446,10 @@ pub fn read_section_body(section: &Section, gaff_dir: &Path) -> Result<String, S
             path.display()
         ));
     }
-    std::fs::read_to_string(&path)
-        .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))
+    let mut body = String::new();
+    std::io::Read::read_to_string(&mut file, &mut body)
+        .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
+    Ok(body)
 }
 
 /// The largest section body gaff will read. A section is injected whole
@@ -658,13 +678,19 @@ impl Config {
         // replace one the user declared. Both run commands, and the
         // consent a user gave was to their own entry, not to whatever
         // a later pull puts under the same name.
+        // A git entry is a blocking check, and both layers installed
+        // theirs on purpose. Dropping either one silences a check
+        // somebody asked for: dropping the repo's passed a commit the
+        // repo meant to gate, and refusing to run anything blocked
+        // every commit in the clone. So both run, and the name is
+        // reported rather than resolved. Entries are matched by layer
+        // where identity matters, which is `use_git`.
         for entry in repo.git {
             if self.git.iter().any(|u| u.name == entry.name) {
                 eprintln!(
-                    "gaff: the repo declares a git entry named `{}`, which the user declared. Keeping the user's.",
+                    "gaff: the repo and the user both declare a git entry named `{}`. Both run. Rename one of them to tell them apart in the output.",
                     entry.name
                 );
-                continue;
             }
             self.git.push(entry);
         }
@@ -1187,10 +1213,21 @@ mod repo_silencing_tests {
 
     #[test]
     fn a_repo_cannot_replace_a_user_git_entry() {
+        // A git entry blocks a commit, and both layers installed theirs
+        // deliberately. Dropping the repo's passed a commit it meant to
+        // gate; refusing to run either blocked every commit in the
+        // clone. Both run, and the collision is reported.
         let repo = cfg("git: [{name: scan, on: [pre-commit], command: [echo, REPO]}]\n");
         let merged = user().overlaid_with(repo);
-        assert_eq!(merged.git.len(), 1);
-        assert_eq!(merged.git[0].command[1], "USER");
+        assert_eq!(merged.git.len(), 2, "neither entry is dropped");
+        assert!(
+            merged.git.iter().any(|g| g.command[1] == "USER"),
+            "the user's check still runs"
+        );
+        assert!(
+            merged.git.iter().any(|g| g.command[1] == "REPO"),
+            "the repo's check still runs"
+        );
     }
 
     #[test]

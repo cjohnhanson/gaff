@@ -169,7 +169,11 @@ impl Workflow {
         let mut out = Vec::new();
         for step in &self.steps {
             match (&step.use_git, step.command.is_empty()) {
-                (Some(name), true) => match git.iter().find(|g| &g.name == name) {
+                (Some(name), true) => match git
+                    .iter()
+                    .find(|g| &g.name == name && g.user == self.user)
+                    .or_else(|| git.iter().find(|g| &g.name == name))
+                {
                     None => out.push(format!(
                         "workflow `{}`: no git entry named `{name}` to reuse",
                         self.name
@@ -302,7 +306,8 @@ pub fn render(wf: &Workflow, git: &[crate::githook::GitHook]) -> String {
             |name| {
                 let argv = git
                     .iter()
-                    .find(|g| &g.name == name)
+                    .find(|g| &g.name == name && g.user == wf.user)
+                    .or_else(|| git.iter().find(|g| &g.name == name))
                     .map(|g| g.command.clone())
                     .unwrap_or_default();
                 (step.name.clone().unwrap_or_else(|| name.clone()), argv)
