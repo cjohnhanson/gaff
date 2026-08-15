@@ -271,6 +271,58 @@ problem, including a config it cannot parse. `gaff doctor` lists the
 declared handlers and whether this repo is trusted. Plain `gaff check`
 stays repo-only, so it behaves the same in CI as it does locally.
 
+## Guards
+
+A guard refuses a tool call before it runs. Declare it once in the
+user-level config and it applies in every repo.
+
+```yaml
+guards:
+  - name: no-mass-stage
+    tool: Bash
+    matches: 'git\s+add\s+(\S+\s+)*(-A|--all|\.)(\s|$)'
+    unless: '--dry-run'
+    message: >-
+      Stage files by name. Run `git status` first, then name each path.
+
+  - name: no-credential-reads
+    tool: Read
+    field: file_path
+    matches: '(\.env$|/\.ssh/|id_rsa|\.pem$)'
+    message: That path holds credentials. Do not read it.
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `name` | required | The guard name, printed on a refusal |
+| `tool` | required | The tool to inspect, such as `Bash` or `Read` |
+| `matches` | every call | A regular expression |
+| `field` | `command` | The tool-input field to match; use `file_path` for a file tool |
+| `unless` | none | A pattern that exempts a call `matches` caught |
+| `message` | required | What the agent reads. Say what to do instead |
+
+The pattern is a regular expression, not a glob, so it can express what
+a glob cannot. `git\s+add\s+.*-A` catches a compound command such as
+`cd somewhere && git add -A`. A glob anchored to the start of the line
+does not, and that exact gap let a private key reach a public repo.
+
+### The one place gaff exits 2
+
+Everywhere else gaff exits 0 or 1, because a gaff *failure* must never
+block a session. A guard is not a failure. It is the operator saying
+"not this call", and exit 2 is the only way the harness hears that.
+
+So the rule refines rather than breaks. A guard that matches exits 2 on
+purpose. Every other path still degrades, including a pattern that does
+not compile. A broken guard blocks nothing, and `gaff check` names it,
+because a guard that silently stops working is worse than no guard.
+
+### Across hosts
+
+A guard names a normalized tool and a field, not a host's payload
+shape. The adapter maps a host's event onto `pre_tool_call`, so the
+same guard works on any host with an adapter.
+
 ## Git hooks
 
 gaff writes the hook scripts and dispatches them. Declare the entries,

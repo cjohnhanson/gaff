@@ -3,7 +3,7 @@ doc: |
   removes exactly what gaff init added. It leaves the foreign entries and
   the unknown keys intact.
 transitions:
-  - name: "init registers five events idempotently"
+  - name: "init registers the hook events idempotently"
     command: |
       gaff init >/dev/null || { echo "FAIL: init"; exit 1; }
       cp .claude/settings.local.json first.json

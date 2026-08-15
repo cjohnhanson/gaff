@@ -149,6 +149,15 @@ fn run_hook() -> ExitCode {
     );
     let cfg = cfg.with_profile(profile.as_deref());
 
+    // A guard is the one thing that may exit 2. It runs before any
+    // other work, so a refusal is not affected by anything else.
+    if envelope.kind == crate::event::Kind::PreToolCall
+        && let Some(refusal) = guard_refusal(&cfg, &envelope)
+    {
+        eprintln!("{refusal}");
+        return ExitCode::from(2);
+    }
+
     let handlers = crate::handler::load().handlers;
     if let Some(context) =
         engine::handle_with(&envelope, &cfg, &store, &gaff_dir, &handlers, Some(&cwd))
@@ -418,11 +427,22 @@ fn run_check(args: &[String]) -> ExitCode {
         }
     }
 
+    // A guard with a pattern that does not compile blocks nothing, and
+    // silence there is the worst outcome: the operator believes a rule
+    // is enforced when it is not.
+    for guard in &cfg.guards {
+        problems.extend(guard.problems());
+    }
+    for entry in &cfg.git {
+        problems.extend(entry.problems());
+    }
+
     if problems.is_empty() {
         println!(
-            "config ok: {} reminder(s), {} section(s), cap {} bytes",
+            "config ok: {} reminder(s), {} section(s), {} guard(s), cap {} bytes",
             cfg.reminders.len(),
             cfg.sections.len(),
+            cfg.guards.len(),
             cfg.max_inject_bytes
         );
         ExitCode::SUCCESS
@@ -892,6 +912,28 @@ fn run_githook(args: &[String]) -> ExitCode {
     };
     let code = crate::githook::run(&cwd, &cfg.git, hook, &args[1..]);
     u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
+}
+
+/// The message of the first guard that refuses this call.
+///
+/// This is the only path in gaff that leads to exit 2. Every failure
+/// path, including a broken guard, still degrades, because a gaff
+/// fault must never block a session.
+fn guard_refusal(cfg: &config::Config, envelope: &crate::event::Envelope) -> Option<String> {
+    let tool = envelope.tool_name.as_deref()?;
+    let value = |field: &str| {
+        envelope
+            .raw
+            .get("tool_input")
+            .and_then(|i| i.get(field))
+            .and_then(|v| v.as_str())
+            .map(std::string::ToString::to_string)
+    };
+    let hit = crate::guard::first_refusal(&cfg.guards, tool, &value)?;
+    Some(format!(
+        "gaff: refused by the guard `{}`.\n\n{}",
+        hit.name, hit.message
+    ))
 }
 
 #[cfg(test)]

@@ -40,6 +40,7 @@ pub struct Adapter {
 /// plus the counted events.
 pub const CLAUDE_CODE_EVENTS: &[&str] = &[
     "PostToolBatch",
+    "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
     "SessionStart",
@@ -92,6 +93,7 @@ fn claude_code_kind(event: &str) -> Kind {
     match event {
         "SessionStart" => Kind::SessionStart,
         "UserPromptSubmit" => Kind::Prompt,
+        "PreToolUse" => Kind::PreToolCall,
         "PostToolUse" | "PostToolUseFailure" => Kind::ToolCall,
         "PostToolBatch" => Kind::ToolBatch,
         "Stop" => Kind::Stop,

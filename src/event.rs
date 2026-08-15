@@ -77,6 +77,9 @@ pub enum Kind {
     SessionStart,
     /// The user submits a prompt.
     Prompt,
+    /// A tool call is about to run. This is the only event that can
+    /// refuse a call, so a guard runs here.
+    PreToolCall,
     /// One tool call finished. gaff counts these.
     ToolCall,
     /// A batch of tool calls finished.
@@ -126,6 +129,7 @@ impl Kind {
         match self {
             Self::SessionStart => "session_start",
             Self::Prompt => "prompt",
+            Self::PreToolCall => "pre_tool_call",
             Self::ToolCall => "tool_call",
             Self::ToolBatch => "tool_batch",
             Self::Stop => "stop",
@@ -143,6 +147,7 @@ impl Kind {
         match name {
             "session_start" => Self::SessionStart,
             "prompt" => Self::Prompt,
+            "pre_tool_call" => Self::PreToolCall,
             "tool_call" => Self::ToolCall,
             "tool_batch" => Self::ToolBatch,
             "stop" => Self::Stop,

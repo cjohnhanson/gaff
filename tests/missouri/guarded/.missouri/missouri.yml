@@ -1,0 +1,48 @@
+doc: |
+  A guard refuses a tool call. This is the only place gaff exits 2, and
+  it is deliberate. Every failure path still exits 0 or 1, because a
+  gaff fault must never block a session.
+transitions:
+  - name: "a guard refuses a compound command, exempts, and never blocks on a fault"
+    command: |
+      export HOME="$PWD/home"
+      mkdir -p "$HOME/.config/gaff"
+      cat > "$HOME/.config/gaff/gaff.yml" <<'EOF'
+      guards:
+        - name: no-mass-stage
+          tool: Bash
+          matches: 'git\s+add\s+(\S+\s+)*(-A|--all|\.)(\s|$)'
+          unless: '--dry-run'
+          message: Stage files by name.
+        - name: broken
+          tool: Bash
+          matches: '(unclosed'
+          message: never fires
+      EOF
+      pre() { printf '{"hook_event_name":"PreToolUse","session_id":"s-g","tool_name":"%s","tool_input":{"%s":"%s"}}' "$1" "$2" "$3" | gaff hook > /dev/null 2>&1; echo $?; }
+
+      # The shape a shell guard anchored to the start of the line missed.
+      [ "$(pre Bash command 'cd /tmp && git add -A && git status')" = "2" ] || { echo "FAIL: a compound git add -A must be refused"; exit 1; }
+      [ "$(pre Bash command 'git add -A')" = "2" ] || { echo "FAIL: a bare git add -A must be refused"; exit 1; }
+      [ "$(pre Bash command 'cd /tmp; git add --all')" = "2" ] || { echo "FAIL: a semicolon form must be refused"; exit 1; }
+
+      # An exemption and an ordinary call pass.
+      [ "$(pre Bash command 'git add -A --dry-run')" = "0" ] || { echo "FAIL: unless must exempt"; exit 1; }
+      [ "$(pre Bash command 'cd /tmp && git add src/main.rs')" = "0" ] || { echo "FAIL: a named file must pass"; exit 1; }
+
+      # A guard names one tool, and it does not touch another.
+      [ "$(pre Edit file_path 'git add -A')" = "0" ] || { echo "FAIL: a Bash guard must not touch Edit"; exit 1; }
+
+      # A broken pattern must block nothing, and gaff check must name it.
+      gaff check 2>&1 | grep -q 'invalid' || { echo "FAIL: check must report the broken pattern"; exit 1; }
+
+      # No other event ever exits 2, whatever the config says.
+      printf '{"hook_event_name":"PostToolUse","session_id":"s-g","tool_use_id":"t1"}' | gaff hook > /dev/null 2>&1
+      [ "$?" != "2" ] || { echo "FAIL: only a guard may exit 2"; exit 1; }
+      printf 'not json' | gaff hook > /dev/null 2>&1
+      [ "$?" != "2" ] || { echo "FAIL: bad input must never exit 2"; exit 1; }
+
+      rm -rf home
+      echo GUARD_OK
+    target: ../guarded-refused
+    stdout: "GUARD_OK\n"

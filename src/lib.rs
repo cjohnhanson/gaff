@@ -16,6 +16,7 @@ pub mod error;
 pub mod event;
 pub mod ghworkflow;
 pub mod githook;
+pub mod guard;
 pub mod handler;
 pub mod init;
 pub mod state;

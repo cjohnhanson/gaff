@@ -30,6 +30,9 @@ ends with its opening instructions effectively invisible.
 - **Handlers** — external commands whose output becomes context, on a
   cadence. They live only in the user-scoped config, and a repo must be
   trusted with `gaff trust` before any command runs in it.
+- **Guards** — refuse a tool call that matches a regular expression.
+  Declared once at user level, applied in every repo. This is the only
+  feature that blocks, and it blocks on purpose.
 - **Git hooks** — gaff writes the scripts in `.git/hooks/`, and they
   call back into gaff. One config declares the agent side and the git
   side. A hook gaff did not write is kept and called first.

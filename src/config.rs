@@ -46,6 +46,9 @@ pub struct Config {
     /// this domain is generated and checked, never executed.
     #[serde(default)]
     pub github: Vec<crate::ghworkflow::Workflow>,
+    /// The tool calls to refuse. This is the only feature that blocks.
+    #[serde(default)]
+    pub guards: Vec<crate::guard::Guard>,
 }
 
 /// A profile: a named overlay on the reminders and the sections.
@@ -174,6 +177,7 @@ impl Default for Config {
             transitions: Transitions::default(),
             git: Vec::new(),
             github: Vec::new(),
+            guards: Vec::new(),
         }
     }
 }
@@ -324,6 +328,9 @@ impl Config {
         self.github
             .retain(|u| !repo.github.iter().any(|r| r.name == u.name));
         self.github.extend(repo.github);
+        // A repo may add a guard, and it may not remove or weaken one
+        // the user declared. A guard is a refusal the operator wrote.
+        self.guards.extend(repo.guards);
 
         if repo.max_inject_bytes != DEFAULT_MAX_INJECT_BYTES {
             self.max_inject_bytes = repo.max_inject_bytes;
