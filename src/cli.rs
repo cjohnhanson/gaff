@@ -306,6 +306,11 @@ fn run_init(args: &[String]) -> ExitCode {
         }
     }
     if git {
+        if command != "gaff hook" {
+            return fail(
+                "--command applies to the agent hooks, not to --git. A git hook always calls this binary by its own absolute path.",
+            );
+        }
         if host.is_some() {
             return fail("--host applies to the agent hooks, not to --git");
         }
@@ -354,25 +359,11 @@ fn run_init(args: &[String]) -> ExitCode {
 
 /// `gaff check` — validate `.gaff/gaff.yml`. Exit 1 for an invalid
 /// config. This command is the one place where a loud failure is correct.
-fn run_check(args: &[String]) -> ExitCode {
-    if args.iter().any(|a| a == "--handlers") {
-        return check_handlers();
-    }
-    if args.iter().any(|a| a == "--github") {
-        return check_github();
-    }
-    let Ok(cwd) = std::env::current_dir() else {
-        return fail("cannot resolve the working directory");
-    };
-    let cfg = match config::load_layered(&cwd) {
-        Loaded::Absent => {
-            println!("no config at {}. Nothing to validate.", config::CONFIG_PATH);
-            return ExitCode::SUCCESS;
-        }
-        Loaded::Broken(err) => return fail(&format!("{}: {err}", config::CONFIG_PATH)),
-        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
-    };
-
+/// Validate the reminders and the sections of a config.
+///
+/// Split out of `run_check` so each half stays readable. Every problem
+/// here is a rule that reads as configured but can never fire.
+fn entry_problems(cfg: &config::Config, cwd: &std::path::Path) -> Vec<String> {
     let mut problems = Vec::new();
     let mut names = std::collections::HashSet::new();
     let cadence_ok =
@@ -402,6 +393,11 @@ fn run_check(args: &[String]) -> ExitCode {
         if !cadence_ok(&r.every) {
             problems.push(format!("reminder `{}` has a zero cadence", r.name));
         }
+        // An empty reminder injects a bare `[gaff:name]` label with
+        // nothing under it, which costs bytes and says nothing.
+        if r.text.trim().is_empty() {
+            problems.push(format!("reminder `{}` has no text", r.name));
+        }
     }
     for s in &cfg.sections {
         if !names.insert(s.name.clone()) {
@@ -416,13 +412,14 @@ fn run_check(args: &[String]) -> ExitCode {
         if !cadence_ok(&s.refresh) {
             problems.push(format!("section `{}` has a zero cadence", s.name));
         }
-        match config::confine_section_path(&cwd.join(".gaff"), &s.file) {
-            Err(bad) => problems.push(format!(
-                "section `{}`: the path {bad} leaves .gaff/",
-                s.name
-            )),
+        match config::section_path(s, &cwd.join(".gaff")) {
+            Err(msg) => problems.push(msg),
             Ok(path) if !path.is_file() => {
-                problems.push(format!("section `{}`: .gaff/{} not found", s.name, s.file));
+                problems.push(format!(
+                    "section `{}`: {} not found",
+                    s.name,
+                    path.display()
+                ));
             }
             Ok(path) => {
                 // The prefix and separator cost bytes too. A body at or
@@ -445,14 +442,54 @@ fn run_check(args: &[String]) -> ExitCode {
     // A guard with a pattern that does not compile blocks nothing, and
     // silence there is the worst outcome: the operator believes a rule
     // is enforced when it is not.
+    problems
+}
+
+fn run_check(args: &[String]) -> ExitCode {
+    if args.iter().any(|a| a == "--handlers") {
+        return check_handlers();
+    }
+    if args.iter().any(|a| a == "--github") {
+        return check_github();
+    }
+    // Every other subcommand rejects a flag it does not know. A
+    // silently ignored `--handler` would report the repo config as ok
+    // and read as though the handlers had passed.
+    if let Some(unknown) = args.iter().find(|a| a.starts_with('-')) {
+        return fail(&format!(
+            "unexpected argument `{unknown}` (check takes --handlers or --github)"
+        ));
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    let cfg = match config::load_layered(&cwd) {
+        Loaded::Absent => {
+            println!("no config at {}. Nothing to validate.", config::CONFIG_PATH);
+            return ExitCode::SUCCESS;
+        }
+        // The error already names the file it came from, and that file
+        // may be the user's config rather than the repo's. Prefixing
+        // the repo path sent readers to the wrong file.
+        Loaded::Broken(err) => return fail(&err),
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
+    };
+
+    let mut problems = entry_problems(&cfg, &cwd);
+
+    let mut warnings = Vec::new();
     for guard in &cfg.guards {
         problems.extend(guard.problems());
+        warnings.extend(guard.warnings());
     }
     problems.extend(cross_reference_problems(&cfg));
     for entry in &cfg.git {
         problems.extend(entry.problems());
     }
 
+    for w in &warnings {
+        eprintln!("gaff: {w}");
+    }
     if problems.is_empty() {
         println!(
             "config ok: {} reminder(s), {} section(s), {} guard(s), cap {} bytes",
@@ -969,6 +1006,16 @@ fn check_handlers() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let mut bad = false;
+    // A name keys the pending marker and labels the output. Two
+    // handlers under one name share a marker, so one of them may never
+    // arm, and the model cannot tell their outputs apart.
+    let mut seen = std::collections::HashSet::new();
+    for h in &cfg.handlers {
+        if !seen.insert(h.name.clone()) {
+            bad = true;
+            println!("FAIL duplicate handler name `{}`", h.name);
+        }
+    }
     for h in &cfg.handlers {
         let problems = h.problems();
         if problems.is_empty() {
@@ -1157,6 +1204,18 @@ fn run_githook(args: &[String]) -> ExitCode {
             return fail(&format!("{err}. Refusing to skip the {hook} checks."));
         }
     };
+    // gaff's own script is installed for this hook, and the config
+    // declares no entry for it. That only happens when the two have
+    // drifted, and the effect is that a check the user installed stops
+    // running in silence. Passing here is the same failure as passing
+    // on an absent config.
+    let stale = crate::githook::stale_installs(&cwd, &cfg.git);
+    if stale.iter().any(|h| h == hook) {
+        eprintln!(
+            "gaff: {hook}: the hook is installed but the config declares no entry for it, so no check ran. Remove it with `gaff init --git --uninstall`, or restore the entry."
+        );
+        return ExitCode::FAILURE;
+    }
     let code = crate::githook::run(&cwd, &cfg.git, hook, &args[1..]);
     u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }

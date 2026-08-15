@@ -150,6 +150,14 @@ impl Handler {
                 self.name
             ));
         }
+        // A cadence of zero divides no count, so the handler never arms
+        // and never runs. It reads like a working entry.
+        if self.every.tool_calls == Some(0) || self.every.prompts == Some(0) {
+            out.push(format!(
+                "handler `{}`: a cadence of 0 never fires. Use 1 to run at every flush.",
+                self.name
+            ));
+        }
         out
     }
 }

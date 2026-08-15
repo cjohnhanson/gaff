@@ -105,25 +105,37 @@ impl Workflow {
         // A control character cannot appear in a YAML scalar, and
         // quoting does not save it. Refuse here, so a broken file is
         // never written and the command exits non-zero.
-        let mut check_printable = |what: &str, v: &str| {
+        //
+        // A newline survives only where a block scalar carries it, and
+        // a step command is the one such position. Everywhere else the
+        // value renders as a flow scalar: a continuation line lands at
+        // column 0, so YAML either folds it into the value or reads it
+        // as a new node and the file stops parsing.
+        let mut check = |what: &str, v: &str, block: bool| {
             if v.chars().any(is_yaml_control) {
                 out.push(format!(
                     "workflow `{}`: the {what} holds a control character, which cannot appear in YAML",
                     self.name
                 ));
             }
+            if !block && v.contains('\n') {
+                out.push(format!(
+                    "workflow `{}`: the {what} holds a newline. Only a step command may span lines.",
+                    self.name
+                ));
+            }
         };
-        check_printable("name", &self.name);
-        check_printable("runner", &self.runs_on);
+        check("name", &self.name, false);
+        check("runner", &self.runs_on, false);
         for b in &self.branches {
-            check_printable("branch", b);
+            check("branch", b, false);
         }
         for step in &self.steps {
             if let Some(n) = &step.name {
-                check_printable("step name", n);
+                check("step name", n, false);
             }
             for a in &step.command {
-                check_printable("command", a);
+                check("command", a, true);
             }
         }
         for step in &self.steps {
@@ -291,7 +303,10 @@ pub fn drift(wf: &Workflow, git: &[crate::githook::GitHook], cwd: &Path) -> Drif
 #[must_use]
 pub fn orphans(cwd: &Path, workflows: &[Workflow]) -> Vec<String> {
     let dir = cwd.join(".github/workflows");
-    let declared: Vec<String> = workflows.iter().map(|w| format!("{}.yml", w.name)).collect();
+    let declared: Vec<String> = workflows
+        .iter()
+        .map(|w| format!("{}.yml", w.name))
+        .collect();
     let mut out: Vec<String> = std::fs::read_dir(&dir)
         .into_iter()
         .flatten()
@@ -492,13 +507,18 @@ mod tests {
             use_git: None,
         }];
         assert!(
-            w.problems(&[]).iter().any(|p| p.contains("control character")),
+            w.problems(&[])
+                .iter()
+                .any(|p| p.contains("control character")),
             "{:?}",
             w.problems(&[])
         );
         // A newline and a tab survive, because a block scalar carries them.
         w.steps[0].command = vec!["sh".into(), "-c".into(), "a\nb\tc".into()];
-        assert!(!w.problems(&[]).iter().any(|p| p.contains("control character")));
+        assert!(!w
+            .problems(&[])
+            .iter()
+            .any(|p| p.contains("control character")));
     }
 
     #[test]
@@ -558,6 +578,48 @@ mod tests {
         assert!(
             problems.iter().any(|p| p.contains("does not render")),
             "{problems:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod newline_tests {
+    use super::*;
+
+    fn wf(yaml: &str) -> Workflow {
+        serde_yaml_ng::from_str(yaml).expect("the fixture must parse")
+    }
+
+    #[test]
+    fn a_newline_in_a_flow_position_is_refused() {
+        // A flow scalar puts a continuation line at column 0. YAML then
+        // folds it into the value or reads it as a new node, and the
+        // file stops parsing. Writing it at exit 0 was the failure.
+        let cases = [
+            "name: \"a\\nb\"\non: [push]\nsteps:\n  - command: [echo, hi]\n",
+            "name: ok\nruns_on: \"ubuntu\\nlatest\"\non: [push]\nsteps:\n  - command: [echo, hi]\n",
+            "name: ok\non: [push]\nbranches: [\"main\\n---\"]\nsteps:\n  - command: [echo, hi]\n",
+            "name: ok\non: [push]\nsteps:\n  - name: \"a\\nkey: v\"\n    command: [echo, hi]\n",
+        ];
+        for yaml in cases {
+            let problems = wf(yaml).problems(&[]);
+            assert!(
+                problems.iter().any(|p| p.contains("newline")),
+                "expected a newline refusal for {yaml:?}, got {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_newline_in_a_step_command_is_allowed() {
+        // A command renders into a block scalar, which carries a
+        // newline faithfully. It is the one position that may span
+        // lines.
+        let w = wf("name: ok\non: [push]\nsteps:\n  - command: [sh, -c, \"a\\nb\"]\n");
+        assert!(
+            !w.problems(&[]).iter().any(|p| p.contains("newline")),
+            "{:?}",
+            w.problems(&[])
         );
     }
 }
