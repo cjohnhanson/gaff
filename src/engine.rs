@@ -150,6 +150,8 @@ fn push_handler_entries(
             entries.push(Entry {
                 text,
                 kind: EntryKind::Handler,
+                // A handler comes from the user config only.
+                user: true,
             });
         }
     }
@@ -212,6 +214,14 @@ fn arm_crossings(
 struct Entry {
     text: String,
     kind: EntryKind,
+    /// True when the user config declared this entry.
+    ///
+    /// The byte cap is a shared budget, and whoever is merged first
+    /// spends it. A repo cannot lower the cap, but a repo section sized
+    /// to fill it starved every user reminder just as completely, and
+    /// in silence. User entries are merged first so the repo can only
+    /// spend what is left.
+    user: bool,
 }
 
 enum EntryKind {
@@ -274,20 +284,12 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
         if mode == SectionMode::PendingOnly && pending.is_none() {
             continue;
         }
-        let path = match crate::config::section_path(section, gaff_dir) {
-            Ok(p) => p,
+        let body = match crate::config::read_section_body(section, gaff_dir) {
+            Ok(b) => b,
             Err(msg) => {
                 eprintln!("gaff: {msg}. Skipping the section.");
                 continue;
             }
-        };
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            eprintln!(
-                "gaff: section `{}`: cannot read {}. Skipping the section.",
-                section.name,
-                path.display()
-            );
-            continue;
         };
         entries.push(Entry {
             text: format!("[gaff:{}]\n{}", section.name, body.trim_end()),
@@ -295,6 +297,7 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
                 name: section.name.clone(),
                 multiple,
             }),
+            user: section.user,
         });
     }
 
@@ -306,6 +309,7 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
                     name: reminder.name.clone(),
                     multiple,
                 },
+                user: reminder.user,
             });
         }
     }
@@ -316,6 +320,8 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
             entries.push(Entry {
                 text: format!("{ONESHOT_PREFIX} {}", shot.text),
                 kind: EntryKind::Oneshot { id: shot.id },
+                // A one-shot is scheduled in-session, not by a repo.
+                user: true,
             });
         }
     }
@@ -336,8 +342,15 @@ fn merge(
     store: &Store,
     session: &str,
 ) -> Option<String> {
+    // A stable partition, so config order still holds inside each
+    // layer. The user's entries get the budget first.
+    let mut ordered: Vec<Entry> = Vec::with_capacity(entries.len());
+    let (user, repo): (Vec<Entry>, Vec<Entry>) = entries.into_iter().partition(|e| e.user);
+    ordered.extend(user);
+    ordered.extend(repo);
+
     let (mut out, mut truncated) = (String::new(), false);
-    for entry in entries {
+    for entry in ordered {
         let candidate_len = if out.is_empty() {
             entry.text.len()
         } else {
@@ -378,17 +391,35 @@ fn merge(
     }
 
     if truncated {
-        let marker_len = if out.is_empty() {
+        // The marker must always be delivered. Dropping it when it did
+        // not fit made an overflow invisible: the reader saw a full,
+        // plausible payload and no sign that anything was cut. Give up
+        // payload bytes for the marker rather than the marker itself.
+        let want = if out.is_empty() {
             TRUNCATION_MARKER.len()
         } else {
             out.len() + SEPARATOR.len() + TRUNCATION_MARKER.len()
         };
-        if marker_len <= config.max_inject_bytes {
-            if !out.is_empty() {
-                out.push_str(SEPARATOR);
+        if want > config.max_inject_bytes {
+            let keep = config
+                .max_inject_bytes
+                .saturating_sub(TRUNCATION_MARKER.len() + SEPARATOR.len());
+            let mut cut = keep.min(out.len());
+            while cut > 0 && !out.is_char_boundary(cut) {
+                cut -= 1;
             }
-            out.push_str(TRUNCATION_MARKER);
+            out.truncate(cut);
         }
+        if !out.is_empty() {
+            out.push_str(SEPARATOR);
+        }
+        out.push_str(TRUNCATION_MARKER);
+        // Say it on stderr too. The marker tells the model; this tells
+        // the person reading the hook output why a rule went quiet.
+        eprintln!(
+            "gaff: the {}-byte cap was reached, so at least one entry was held back.",
+            config.max_inject_bytes
+        );
     }
 
     (!out.is_empty()).then_some(out)
@@ -433,6 +464,7 @@ mod tests {
                 prompts: None,
             },
             text: text.to_string(),
+            user: false,
         }
     }
 
@@ -714,5 +746,110 @@ mod regression {
             gd(),
         );
         assert_eq!(out.as_deref(), Some("[gaff:remind] check CI"));
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    use crate::config::{Every, Reminder, Section};
+
+    fn store(tag: &str) -> Store {
+        let d = std::env::temp_dir().join(format!("gaff-budget-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(&d).unwrap();
+        Store::new(d)
+    }
+
+    fn entry(text: &str, user: bool) -> Entry {
+        Entry {
+            text: text.to_string(),
+            kind: EntryKind::Unconditional,
+            user,
+        }
+    }
+
+    #[test]
+    fn a_repo_entry_cannot_spend_the_budget_a_user_entry_needs() {
+        // The cap is a shared budget and whoever merges first spends
+        // it. A repo cannot lower the cap, but a repo section sized to
+        // fill it starved every user reminder just as completely.
+        let s = store("starve");
+        let mut config = Config {
+            max_inject_bytes: 64,
+            ..Config::default()
+        };
+        config.reminders.push(Reminder {
+            name: "safety".into(),
+            every: Every::default(),
+            text: "x".into(),
+            user: true,
+        });
+        let entries = vec![
+            entry(&"R".repeat(60), false),
+            entry("[gaff:safety] USER_SAFETY", true),
+        ];
+        let out = merge(entries, &config, &s, "sess").unwrap();
+        assert!(
+            out.contains("USER_SAFETY"),
+            "the user's entry must win the budget, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn an_overflow_is_never_silent() {
+        // Dropping the marker when it did not fit made an overflow
+        // invisible: a full, plausible payload and no sign of a cut.
+        let s = store("marker");
+        let config = Config {
+            max_inject_bytes: 40,
+            ..Config::default()
+        };
+        let entries = vec![entry(&"A".repeat(38), true), entry(&"B".repeat(38), true)];
+        let out = merge(entries, &config, &s, "sess").unwrap();
+        assert!(out.contains(TRUNCATION_MARKER), "got {out:?}");
+        assert!(out.len() <= config.max_inject_bytes, "len {}", out.len());
+    }
+
+    #[test]
+    fn a_repo_section_cannot_be_a_symlink() {
+        // A committed symlink passed every lexical check and read any
+        // file gaff could read. A link to /dev/zero wedged the session.
+        let d = std::env::temp_dir().join(format!("gaff-link-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(&d).unwrap();
+        let secret = d.join("secret.txt");
+        std::fs::write(&secret, "PRIVATE").unwrap();
+        std::os::unix::fs::symlink(&secret, d.join("innocent.md")).unwrap();
+        let section = Section {
+            name: "leak".into(),
+            file: "innocent.md".into(),
+            refresh: Every::default(),
+            user: false,
+        };
+        let err = crate::config::read_section_body(&section, &d).unwrap_err();
+        assert!(err.contains("symlink"), "got {err}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_user_section_may_be_a_symlink() {
+        // A dotfile manager installs the user's own files as links.
+        let d = std::env::temp_dir().join(format!("gaff-ulink-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("real.md"), "MY NOTES").unwrap();
+        std::os::unix::fs::symlink(d.join("real.md"), d.join("notes.md")).unwrap();
+        let section = Section {
+            name: "notes".into(),
+            file: "notes.md".into(),
+            refresh: Every::default(),
+            user: true,
+        };
+        // A user section resolves against the user config dir, so point
+        // HOME at the scratch dir's parent layout instead of guessing.
+        let path = crate::config::section_path(&section, &d).unwrap();
+        assert!(path.ends_with("notes.md"));
+        std::fs::remove_dir_all(&d).ok();
     }
 }

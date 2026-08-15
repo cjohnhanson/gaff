@@ -222,8 +222,27 @@ pub fn resolve_profile(
         }
         Some(name)
     };
+    // `GAFF_PROFILE` is not a trusted channel. An agent reading
+    // repo-supplied text can export it in one Bash call, and a repo
+    // reaches it through direnv, a Makefile, or a devcontainer. It
+    // therefore answers to the same policy as the agent-facing switch:
+    // where the user stated a transition policy, a profile absent from
+    // `agent_may_set` is human-only and the variable cannot select it.
+    let from_env = || {
+        let name = env.map(ToString::to_string)?;
+        if let Some(t) = &config.transitions
+            && config.profiles.contains_key(&name)
+            && !t.agent_may_set(&name)
+        {
+            eprintln!(
+                "gaff: GAFF_PROFILE names `{name}`, which is human-only. Add it to transitions.agent_may_set to allow it, or use `gaff profile set` from a terminal."
+            );
+            return None;
+        }
+        Some(name)
+    };
     flag.map(ToString::to_string)
-        .or_else(|| env.map(ToString::to_string))
+        .or_else(from_env)
         .or_else(|| session.map(ToString::to_string))
         .or_else(from_file)
         .or_else(|| config.default_profile.clone())
@@ -294,6 +313,10 @@ pub struct Reminder {
     pub name: String,
     pub every: Every,
     pub text: String,
+    /// True when the user config declared this reminder. Set at load
+    /// time, never read from YAML.
+    #[serde(skip)]
+    pub user: bool,
 }
 
 /// A prime section: a markdown file under `.gaff/`. gaff injects the
@@ -331,6 +354,59 @@ pub struct Section {
 /// # Errors
 /// Returns a reader-facing message when the path escapes its root, or
 /// when a user section has no user config directory to resolve against.
+pub fn read_section_body(section: &Section, gaff_dir: &Path) -> Result<String, String> {
+    let path = section_path(section, gaff_dir)?;
+    // The lexical confinement above is not enough on its own. It reads
+    // the path string, and a symlink is resolved by the filesystem
+    // afterwards. git carries a symlink through a clone, so a committed
+    // `.gaff/notes.md -> ~/.ssh/id_rsa` passed every lexical check and
+    // put the key into the model's context, and a link to `/dev/zero`
+    // wedged every hook event in the session while it ate memory.
+    //
+    // A repo section therefore reads a regular file and nothing else. A
+    // user section may be a link, for the same reason the user config
+    // may: a dotfile manager installs it that way, and anyone who can
+    // write inside `$HOME/.config/gaff` already owns the machine.
+    let meta = if section.user {
+        std::fs::metadata(&path)
+    } else {
+        let raw = std::fs::symlink_metadata(&path)
+            .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
+        if raw.file_type().is_symlink() {
+            return Err(format!(
+                "section `{}`: {} is a symlink. A repo section reads a regular file only, because a link can point at any file gaff can read.",
+                section.name,
+                path.display()
+            ));
+        }
+        Ok(raw)
+    }
+    .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
+    if !meta.is_file() {
+        return Err(format!(
+            "section `{}`: {} is not a regular file",
+            section.name,
+            path.display()
+        ));
+    }
+    if meta.len() > MAX_SECTION_BYTES {
+        return Err(format!(
+            "section `{}`: {} is larger than {MAX_SECTION_BYTES} bytes",
+            section.name,
+            path.display()
+        ));
+    }
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))
+}
+
+/// The largest section body gaff will read. A section is injected whole
+/// and the cap on a flush is far below this, so this bound exists to
+/// stop an unbounded read, not to size the injection.
+const MAX_SECTION_BYTES: u64 = 1024 * 1024;
+
+/// Resolve a section body path against the directory of the config that
+/// declared it.
 pub fn section_path(section: &Section, gaff_dir: &Path) -> Result<std::path::PathBuf, String> {
     let (root, label) = if section.user {
         let Some(dir) = crate::handler::config_dir() else {
@@ -380,6 +456,24 @@ pub fn user_config_path() -> Option<std::path::PathBuf> {
     crate::handler::config_dir().map(|d| d.join("gaff.yml"))
 }
 
+/// Load and parse the user config alone.
+///
+/// `Ok(None)` means there is none. This is the layer that holds guards,
+/// and `gaff check --handlers` validates it directly.
+///
+/// # Errors
+/// Returns a reader-facing message when the file cannot be read or does
+/// not parse.
+pub fn load_user(path: &Path) -> Result<Option<Config>, String> {
+    let Some(text) = read_user_config_file(path)? else {
+        return Ok(None);
+    };
+    match serde_yaml_ng::from_str::<Config>(&text) {
+        Ok(cfg) => Ok(Some(cfg)),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
 /// Load the user config, then lay the repo config over it.
 ///
 /// A person works in many repos and wants some reminders everywhere.
@@ -388,6 +482,15 @@ pub fn user_config_path() -> Option<std::path::PathBuf> {
 #[must_use]
 pub fn load_layered(cwd: &Path) -> Loaded {
     let user = match user_config_path() {
+        None => {
+            // No HOME means no user config, and guards live only
+            // there. Every guard is off, and the quietest failure is
+            // the worst one for a rule that blocks.
+            eprintln!(
+                "gaff: no HOME, so the user config could not be read. Any guard declared there is not active."
+            );
+            None
+        }
         Some(p) => match read_user_config_file(&p) {
             Ok(Some(text)) => match serde_yaml_ng::from_str::<Config>(&text) {
                 Ok(mut cfg) => {
@@ -399,8 +502,17 @@ pub fn load_layered(cwd: &Path) -> Loaded {
                     for s in &mut cfg.sections {
                         s.user = true;
                     }
+                    for r in &mut cfg.reminders {
+                        r.user = true;
+                    }
                     for p in cfg.profiles.values_mut() {
                         p.user = true;
+                    }
+                    for g in &mut cfg.git {
+                        g.user = true;
+                    }
+                    for w in &mut cfg.github {
+                        w.user = true;
                     }
                     Some(cfg)
                 }
@@ -409,7 +521,6 @@ pub fn load_layered(cwd: &Path) -> Loaded {
             Ok(None) => None,
             Err(e) => return Loaded::Broken(e),
         },
-        None => None,
     };
     match (user, load(cwd)) {
         (None, repo) => repo,
@@ -480,13 +591,15 @@ impl Config {
             s.user = false;
             self.sections.push(s);
         }
-        // Remember which entries the user declared, so a repo profile
-        // cannot filter them out.
-        let user_entries: Vec<String> = self
-            .reminders
+        // The names the *user* declared. These were captured before the
+        // repo's entries were merged in. Computing them afterwards
+        // swept up the repo's own names, so a repo profile could not
+        // filter the repo's own entries either and every repo profile
+        // became a silent no-op.
+        let user_entries: Vec<String> = user_reminder_names
             .iter()
-            .map(|r| r.name.clone())
-            .chain(self.sections.iter().map(|s| s.name.clone()))
+            .chain(user_section_names.iter())
+            .cloned()
             .collect();
         let cap = self.max_inject_bytes;
         for (name, profile) in repo.profiles {
@@ -562,7 +675,23 @@ impl Config {
             }
         }
         if !user_set_transitions {
-            self.transitions = repo.transitions;
+            // A repo may state a policy where the user stated none, and
+            // it may not name a user profile in it. `agent_may_set` is
+            // the one remaining door onto a user profile: a repo that
+            // could name `quiet` there would let an agent it prompts
+            // fire the user's own kill switch.
+            self.transitions = repo.transitions.map(|mut t| {
+                t.agent_may_set.retain(|name| {
+                    let user_owned = self.profiles.get(name).is_some_and(|p| p.user);
+                    if user_owned {
+                        eprintln!(
+                            "gaff: the repo names `{name}` as agent-settable, and the user declared it. A repo may not open a user profile to an agent, so it is ignored."
+                        );
+                    }
+                    !user_owned
+                });
+                t
+            });
         }
         self
     }
