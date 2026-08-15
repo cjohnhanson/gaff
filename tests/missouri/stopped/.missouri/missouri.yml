@@ -1,0 +1,100 @@
+doc: |
+  Stop is the last moment before the model walks away, so it is the one
+  flush point that is a decision rather than a moment, and the only one
+  that can still be refused.
+
+  Two things may refuse it. A handler the user configured with
+  `blocks: true`, whose command decides. And a hold the session set for
+  itself, which is text the model judges. The difference is who may run
+  a command: `gaff trust` exists so an agent cannot schedule command
+  execution for itself, and a hold needs no such right.
+transitions:
+  - name: "a stop hook refuses a stop, and neither kind can wedge the session"
+    command: |
+      export HOME="$PWD/home"
+      mkdir -p "$HOME/.config/gaff"
+      stop() {
+        printf '{"hook_event_name":"Stop","session_id":"%s"}' "$1" | gaff hook > /dev/null 2>&1
+        echo $?
+      }
+
+      # A hold: text, set by the session, no command anywhere.
+      gaff remind "the work is not done" --at stop --id intent --session s-x > /dev/null
+      [ "$(stop s-x)" = "2" ] || { echo "FAIL: a hold must refuse the stop"; exit 1; }
+
+      OUT=$(printf '{"hook_event_name":"Stop","session_id":"s-x"}' | gaff hook 2>&1 >/dev/null)
+      case "$OUT" in
+        *"the work is not done"*) ;;
+        *) echo "FAIL: the refusal must carry the text: $OUT"; exit 1 ;;
+      esac
+
+      gaff remind --clear --id intent --session s-x > /dev/null
+      [ "$(stop s-x)" = "0" ] || { echo "FAIL: a released hold must allow the stop"; exit 1; }
+
+      # A hold nothing clears must not end the session's ability to end.
+      gaff remind "never satisfied" --at stop --id wedge --session s-w > /dev/null
+      i=0
+      while [ $i -lt 12 ]; do
+        [ "$(stop s-w)" = "2" ] || { echo "FAIL: refusal $i must still hold"; exit 1; }
+        i=$((i + 1))
+      done
+      [ "$(stop s-w)" = "0" ] || { echo "FAIL: the escape hatch must open"; exit 1; }
+
+      # A blocking handler: the command decides. It is user-scoped,
+      # which is why it may run at all.
+      cat > "$HOME/.config/gaff/handlers.yml" <<'EOF'
+      handlers:
+        - name: tests-pass
+          events: [stop]
+          blocks: true
+          command: ["/bin/sh", "-c", "test -f DONE"]
+      EOF
+      echo "$PWD" > "$HOME/.config/gaff/trusted"
+
+      [ "$(stop s-h)" = "2" ] || { echo "FAIL: a failing gate must refuse the stop"; exit 1; }
+      touch DONE
+      [ "$(stop s-h)" = "0" ] || { echo "FAIL: a passing gate must allow the stop"; exit 1; }
+      rm -f DONE
+
+      # A gate that cannot run is not a gate. Refusing on it would wedge
+      # the session on nothing.
+      cat > "$HOME/.config/gaff/handlers.yml" <<'EOF'
+      handlers:
+        - name: missing
+          events: [stop]
+          blocks: true
+          command: ["/nonexistent/nope"]
+      EOF
+      [ "$(stop s-m)" = "0" ] || { echo "FAIL: an unrunnable gate must allow the stop"; exit 1; }
+
+      # A blocking handler takes no cadence, and only a stop is
+      # refusable. Both are reported rather than silently accepted.
+      cat > "$HOME/.config/gaff/handlers.yml" <<'EOF'
+      handlers:
+        - name: wrong-event
+          events: [tool_batch]
+          blocks: true
+          command: ["/usr/bin/true"]
+      EOF
+      gaff check --handlers > /dev/null 2>&1 && { echo "FAIL: blocks on a non-stop event must fail"; exit 1; }
+
+      # Stop is a flush point, so a pending entry is delivered there
+      # rather than waiting for a prompt that may never come.
+      rm -f "$HOME/.config/gaff/handlers.yml"
+      cat > "$HOME/.config/gaff/gaff.yml" <<'EOF'
+      reminders:
+        - name: atstop
+          every: {tool_calls: 1}
+          text: DELIVERED_AT_STOP
+      EOF
+      printf '{"hook_event_name":"PostToolUse","session_id":"s-f","tool_use_id":"t1"}' | gaff hook > /dev/null
+      OUT=$(printf '{"hook_event_name":"Stop","session_id":"s-f"}' | gaff hook)
+      case "$OUT" in
+        *DELIVERED_AT_STOP*) ;;
+        *) echo "FAIL: a pending entry must flush at the stop: $OUT"; exit 1 ;;
+      esac
+
+      rm -rf home .gaff-state
+      echo STOP_OK
+    target: ../stopped-held
+    stdout: "STOP_OK\n"

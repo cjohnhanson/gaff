@@ -1,0 +1,6 @@
+doc: |
+  The transition removes its home directory, so only the repo config
+  remains.
+assertions:
+  - name: "the repo config is untouched"
+    command: "test -f .gaff/gaff.yml"

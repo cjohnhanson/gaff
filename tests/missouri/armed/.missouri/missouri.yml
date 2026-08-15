@@ -23,8 +23,9 @@ transitions:
     stdout: "BATCH_FLUSHED_OK\n"
   - name: "unsafe and unknown events do not flush"
     command: |
+      # Stop is absent on purpose: it is a flush point now, and the
+      # stopped path covers it.
       for ev in '{"hook_event_name":"PreToolUse","session_id":"s-1","tool_name":"Bash","tool_use_id":"t9"}' \
-                '{"hook_event_name":"Stop","session_id":"s-1"}' \
                 '{"hook_event_name":"FutureThing","session_id":"s-1"}' \
                 '{"hook_event_name":"WorktreeCreate","session_id":"s-1"}'; do
         OUT=$(printf '%s' "$ev" | gaff hook)
