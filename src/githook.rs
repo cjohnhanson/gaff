@@ -370,13 +370,17 @@ pub fn uninstall(cwd: &Path) -> std::io::Result<Vec<String>> {
     for hook in KNOWN_HOOKS {
         let path = dir.join(hook);
         let kept = dir.join(format!("{hook}.local"));
+        let kept_present = std::fs::symlink_metadata(&kept).is_ok();
+        // `exists()` follows a link, so a kept dangling symlink read
+        // as absent and was left stranded at `<hook>.local`. Install
+        // and uninstall have to be inverses whatever the slot held.
         if path.exists() && is_ours(&path) {
             std::fs::remove_file(&path)?;
-            if kept.exists() {
+            if kept_present {
                 std::fs::rename(&kept, &path)?;
             }
             removed.push((*hook).to_string());
-        } else if kept.exists() && !path.exists() {
+        } else if kept_present && std::fs::symlink_metadata(&path).is_err() {
             // gaff's own hook is gone, and the file it displaced is
             // still parked. Put it back rather than leaving the user's
             // hook stranded forever.

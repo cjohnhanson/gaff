@@ -179,9 +179,11 @@ impl Workflow {
                     // by whatever a cloned repo declared under that
                     // name, so repo-authored argv ran in CI under a
                     // workflow the user wrote.
-                    Some(entry) if self.user && !entry.user => out.push(format!(
-                        "workflow `{}`: the git entry `{name}` it reuses comes from the repo. A user workflow reuses a user entry only.",
-                        self.name
+                    Some(entry) if self.user != entry.user => out.push(format!(
+                        "workflow `{}`: it is {} and the git entry `{name}` it reuses is {}. A workflow reuses an entry from its own layer only.",
+                        self.name,
+                        if self.user { "user-scoped" } else { "repo-scoped" },
+                        if entry.user { "user-scoped" } else { "repo-scoped" }
                     )),
                     Some(entry) if entry.command.is_empty() => out.push(format!(
                         "workflow `{}`: the git entry `{name}` it reuses has an empty command, so the step would run nothing",

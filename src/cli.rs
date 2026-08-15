@@ -470,8 +470,21 @@ fn run_check(args: &[String]) -> ExitCode {
     };
     let cfg = match config::load_layered(&cwd) {
         Loaded::Absent => {
-            println!("no config at {}. Nothing to validate.", config::CONFIG_PATH);
-            return ExitCode::SUCCESS;
+            let stale = crate::githook::stale_installs(&cwd, &[]);
+            if stale.is_empty() {
+                println!("no config at {}. Nothing to validate.", config::CONFIG_PATH);
+                return ExitCode::SUCCESS;
+            }
+            // A gaff hook script is installed and there is no config to
+            // drive it, so every commit in this repo is already being
+            // refused. Reporting "nothing to validate" called that
+            // clean.
+            eprintln!(
+                "gaff: {} is missing or empty, and gaff's {} hook is installed, so it refuses every run. Restore the config, or remove the hook with `gaff init --git --uninstall`.",
+                config::CONFIG_PATH,
+                stale.join(", ")
+            );
+            return ExitCode::FAILURE;
         }
         // The error already names the file it came from, and that file
         // may be the user's config rather than the repo's. Prefixing
@@ -1270,8 +1283,15 @@ fn run_githook(args: &[String]) -> ExitCode {
         Loaded::Absent => {
             // The hook exists, so a config existed when it was
             // installed. Passing silently would run no check at all.
+            let path = cwd.join(config::CONFIG_PATH);
+            let detail = if path.exists() {
+                "is empty"
+            } else {
+                "is missing"
+            };
             eprintln!(
-                "gaff: {hook}: no config found, so no check ran. Remove the hook with `gaff init --git --uninstall`, or restore the config."
+                "gaff: {hook}: {} {detail}, so no check ran. Restore it, or remove the hook with `gaff init --git --uninstall`.",
+                config::CONFIG_PATH
             );
             return ExitCode::FAILURE;
         }
@@ -1312,14 +1332,25 @@ fn guard_refusal(cfg: &config::Config, envelope: &crate::event::Envelope) -> Opt
         let raw = envelope.raw.get("tool_input").and_then(|i| i.get(field))?;
         match raw {
             serde_json::Value::String(s) => Some(s.clone()),
-            serde_json::Value::Array(items) => Some(
-                items
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            ),
-            _ => None,
+            serde_json::Value::Array(items) => {
+                // Every element must be a string. Dropping the ones
+                // that are not and joining the rest invented a command
+                // line the host never sent, and the invented one did
+                // not match, so the guard passed in silence.
+                let parts: Option<Vec<&str>> = items.iter().map(serde_json::Value::as_str).collect();
+                if parts.is_none() {
+                    eprintln!(
+                        "gaff: the `{field}` field of this {tool} call is not text gaff can read, so no guard was matched against it."
+                    );
+                }
+                parts.map(|p| p.join(" "))
+            }
+            _ => {
+                eprintln!(
+                    "gaff: the `{field}` field of this {tool} call is not text gaff can read, so no guard was matched against it."
+                );
+                None
+            }
         }
     };
     let hit = crate::guard::first_refusal(&cfg.guards, tool, &value)?;
