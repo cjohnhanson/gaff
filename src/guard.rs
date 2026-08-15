@@ -94,9 +94,22 @@ fn dedup(items: &[&str]) -> Vec<String> {
 /// the pattern matches: `a(b|c)d` matches `acd`, which holds no `b`.
 /// Only patterns with no such structure yield a core.
 fn representatives(pattern: &str) -> Vec<String> {
-    /// The most variants worth generating. An alternation multiplies,
-    /// and there is nothing to learn from thousands of them.
-    const CAP: usize = 32;
+    representatives_within(pattern, 0)
+}
+
+/// The most variants worth generating. An alternation multiplies, and
+/// there is nothing to learn from thousands of them.
+const CAP: usize = 32;
+
+/// How deep a nest of groups is worth walking. Each level is one
+/// recursive call, so an unbounded pattern overflowed the stack and
+/// aborted `gaff check` with 134. No hand-written pattern comes close.
+const MAX_DEPTH: usize = 32;
+
+fn representatives_within(pattern: &str, depth: usize) -> Vec<String> {
+    if depth > MAX_DEPTH {
+        return Vec::new();
+    }
 
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = vec![String::new()];
@@ -123,7 +136,7 @@ fn representatives(pattern: &str) -> Vec<String> {
                         next.push(prefix.clone());
                     }
                     for branch in &branches {
-                        for tail in representatives(branch) {
+                        for tail in representatives_within(branch, depth + 1) {
                             next.push(format!("{prefix}{tail}"));
                         }
                     }
@@ -138,16 +151,22 @@ fn representatives(pattern: &str) -> Vec<String> {
                 let Some(close) = chars[i..].iter().position(|c| *c == ']').map(|p| p + i) else {
                     return Vec::new();
                 };
-                let Some(member) = class_member(&chars[i + 1..close]) else {
+                let members = class_members(&chars[i + 1..close]);
+                if members.is_empty() {
                     return Vec::new();
-                };
+                }
                 let quantifier = chars.get(close + 1).copied();
                 let mut next = Vec::new();
                 for prefix in &out {
                     if matches!(quantifier, Some('?' | '*')) {
                         next.push(prefix.clone());
                     }
-                    next.push(format!("{prefix}{member}"));
+                    // Every member, not one. Collapsing `[abc]` to `a`
+                    // let an `unless` covering only `a` read as
+                    // covering the class.
+                    for member in &members {
+                        next.push(format!("{prefix}{member}"));
+                    }
                 }
                 out = next;
                 i = close + 1;
@@ -252,16 +271,17 @@ fn split_alternatives(body: &str) -> Vec<String> {
 /// the first character after the `^` returned exactly the one it
 /// excludes, so a guard on `[^x]` was told an `unless` matching that
 /// `x` covered it, and was switched off.
-fn class_member(body: &[char]) -> Option<char> {
+fn class_members(body: &[char]) -> Vec<char> {
+    /// The most members worth listing from one class. The examples are
+    /// there to test an `unless` against, not to enumerate a range.
+    const PER_CLASS: usize = 4;
+
     let negated = body.first() == Some(&'^');
     let body = if negated { &body[1..] } else { body };
     let mut listed = Vec::new();
     let mut i = 0;
     while i < body.len() {
         if body[i] == '\\' {
-            // An escaped class member stands for a set, not a
-            // backslash. Emitting the backslash claimed the match
-            // contained one, which no match of `[\d]` does.
             match body.get(i + 1) {
                 Some('d') => listed.extend('0'..='9'),
                 Some('w') => {
@@ -270,8 +290,13 @@ fn class_member(body: &[char]) -> Option<char> {
                     listed.push('_');
                 }
                 Some('s') => listed.extend([' ', '\t']),
+                // A negated set inside a class is a complement, and a
+                // complement of a complement is not something this
+                // walker models. Reading `\D` as the letter `D` made
+                // `[^\D]` yield a letter, which that class can never
+                // match.
+                Some('D' | 'S' | 'W') | None => return Vec::new(),
                 Some(n) => listed.push(*n),
-                None => return None,
             }
             i += 2;
             continue;
@@ -289,12 +314,15 @@ fn class_member(body: &[char]) -> Option<char> {
         i += 1;
     }
     if negated {
-        // Any ordinary character the class does not list.
+        // Ordinary characters the class does not list.
         return ('a'..='z')
             .chain('0'..='9')
-            .find(|c| !listed.contains(c));
+            .filter(|c| !listed.contains(c))
+            .take(PER_CLASS)
+            .collect();
     }
-    listed.into_iter().next()
+    listed.truncate(PER_CLASS);
+    listed
 }
 
 /// The text one atom contributes, and how many chars it spans.
@@ -1430,5 +1458,77 @@ mod heuristic_tests {
             assert!(guard.problems().is_empty(), "{pattern}: {:?}", guard.problems());
             assert!(guard.warnings().is_empty(), "{pattern}: {:?}", guard.warnings());
         }
+    }
+}
+
+#[cfg(test)]
+mod expander_tests {
+    use super::*;
+
+    #[test]
+    fn a_deeply_nested_pattern_does_not_overflow_the_stack() {
+        // Each group level is one recursive call. Unbounded, a pattern
+        // nested a few thousand deep aborted `gaff check` with 134,
+        // which is neither 0 nor 1.
+        for depth in [100usize, 3500, 8000] {
+            let pattern = format!("{}x{}", "(".repeat(depth), ")".repeat(depth));
+            let guard = Guard {
+                name: "g".into(),
+                tool: "Bash".into(),
+                matches: Some(pattern),
+                field: "command".into(),
+                unless: Some("x".into()),
+                message: "no".into(),
+            };
+            // Reaching either line at all is the assertion: an overflow
+            // aborts the process.
+            let _ = guard.problems();
+            let _ = guard.warnings();
+        }
+    }
+
+    #[test]
+    fn a_class_contributes_every_member_it_can() {
+        // Collapsing `[abc]` to `a` let an `unless` covering only `a`
+        // read as covering the class.
+        for (m, u) in [
+            ("x[abc]y", "xay"),
+            ("x[A-Z]y", "xAy"),
+            ("x[0-9]y", "x0y"),
+            (r"x[\d]y", "x0y"),
+            ("x[-a]y", "x-y"),
+        ] {
+            assert!(
+                !unless_subsumes(m, u),
+                "matches {m:?} unless {u:?} covers one member, not the class; examples {:?}",
+                representatives(m)
+            );
+        }
+        // An unless covering every member still subsumes.
+        assert!(unless_subsumes("x[abc]y", "x"));
+    }
+
+    #[test]
+    fn a_complement_inside_a_class_is_not_modelled() {
+        // `[^\D]` matches only digits. Reading `\D` as the letter `D`
+        // produced a letter, which that class can never match.
+        for m in [r"x[^\D]y", r"x[^\S]y", r"x[^\W]y"] {
+            assert!(
+                !unless_subsumes(m, "xay"),
+                "{m:?} must not be modelled from a letter"
+            );
+        }
+    }
+
+    #[test]
+    fn a_truncated_expansion_reports_nothing_rather_than_something_wrong() {
+        // Past the cap the walker returns prefixes of real matches. A
+        // report built on those could only ever be missing, never
+        // wrong, and the empty result makes that explicit.
+        let wide = "(a|b|c|d|e|f|g|h)(1|2|3|4|5)Z";
+        assert!(
+            !unless_subsumes(wide, "a"),
+            "an unless matching one branch never subsumes"
+        );
     }
 }
