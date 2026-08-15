@@ -711,18 +711,62 @@ impl Guard {
 ///
 /// `gaff trust` grants a repo the right to run commands. `gaff allow`
 /// grants an exception to a guard. Neither is the agent's to grant.
+/// The name of the guard gaff carries itself.
+pub const BUILTIN_NAME: &str = "gaff-privileged";
+
 #[must_use]
 pub fn builtin() -> Vec<Guard> {
     vec![Guard {
-        name: "gaff-privileged".into(),
+        name: BUILTIN_NAME.into(),
         tool: "Bash".into(),
         matches: Some(
             r"(^|[;&|(\n`]|\$\()[ \t]*(\S*/)?gaff[ \t]+(trust|allow)\b".into(),
         ),
         field: "command".into(),
         unless: None,
-        message: "`gaff trust` and `gaff allow` grant rights an agent may not grant itself. The user runs them from a terminal: `!gaff allow <guard>` or `!gaff trust`.".into(),
+        message: "`gaff trust` and `gaff allow` grant rights an agent may not grant itself. The user runs them, outside the hook: `!gaff allow <guard>` or `!gaff trust` in the harness, or from any shell.".into(),
     }]
+}
+
+/// The command with every heredoc body removed.
+///
+/// A heredoc body is data the shell hands to a command's stdin. It is
+/// not executed, so a guard that reads it as a command line refuses a
+/// commit message that documents the guard. This walks the string, and
+/// on a `<<WORD` opener drops every line up to and including the line
+/// that is exactly WORD. What survives is what the shell would run,
+/// including a real invocation placed after a terminator.
+#[must_use]
+pub fn without_heredocs(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut lines = command.split('\n');
+    while let Some(line) = lines.next() {
+        out.push_str(line);
+        out.push('\n');
+        // Find an opener on this line. `<<-` strips leading tabs from
+        // the body but not from the terminator's comparison in POSIX
+        // sh; treating it the same as `<<` errs toward refusing more.
+        let Some(pos) = line.find("<<") else {
+            continue;
+        };
+        let rest = &line[pos + 2..];
+        let rest = rest.strip_prefix('-').unwrap_or(rest);
+        let word: String = rest
+            .trim_start()
+            .trim_start_matches(['\'', '"'])
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if word.is_empty() {
+            continue;
+        }
+        for body in lines.by_ref() {
+            if body.trim_end() == word {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// The first guard that refuses this call.
@@ -750,7 +794,18 @@ pub fn first_refusal<'a>(
         .find(|g| {
             field_value(&g.field).map_or_else(
                 || g.matches.is_none() && g.matches_tool(tool),
-                |v| g.refuses(tool, &v),
+                |v| {
+                    // The built-in reads the command with heredoc bodies
+                    // removed, so a commit message that documents the
+                    // guard is not read as an invocation of it. Every
+                    // other guard keeps the raw command: `git add -A`
+                    // inside a heredoc headed for `sh` is still real.
+                    if g.name == BUILTIN_NAME {
+                        g.refuses(tool, &without_heredocs(&v))
+                    } else {
+                        g.refuses(tool, &v)
+                    }
+                },
             )
         })
 }
@@ -1625,5 +1680,77 @@ mod builtin_tests {
             assert!(g.problems().is_empty(), "{}: {:?}", g.name, g.problems());
             assert!(g.warnings().is_empty(), "{}: {:?}", g.name, g.warnings());
         }
+    }
+}
+
+#[cfg(test)]
+mod heredoc_tests {
+    use super::*;
+
+    fn refused(cmd: &str) -> bool {
+        let value = |f: &str| (f == "command").then(|| cmd.to_string());
+        first_refusal(&builtin(), "Bash", &value).is_some()
+    }
+
+    #[test]
+    fn a_mention_inside_a_heredoc_body_is_data_not_a_call() {
+        // A commit message documenting the guard was refused by the
+        // guard. The body of a heredoc is stdin for the command that
+        // opened it, and the shell never executes it.
+        for cmd in [
+            "git commit -q -F - <<'MSG'\nfix: thing\n\ngaff allow is the valve\nMSG",
+            "cat <<EOF\ngaff trust\nEOF",
+            "cat <<-EOF\n\tgaff allow x\n\tEOF",
+            "cat <<\"EOF\"\ngaff trust\nEOF",
+        ] {
+            assert!(!refused(cmd), "{cmd:?} is a mention, not a call");
+        }
+    }
+
+    #[test]
+    fn a_call_after_a_heredoc_terminator_is_still_a_call() {
+        // The exemption must not become a bypass. Text after the
+        // terminator is back on the command line.
+        for cmd in [
+            "cat <<'EOF'\nhello\nEOF\ngaff trust",
+            "cat <<EOF\nx\nEOF\ncd /y && gaff allow z",
+            "cat <<EOF; gaff trust\nbody\nEOF",
+        ] {
+            assert!(refused(cmd), "{cmd:?} is a real call");
+        }
+    }
+
+    #[test]
+    fn an_unterminated_heredoc_swallows_to_the_end() {
+        // The shell would wait for the terminator; nothing after the
+        // opener runs. So nothing after it is a call either.
+        assert!(!refused("cat <<EOF\ngaff trust\n"));
+    }
+
+    #[test]
+    fn a_heredoc_does_not_shield_the_other_guards() {
+        // `git add -A` inside a heredoc headed for `sh` is still real,
+        // and the mass-stage guard reads the raw command. Only the
+        // built-in strips heredocs.
+        let g = Guard {
+            name: "no-mass-stage".into(),
+            tool: "Bash".into(),
+            matches: Some(r"git\s+add\s+-A".into()),
+            field: "command".into(),
+            unless: None,
+            message: "no".into(),
+        };
+        let cmd = "sh <<'EOF'\ngit add -A\nEOF";
+        let value = |f: &str| (f == "command").then(|| cmd.to_string());
+        assert!(first_refusal(std::slice::from_ref(&g), "Bash", &value).is_some());
+    }
+
+    #[test]
+    fn without_heredocs_keeps_the_command_lines() {
+        assert_eq!(
+            without_heredocs("a <<X\nbody\nX\nb"),
+            "a <<X\nb\n"
+        );
+        assert_eq!(without_heredocs("plain"), "plain\n");
     }
 }

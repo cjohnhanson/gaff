@@ -1219,14 +1219,13 @@ fn set_profile(
 /// Record consent for this repo to run handlers. A handler's child runs
 /// with the repo as its working directory, and many ordinary tools read
 /// executable settings from there, so consent is per-repo and explicit.
-/// Only a human at a terminal may grant it; the agent path is refused
-/// by the same structural identity rule `gaff profile set` uses.
+/// Only a human may grant it. The boundary is structural, not a
+/// terminal check: every command an agent runs passes through `gaff
+/// hook` first, and the built-in guard there refuses this command. The
+/// human's shell — including the harness's `!` shell, which attaches
+/// no tty to stdin — has no hook, so this runs. A terminal check here
+/// blocked exactly the channel it was meant to admit.
 fn run_trust() -> ExitCode {
-    if !std::io::stdin().is_terminal() {
-        return fail(
-            "gaff trust must be run from a terminal. An agent may not grant itself the right to run commands.",
-        );
-    }
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
@@ -1499,16 +1498,13 @@ fn check_github() -> ExitCode {
 /// `gaff allow <guard> [--session <sid>]` — let the next call a guard
 /// would refuse through, once.
 ///
-/// This is the human's release valve for a guard, and it is guarded the
-/// same way `gaff trust` is: stdin must be a terminal. An agent calling
-/// it from a tool has none, and is refused. `!gaff allow <name>` in the
-/// harness runs in the user's shell, which does.
+/// This is the human's release valve for a guard. What keeps it out of
+/// an agent's hands is the built-in guard in the hook: every agent Bash
+/// call passes through `gaff hook`, and this command is refused there.
+/// The human's shell has no hook. That includes the harness's `!` shell,
+/// which attaches no tty to stdin — so a terminal check here refused
+/// the one channel it existed to admit.
 fn run_allow(args: &[String]) -> ExitCode {
-    if !std::io::stdin().is_terminal() {
-        return fail(
-            "gaff allow must be run from a terminal. An agent may not grant itself an exception to a guard.",
-        );
-    }
     let mut guard: Option<String> = None;
     let mut session_flag: Option<String> = None;
     let mut it = args.iter();
