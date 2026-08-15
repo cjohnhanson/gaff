@@ -40,6 +40,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("doctor") => run_doctor(),
         Some("profile") => run_profile(&args[1..]),
         Some("trust") => run_trust(),
+        Some("allow") => run_allow(&args[1..]),
         Some("githook") => run_githook(&args[1..]),
         Some("log") => run_log(&args[1..]),
         Some("docs") => run_docs(&args[1..]),
@@ -52,9 +53,9 @@ pub fn run(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Some(other) => fail(&format!(
-            "unknown command `{other}` (available: hook, githook, remind, status, init, check, doctor, trust, profile, log, docs)"
+            "unknown command `{other}` (available: hook, githook, remind, allow, status, init, check, doctor, trust, profile, log, docs)"
         )),
-        None => fail("usage: gaff <hook|githook|remind|status|init|check|doctor|trust|profile|log|docs>"),
+        None => fail("usage: gaff <hook|githook|remind|allow|status|init|check|doctor|trust|profile|log|docs>"),
     }
 }
 
@@ -75,6 +76,8 @@ Commands:
                    (--handlers checks the user config;
                     --github reports a workflow that drifted)
   trust            Allow handlers to run in this repo (terminal only)
+  allow <guard>    Let the next call that guard would refuse through,
+                   once (terminal only)
   doctor           Show what is live in this clone
   profile          Show, list, or set the active profile
   log              Show the injection audit trail for a session
@@ -165,10 +168,23 @@ fn run_hook(args: &[String]) -> ExitCode {
     // on state gaff might fail to reach, and neither can select a
     // guard anyway.
     if envelope.kind == crate::event::Kind::PreToolCall
-        && let Some(refusal) = guard_refusal(&cfg, &envelope, adapter)
+        && let Some((guard, refusal)) = guard_refusal(&cfg, &envelope, adapter)
     {
-        eprintln!("{refusal}");
-        return ExitCode::from(2);
+        // A one-shot allowance from the human lets this call through.
+        // It needs the store, so it is the one guard-path step that
+        // resolves state; a missing store means no allowance, which is
+        // the safe reading.
+        let allowed = envelope
+            .session_id
+            .as_deref()
+            .zip(resolve_store())
+            .is_some_and(|(sid, store)| store.take_allowance(sid, &guard));
+        if allowed {
+            eprintln!("gaff: the guard `{guard}` would have refused this call. Allowed once by the user.");
+        } else {
+            eprintln!("{refusal}");
+            return ExitCode::from(2);
+        }
     }
 
     let Some(store) = resolve_store() else {
@@ -1480,6 +1496,64 @@ fn check_github() -> ExitCode {
     if drifted { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
+/// `gaff allow <guard> [--session <sid>]` — let the next call a guard
+/// would refuse through, once.
+///
+/// This is the human's release valve for a guard, and it is guarded the
+/// same way `gaff trust` is: stdin must be a terminal. An agent calling
+/// it from a tool has none, and is refused. `!gaff allow <name>` in the
+/// harness runs in the user's shell, which does.
+fn run_allow(args: &[String]) -> ExitCode {
+    if !std::io::stdin().is_terminal() {
+        return fail(
+            "gaff allow must be run from a terminal. An agent may not grant itself an exception to a guard.",
+        );
+    }
+    let mut guard: Option<String> = None;
+    let mut session_flag: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--session" => match it.next() {
+                Some(v) => session_flag = Some(v.clone()),
+                None => return fail("--session requires a value"),
+            },
+            other if guard.is_none() && !other.starts_with("--") => {
+                guard = Some(other.to_string());
+            }
+            other => return fail(&format!("unexpected argument `{other}`")),
+        }
+    }
+    let Some(guard) = guard else {
+        return fail("usage: gaff allow <guard-name> [--session <sid>]");
+    };
+    let Some(session) = session_from(session_flag.as_deref()) else {
+        return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID.");
+    };
+    let Some(store) = resolve_store() else {
+        return fail("no state directory. Set GAFF_STATE_DIR or HOME.");
+    };
+    // Name a guard that exists, so a typo does not read as a grant.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let known: Vec<String> = match config::load_layered(&cwd) {
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg.guards.iter().map(|g| g.name.clone()).collect(),
+        _ => Vec::new(),
+    };
+    if !known.iter().any(|n| n == &guard) {
+        return fail(&format!(
+            "no guard named `{guard}`. The guards are: {}.",
+            if known.is_empty() { "(none)".to_string() } else { known.join(", ") }
+        ));
+    }
+    match store.write_allowance(&session, &guard) {
+        Ok(()) => {
+            println!("the next call `{guard}` would refuse is allowed, once.");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&format!("cannot write the allowance: {e}")),
+    }
+}
+
 /// `gaff githook <name> [args...]` — run one git hook.
 ///
 /// The installed scripts call this. Unlike `gaff hook`, this returns
@@ -1552,7 +1626,7 @@ fn guard_refusal(
     cfg: &config::Config,
     envelope: &crate::event::Envelope,
     adapter: &crate::adapter::Adapter,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let tool = envelope.tool_name.as_deref()?;
     // The adapter owns the mapping from a payload shape to a named
     // field. A guard names a normalized tool and a field, so reading
@@ -1579,10 +1653,16 @@ fn guard_refusal(
         }
         found
     };
-    let hit = crate::guard::first_refusal(&cfg.guards, tool, &value)?;
-    Some(format!(
-        "gaff: refused by the guard `{}`.\n\n{}",
-        hit.name, hit.message
+    // The built-ins come first and no config can drop them.
+    let mut guards = crate::guard::builtin();
+    guards.extend(cfg.guards.iter().cloned());
+    let hit = crate::guard::first_refusal(&guards, tool, &value)?;
+    Some((
+        hit.name.clone(),
+        format!(
+            "gaff: refused by the guard `{}`.\n\n{}\n\nIf the user has approved this specific call, they can run `!gaff allow {}` to let it through once.",
+            hit.name, hit.message, hit.name
+        ),
     ))
 }
 

@@ -700,6 +700,31 @@ impl Guard {
     }
 }
 
+/// The guards gaff carries itself. No config declares them, and no
+/// config removes them.
+///
+/// The boundary between a gaffed agent and a human shell is that every
+/// agent command passes through `gaff hook` first. So gaff can make its
+/// own privileged commands unrunnable from an agent, structurally: the
+/// human's shell has no hook, the agent's has this one. A terminal check
+/// on the command itself is a second line, not the first.
+///
+/// `gaff trust` grants a repo the right to run commands. `gaff allow`
+/// grants an exception to a guard. Neither is the agent's to grant.
+#[must_use]
+pub fn builtin() -> Vec<Guard> {
+    vec![Guard {
+        name: "gaff-privileged".into(),
+        tool: "Bash".into(),
+        matches: Some(
+            r"(^|[;&|(\n`]|\$\()[ \t]*(\S*/)?gaff[ \t]+(trust|allow)\b".into(),
+        ),
+        field: "command".into(),
+        unless: None,
+        message: "`gaff trust` and `gaff allow` grant rights an agent may not grant itself. The user runs them from a terminal: `!gaff allow <guard>` or `!gaff trust`.".into(),
+    }]
+}
+
 /// The first guard that refuses this call.
 #[must_use]
 pub fn first_refusal<'a>(
@@ -1535,5 +1560,70 @@ mod expander_tests {
             !unless_subsumes(wide, "a"),
             "an unless matching one branch never subsumes"
         );
+    }
+}
+
+#[cfg(test)]
+mod builtin_tests {
+    use super::*;
+
+    #[test]
+    fn the_privileged_commands_are_refused_from_an_agent() {
+        // Every agent command passes through the hook, and a human
+        // shell's does not. That boundary is what makes gaff's own
+        // grants unrunnable from an agent, structurally.
+        let guards = builtin();
+        for cmd in [
+            "gaff trust",
+            "gaff allow no-mass-stage",
+            "cd /x && gaff trust",
+            "  gaff allow x",
+            "/nix/store/abc/bin/gaff trust",
+            "~/Projects/gaff/target/debug/gaff allow x",
+            "echo hi; gaff trust",
+            "true | gaff allow x",
+            "(gaff trust)",
+            "$(gaff allow x)",
+            "`gaff trust`",
+        ] {
+            let value = |f: &str| (f == "command").then(|| cmd.to_string());
+            assert!(
+                first_refusal(&guards, "Bash", &value).is_some(),
+                "{cmd:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_gaff_commands_pass() {
+        let guards = builtin();
+        for cmd in [
+            "gaff status",
+            "gaff remind x --after 5",
+            "gaff remind --clear --id x",
+            "gaff check",
+            "gaff doctor",
+            "gaff log",
+            "gaff docs configuration",
+            "gaff init --git",
+            "echo 'gaff trust is for humans'",
+            "grep -n 'gaff allow' src/cli.rs",
+            "cat gaff-trust-notes.md",
+            "gaffer trust",
+        ] {
+            let value = |f: &str| (f == "command").then(|| cmd.to_string());
+            assert!(
+                first_refusal(&guards, "Bash", &value).is_none(),
+                "{cmd:?} must pass"
+            );
+        }
+    }
+
+    #[test]
+    fn a_builtin_guard_is_valid_by_construction() {
+        for g in builtin() {
+            assert!(g.problems().is_empty(), "{}: {:?}", g.name, g.problems());
+            assert!(g.warnings().is_empty(), "{}: {:?}", g.name, g.warnings());
+        }
     }
 }

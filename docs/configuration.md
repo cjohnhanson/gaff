@@ -407,6 +407,31 @@ a glob cannot. `git\s+add\s+.*-A` catches a compound command such as
 `cd somewhere && git add -A`. A glob anchored to the start of the line
 does not, and that exact gap let a private key reach a public repo.
 
+### Letting one call through: `gaff allow`
+
+A guard is config, and nothing at runtime lifts one. That is deliberate:
+an agent that could lift a guard would lift the mass-stage guard. But
+the human sometimes wants one specific call to go through, without
+editing the file. That is `gaff allow`:
+
+```
+!gaff allow no-mass-stage
+```
+
+The next call that guard would refuse passes instead, once, with a note
+on stderr saying so. The call after that is refused again.
+
+Two things make this safe to offer. `gaff allow` refuses to run without
+a terminal on stdin, the same check `gaff trust` makes. And gaff carries
+a built-in guard, which no config declares and no config removes, that
+refuses `gaff allow` and `gaff trust` from any Bash call an agent makes.
+The boundary is structural: every agent command passes through `gaff
+hook` first, and a human's shell has no hook. `!gaff allow` in the
+harness runs in the human's shell.
+
+The `!` prefix runs the command in the harness's own shell. That is what
+puts a terminal on stdin and keeps the call out of the hook.
+
 ### The one place gaff exits 2
 
 Everywhere else gaff exits 0 or 1, because a gaff *failure* must never

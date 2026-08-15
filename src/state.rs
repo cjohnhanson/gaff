@@ -500,12 +500,47 @@ impl Store {
         }
     }
 
-    /// How many times in a row a goal has refused a stop, after    /// How many times in a row a goal has refused a stop, after
+    /// Let the next call a named guard would refuse through instead.
+    ///
+    /// The human grants this from a terminal; `gaff allow` refuses an
+    /// agent, on the same terminal check `gaff trust` uses. It is a
+    /// one-shot: `take_allowance` removes it.
+    ///
+    /// # Errors
+    /// Returns the IO error when the session directory cannot be
+    /// written.
+    pub fn write_allowance(&self, session: &str, guard: &str) -> std::io::Result<()> {
+        let dir = self.session_dir(session).join("allow");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(sanitize(guard)), "")
+    }
+
+    /// Consume the allowance for a named guard, if one is present.
+    #[must_use]
+    pub fn take_allowance(&self, session: &str, guard: &str) -> bool {
+        std::fs::remove_file(self.session_dir(session).join("allow").join(sanitize(guard))).is_ok()
+    }
+
+    /// The guards this session currently holds an allowance for.
+    #[must_use]
+    pub fn allowances(&self, session: &str) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.session_dir(session).join("allow")) else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = entries
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// How many times in a row a hold has refused a stop, after
     /// counting this one.
     ///
-    /// A goal that can never be met would otherwise refuse every stop
-    /// forever, and there is no way out of that from inside the
-    /// session. The count is the escape hatch.
+    /// A hold nothing clears would otherwise refuse every stop forever,
+    /// and there is no way out of that from inside the session. The
+    /// count is the escape hatch.
     #[must_use]
     pub fn record_stop_refusal(&self, session: &str) -> u32 {
         let path = self.session_dir(session).join("stop-refusals");
@@ -880,5 +915,41 @@ mod hold_tests {
         assert_eq!(s.record_stop_refusal("sess"), 2);
         s.clear_stop_refusals("sess");
         assert_eq!(s.record_stop_refusal("sess"), 1);
+    }
+}
+
+#[cfg(test)]
+mod allowance_tests {
+    use super::*;
+
+    fn store(tag: &str) -> Store {
+        let d = std::env::temp_dir().join(format!("gaff-allow-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(&d).unwrap();
+        Store::new(d)
+    }
+
+    #[test]
+    fn an_allowance_is_consumed_by_exactly_one_take() {
+        let s = store("once");
+        s.write_allowance("sess", "no-mass-stage").unwrap();
+        assert!(s.take_allowance("sess", "no-mass-stage"), "the first take succeeds");
+        assert!(!s.take_allowance("sess", "no-mass-stage"), "the second finds nothing");
+    }
+
+    #[test]
+    fn an_allowance_names_one_guard() {
+        let s = store("named");
+        s.write_allowance("sess", "no-mass-stage").unwrap();
+        assert!(!s.take_allowance("sess", "no-commit-all"), "a different guard is not covered");
+        assert!(s.take_allowance("sess", "no-mass-stage"));
+    }
+
+    #[test]
+    fn an_allowance_is_scoped_to_its_session() {
+        let s = store("scoped");
+        s.write_allowance("a", "g").unwrap();
+        assert!(!s.take_allowance("b", "g"));
+        assert!(s.take_allowance("a", "g"));
     }
 }
