@@ -228,7 +228,15 @@ fn edit_settings(
     // in place instead, which keeps the link at the cost of the atomic
     // swap. Every other file gets the swap.
     if hard_linked(&path) {
-        std::fs::write(&path, rendered)?;
+        std::fs::write(&path, rendered).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "{}: cannot write it ({e}). Refusing to rewrite the file.",
+                    path.display()
+                ),
+            )
+        })?;
         return Ok(Outcome::Changed);
     }
     // A per-process name, so two gaff runs cannot collide on it, and
