@@ -412,6 +412,11 @@ fn entry_problems(cfg: &config::Config, cwd: &std::path::Path) -> Vec<String> {
         if !cadence_ok(&s.refresh) {
             problems.push(format!("section `{}` has a zero cadence", s.name));
         }
+        // Read it the way the hook path reads it, so check sees a
+        // symlinked or oversized body rather than blessing it.
+        if let Err(msg) = config::read_section_body(s, &cwd.join(".gaff")) {
+            problems.push(msg);
+        }
         match config::section_path(s, &cwd.join(".gaff")) {
             Err(msg) => problems.push(msg),
             Ok(path) if !path.is_file() => {
@@ -476,6 +481,23 @@ fn run_check(args: &[String]) -> ExitCode {
     };
 
     let mut problems = entry_problems(&cfg, &cwd);
+
+    // Git hooks never travel with a clone, so a fresh checkout of a
+    // repo that declares them has none installed. Nothing said so, and
+    // every commit skipped every check while check passed.
+    let missing = crate::githook::missing_installs(&cwd, &cfg.git);
+    if !missing.is_empty() {
+        let (subject, verb) = if missing.len() == 1 {
+            ("hook", "is")
+        } else {
+            ("hooks", "are")
+        };
+        problems.push(format!(
+            "the config declares the {subject} {}, which {verb} not installed, so nothing runs on {}. Run `gaff init --git`.",
+            missing.join(", "),
+            if missing.len() == 1 { "it" } else { "them" }
+        ));
+    }
 
     let mut warnings = Vec::new();
     for guard in &cfg.guards {
@@ -997,13 +1019,42 @@ fn run_trust() -> ExitCode {
 /// This is separate from `gaff check`, which stays repo-only so it
 /// behaves the same in CI as it does locally.
 fn check_handlers() -> ExitCode {
+    let mut bad_guards = false;
+    // Guards live only in the user config, and this is the subcommand
+    // that reads it. Reporting handlers alone left the one blocking
+    // feature unvalidated by the command documented to check it.
+    match config::user_config_path().map(|p| config::load_user(&p)) {
+        Some(Err(e)) => {
+            eprintln!("gaff: {e}");
+            bad_guards = true;
+        }
+        Some(Ok(Some(user))) => {
+            for g in &user.guards {
+                for p in g.problems() {
+                    println!("FAIL {p}");
+                    bad_guards = true;
+                }
+                for w in g.warnings() {
+                    eprintln!("gaff: {w}");
+                }
+            }
+            if !user.guards.is_empty() && !bad_guards {
+                println!("ok   {} guard(s)", user.guards.len());
+            }
+        }
+        _ => {}
+    }
     let cfg = match crate::handler::load_checked() {
         Ok(cfg) => cfg,
         Err(e) => return fail(&e),
     };
     if cfg.handlers.is_empty() {
         println!("no handlers declared");
-        return ExitCode::SUCCESS;
+        return if bad_guards {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
     }
     let mut bad = false;
     // A name keys the pending marker and labels the output. Two
@@ -1032,7 +1083,11 @@ fn check_handlers() -> ExitCode {
     if !trusted {
         println!("note: this repo is not trusted, so no handler runs here. Run `gaff trust`.");
     }
-    if bad { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+    if bad || bad_guards {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `gaff init --git` — write the git hook scripts the config declares.
@@ -1115,6 +1170,16 @@ fn run_init_github() -> ExitCode {
 /// workflow is unusable.
 fn report_github_problems(cfg: &config::Config) -> Option<ExitCode> {
     let mut bad = false;
+    // A workflow may reuse a git entry, so a broken entry breaks the
+    // render. `init` skipped this check while `check` ran it, so init
+    // wrote a step that runs nothing and only the later check objected,
+    // after the useless workflow was committed.
+    for entry in &cfg.git {
+        for problem in entry.problems() {
+            eprintln!("gaff: {problem}");
+            bad = true;
+        }
+    }
     for wf in &cfg.github {
         for problem in wf.problems(&cfg.git) {
             eprintln!("gaff: {problem}");
@@ -1189,7 +1254,19 @@ fn run_githook(args: &[String]) -> ExitCode {
         return fail("cannot resolve the working directory");
     };
     let cfg = match config::load_layered(&cwd) {
-        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
+        Loaded::Ok(cfg) => cfg,
+        // `Degraded` means the repo config failed to parse and only the
+        // user's layer stands. On the agent path that is right: gaff
+        // warns and keeps going. Here it is not. The repo's checks are
+        // exactly what cannot be read, so running the user's instead
+        // and exiting 0 passes a commit the repo meant to gate.
+        Loaded::Degraded(_) => {
+            eprintln!(
+                "gaff: {hook}: {} could not be read, so the checks it declares did not run. Fix the config, or remove the hook with `gaff init --git --uninstall`.",
+                config::CONFIG_PATH
+            );
+            return ExitCode::FAILURE;
+        }
         Loaded::Absent => {
             // The hook exists, so a config existed when it was
             // installed. Passing silently would run no check at all.
@@ -1227,13 +1304,23 @@ fn run_githook(args: &[String]) -> ExitCode {
 /// fault must never block a session.
 fn guard_refusal(cfg: &config::Config, envelope: &crate::event::Envelope) -> Option<String> {
     let tool = envelope.tool_name.as_deref()?;
+    // A field may arrive as a string or as an argv array. Reading only
+    // the string shape meant a host that sends `["git","add","-A"]`
+    // disarmed every Bash guard, with no warning. Flatten an array to
+    // the command line it stands for, so one guard covers both shapes.
     let value = |field: &str| {
-        envelope
-            .raw
-            .get("tool_input")
-            .and_then(|i| i.get(field))
-            .and_then(|v| v.as_str())
-            .map(std::string::ToString::to_string)
+        let raw = envelope.raw.get("tool_input").and_then(|i| i.get(field))?;
+        match raw {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Array(items) => Some(
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            _ => None,
+        }
     };
     let hit = crate::guard::first_refusal(&cfg.guards, tool, &value)?;
     Some(format!(

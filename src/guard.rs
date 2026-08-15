@@ -20,34 +20,44 @@
 use regex::Regex;
 use serde::Deserialize;
 
-/// The tool-input fields gaff knows how to match against.
-const KNOWN_FIELDS: [&str; 6] = ["command", "file_path", "pattern", "path", "url", "prompt"];
-
-/// The tools whose input carries a path rather than a command.
-const PATH_TOOLS: &str = "Read|Edit|Write|MultiEdit|NotebookEdit";
-
-/// The tool names gaff has seen from a host.
+/// The fields each known tool actually sends.
 ///
-/// A guard naming none of these is reported, because a misspelled tool
-/// name is the likeliest operator error and it silently disarms the
-/// guard. The report is a warning rather than a refusal: a host gaff
-/// has not met yet may send a name absent from this list, and the guard
-/// must stay expressible.
-const KNOWN_TOOLS: [&str; 14] = [
-    "Bash",
-    "BashOutput",
-    "Read",
-    "Edit",
-    "Write",
-    "MultiEdit",
-    "NotebookEdit",
-    "Glob",
-    "Grep",
-    "WebFetch",
-    "WebSearch",
-    "Task",
-    "TodoWrite",
-    "KillShell",
+/// A guard matched against a field its tool never sends can never fire,
+/// and it reads exactly like a working rule. The check used to cover
+/// Bash and the file tools only, so every other pairing was blessed:
+/// `Grep` with `command`, `Glob` with `file_path`, `WebFetch` with
+/// `command`. A table covers them all and, unlike the old two-case
+/// test, names the right half of an alternation as the dead one.
+///
+/// A tool with no matchable field is listed with an empty slice. A
+/// guard on it can still match every call, which is a legitimate way to
+/// refuse a tool outright.
+const TOOL_FIELDS: [(&str, &[&str]); 14] = [
+    ("Bash", &["command"]),
+    ("BashOutput", &[]),
+    ("Read", &["file_path"]),
+    ("Edit", &["file_path"]),
+    ("Write", &["file_path"]),
+    ("MultiEdit", &["file_path"]),
+    ("NotebookEdit", &["file_path"]),
+    ("Glob", &["pattern", "path"]),
+    ("Grep", &["pattern", "path"]),
+    ("WebFetch", &["url", "prompt"]),
+    ("WebSearch", &["query"]),
+    ("Task", &["prompt"]),
+    ("TodoWrite", &[]),
+    ("KillShell", &[]),
+];
+
+/// The tool-input fields gaff knows how to match against.
+const KNOWN_FIELDS: [&str; 7] = [
+    "command",
+    "file_path",
+    "pattern",
+    "path",
+    "url",
+    "prompt",
+    "query",
 ];
 
 /// Commands a self-defusing `unless` is tested against.
@@ -63,6 +73,17 @@ const UNLESS_PROBES: [&str; 4] = [
     "/etc/passwd",
     "echo hello world",
 ];
+
+/// The distinct values of `items`, in first-seen order.
+fn dedup(items: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for i in items {
+        if !out.iter().any(|o| o == i) {
+            out.push((*i).to_string());
+        }
+    }
+    out
+}
 
 /// One refusal rule.
 #[derive(Debug, Clone, Deserialize)]
@@ -125,13 +146,31 @@ impl Guard {
         // A field the tool never sends means the guard can never fire.
         // The credential guard in the docs is one omitted line from
         // being decorative, and nothing reported it.
-        let names_a_path_tool = Regex::new(&format!("^(?:{})$", self.tool))
-            .is_ok_and(|re| PATH_TOOLS.split('|').any(|t| re.is_match(t)));
-        if names_a_path_tool && self.field == "command" {
-            out.push(format!(
-                "guard `{}`: names a file tool but matches the `command` field, which a file tool never sends. Use `field: file_path`.",
-                self.name
-            ));
+        //
+        // This is a hard failure only when EVERY tool the pattern names
+        // is dead on the field. A pattern naming several tools where
+        // one is live still works, and that case is a warning instead.
+        if let Ok(re) = Regex::new(&format!("^(?:{})$", self.tool)) {
+            let named: Vec<&(&str, &[&str])> =
+                TOOL_FIELDS.iter().filter(|(t, _)| re.is_match(t)).collect();
+            let live = |fields: &[&str]| fields.contains(&self.field.as_str());
+            if !named.is_empty() && !named.iter().any(|(_, f)| live(f)) {
+                let expected: Vec<&str> = named
+                    .iter()
+                    .flat_map(|(_, f)| f.iter().copied())
+                    .collect();
+                let hint = if expected.is_empty() {
+                    "That tool sends no field gaff can match. Drop `matches` to refuse every call to it.".to_string()
+                } else {
+                    format!("Use one of {}.", dedup(&expected).join(", "))
+                };
+                out.push(format!(
+                    "guard `{}`: matches the `{}` field, which {} never sends, so the guard can never fire. {hint}",
+                    self.name,
+                    self.field,
+                    dedup(&named.iter().map(|(t, _)| *t).collect::<Vec<_>>()).join(" or ")
+                ));
+            }
         }
         if !KNOWN_FIELDS.contains(&self.field.as_str()) {
             out.push(format!(
@@ -147,12 +186,6 @@ impl Guard {
             out.push(format!(
                 "guard `{}`: the unless pattern matches everything, so the guard can never fire.",
                 self.name
-            ));
-        }
-        if self.tool == "Bash" && self.field != "command" {
-            out.push(format!(
-                "guard `{}`: names Bash but matches `{}`, which Bash never sends. Use `field: command`.",
-                self.name, self.field
             ));
         }
         for (label, pattern) in [("matches", &self.matches), ("unless", &self.unless)] {
@@ -179,34 +212,29 @@ impl Guard {
         let Ok(re) = Regex::new(&format!("^(?:{})$", self.tool)) else {
             return out;
         };
-        if !KNOWN_TOOLS.iter().any(|t| re.is_match(t)) {
+        let named: Vec<&(&str, &[&str])> =
+            TOOL_FIELDS.iter().filter(|(t, _)| re.is_match(t)).collect();
+        if named.is_empty() {
             out.push(format!(
                 "guard `{}`: the tool pattern `{}` names no tool gaff has seen, so the guard may never fire. Check the spelling.",
                 self.name, self.tool
             ));
+            return out;
         }
-        // A pattern that names several tools can be right for some of
-        // them and dead for the rest. `Bash|Read` on `file_path` guards
-        // Read and does nothing at all for Bash.
-        let dead: Vec<&str> = KNOWN_TOOLS
+        // A pattern naming several tools can be live for some and dead
+        // for the rest. Name the dead ones, and only when at least one
+        // is live — otherwise `problems` already reported it as fatal.
+        let dead: Vec<&str> = named
             .iter()
-            .filter(|t| re.is_match(t))
-            .filter(|t| {
-                let wants_path = PATH_TOOLS.split('|').any(|p| p == **t);
-                if wants_path {
-                    self.field == "command"
-                } else {
-                    self.field != "command"
-                }
-            })
-            .copied()
+            .filter(|(_, f)| !f.contains(&self.field.as_str()))
+            .map(|(t, _)| *t)
             .collect();
-        if !dead.is_empty() && dead.len() < KNOWN_TOOLS.iter().filter(|t| re.is_match(t)).count() {
+        if !dead.is_empty() && dead.len() < named.len() {
             out.push(format!(
                 "guard `{}`: matches the `{}` field, which {} never sends, so that part of the pattern can never fire.",
                 self.name,
                 self.field,
-                dead.join(" and ")
+                dedup(&dead).join(" and ")
             ));
         }
         out
@@ -255,7 +283,7 @@ mod tests {
         Guard {
             name: "no-mass-stage".into(),
             tool: "Bash".into(),
-            matches: Some(r#"git(\s+-\S+(\s+\S+)?)*\s+(add|stage)(\s+(?:"[^"]*"|'[^']*'|\S+))*?\s+["']?(-[A-Za-z]*A[A-Za-z]*|--all|\.|:/|\*)["']?($|[^A-Za-z0-9_/.-])"#.into()),
+            matches: Some(r#"git(\s+-\S+(\s+\S+)?)*\s+(add|stage)(\s+(?:"[^"]*"|'[^']*'|\S+))*?\s+["']?(-[A-Za-z]*A[A-Za-z]*|--all|\.\.?/*\*?|:/\.?|:\(top\)|\*)["']?($|[^A-Za-z0-9_/.-])"#.into()),
             field: "command".into(),
             unless: None,
             message: "Stage files by name.".into(),
@@ -313,7 +341,7 @@ mod tests {
             "git add :/",
             "git add *",
             "git add \"-A\"",
-            "git add 'A'",
+            "git add '-A'",
             "git  add  -A",
             // Redirection and punctuation terminators. The old
             // terminator class enumerated shell metacharacters and
@@ -327,6 +355,17 @@ mod tests {
             "git add -A:",
             "git add -A&",
             "git add -A`",
+            // Pathspecs derived from `.`, which the previous
+            // terminator class could not end because it excluded `/`
+            // and `.` as path characters.
+            "git add ./",
+            "git add ./*",
+            "git add .//",
+            "git add ..",
+            "git add ../",
+            // git pathspec magic, which stages from the repo root.
+            "git add :(top)",
+            "git add :/.",
         ] {
             if cmd == "git add 'A'" {
                 continue;

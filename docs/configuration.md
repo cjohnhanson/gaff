@@ -285,9 +285,16 @@ neither, so a `SessionStart` subscription runs at session start
 regardless of `every`. Every other flush point waits for a crossing.
 
 `gaff check --handlers` validates the user config and exits 1 on a
-problem, including a config it cannot parse. `gaff doctor` lists the
-declared handlers and whether this repo is trusted. Plain `gaff check`
-stays repo-only, so it behaves the same in CI as it does locally.
+problem, including a config it cannot parse. It covers handlers and
+guards, which both live only in that layer. `gaff doctor` lists the
+declared handlers and whether this repo is trusted.
+
+Plain `gaff check` validates the **effective** config, which is the
+user layer with the repo layer over it. That is what a hook will
+actually run, so it is what the check reports. A machine with a user
+config can therefore see a problem that CI does not, and CI can see one
+that a workstation does not. Run `gaff check --handlers` to isolate the
+user layer.
 
 ## Guards
 
@@ -298,10 +305,17 @@ user-level config and it applies in every repo.
 guards:
   - name: no-mass-stage
     tool: Bash
-    matches: 'git(\s+-\S+(\s+\S+)?)*\s+(add|stage)(\s+(?:"[^"]*"|''[^'']*''|\S+))*?\s+["'']?(-[A-Za-z]*A[A-Za-z]*|--all|\.|:/|\*)["'']?($|[^A-Za-z0-9_/.-])'
+    matches: 'git(\s+-\S+(\s+\S+)?)*\s+(add|stage)(\s+(?:"[^"]*"|''[^'']*''|\S+))*?\s+["'']?(-[A-Za-z]*A[A-Za-z]*|--all|\.\.?/*\*?|:/\.?|:\(top\)|\*)["'']?($|[^A-Za-z0-9_/.-])'
     unless: '--dry-run'
     message: >-
       Stage files by name. Run `git status` first, then name each path.
+
+  - name: no-commit-all
+    tool: Bash
+    matches: 'git(\s+-\S+(\s+\S+)?)*\s+commit(\s+(?:"[^"]*"|''[^'']*''|\S+))*?\s+-[A-Za-z]*a[A-Za-z]*($|[^A-Za-z0-9_-])'
+    message: >-
+      `git commit -a` stages every tracked change. Stage the paths you
+      mean, then commit without -a.
 
   - name: no-credential-reads
     tool: Read
