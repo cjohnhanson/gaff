@@ -54,6 +54,10 @@ pub const CLAUDE_CODE_EVENTS: &[&str] = &[
     "PostToolUseFailure",
     "SessionStart",
     "UserPromptSubmit",
+    // Stop is a flush point and the one event a hold or a blocking
+    // handler refuses. The feature shipped without this line, so gaff
+    // was never called at a stop and every hold sat on disk unread.
+    "Stop",
 ];
 
 pub const CLAUDE_CODE: Adapter = Adapter {
@@ -283,6 +287,42 @@ mod kind_tests {
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    /// Every flush point gaff acts on must be an event the adapter
+    /// subscribes to. The stop hook shipped with `Stop` missing from
+    /// the subscription list, so `gaff init` never registered it, the
+    /// host never called gaff at a stop, and a hold sat on disk unread.
+    /// The unit tests piped a Stop payload straight into the hook, so
+    /// nothing noticed.
+    #[test]
+    fn every_flush_point_is_a_subscribed_event() {
+        for adapter in ADAPTERS {
+            let subscribed_kinds: Vec<crate::event::Kind> = adapter
+                .hook_events
+                .iter()
+                .map(|event| {
+                    let payload = serde_json::json!({
+                        "hook_event_name": event,
+                        "session_id": "s",
+                    });
+                    (adapter.parse)(payload).kind
+                })
+                .collect();
+            for kind in [
+                crate::event::Kind::SessionStart,
+                crate::event::Kind::Prompt,
+                crate::event::Kind::ToolBatch,
+                crate::event::Kind::Stop,
+            ] {
+                assert!(kind.is_flush(), "{kind:?} is a flush point");
+                assert!(
+                    subscribed_kinds.contains(&kind),
+                    "adapter `{}` flushes on {kind:?} but never subscribes to it, so that flush point is dead on this host",
+                    adapter.name
+                );
+            }
+        }
+    }
 
     /// Guards gate on `Kind::PreToolCall`, and an unrecognized event
     /// falls through to `Kind::Other`. An adapter whose pre-tool event
