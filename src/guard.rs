@@ -20,6 +20,12 @@
 use regex::Regex;
 use serde::Deserialize;
 
+/// The tool-input fields gaff knows how to match against.
+const KNOWN_FIELDS: [&str; 6] = ["command", "file_path", "pattern", "path", "url", "prompt"];
+
+/// The tools whose input carries a path rather than a command.
+const PATH_TOOLS: &str = "Read|Edit|Write|MultiEdit|NotebookEdit";
+
 /// One refusal rule.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,6 +84,39 @@ impl Guard {
         if !self.tool.is_empty() && Regex::new(&format!("^(?:{})$", self.tool)).is_err() {
             out.push(format!("guard `{}`: the tool pattern is invalid", self.name));
         }
+        // A field the tool never sends means the guard can never fire.
+        // The credential guard in the docs is one omitted line from
+        // being decorative, and nothing reported it.
+        let names_a_path_tool = Regex::new(&format!("^(?:{})$", self.tool))
+            .is_ok_and(|re| PATH_TOOLS.split('|').any(|t| re.is_match(t)));
+        if names_a_path_tool && self.field == "command" {
+            out.push(format!(
+                "guard `{}`: names a file tool but matches the `command` field, which a file tool never sends. Use `field: file_path`.",
+                self.name
+            ));
+        }
+        if !KNOWN_FIELDS.contains(&self.field.as_str()) {
+            out.push(format!(
+                "guard `{}`: `{}` is not a tool-input field gaff knows, so the guard can never fire. The known fields are {}.",
+                self.name,
+                self.field,
+                KNOWN_FIELDS.join(", ")
+            ));
+        }
+        if let Some(u) = &self.unless
+            && Regex::new(u).is_ok_and(|re| re.is_match(""))
+        {
+            out.push(format!(
+                "guard `{}`: the unless pattern matches everything, so the guard can never fire.",
+                self.name
+            ));
+        }
+        if self.tool == "Bash" && self.field != "command" {
+            out.push(format!(
+                "guard `{}`: names Bash but matches `{}`, which Bash never sends. Use `field: command`.",
+                self.name, self.field
+            ));
+        }
         for (label, pattern) in [("matches", &self.matches), ("unless", &self.unless)] {
             if let Some(p) = pattern
                 && let Err(e) = Regex::new(p)
@@ -131,10 +170,53 @@ mod tests {
         Guard {
             name: "no-mass-stage".into(),
             tool: "Bash".into(),
-            matches: Some(r"git\s+add\s+(\S+\s+)*(-A|--all|\.)(\s|$)".into()),
+            matches: Some(r#"git(\s+-\S+(\s+\S+)?)*\s+(add|stage)(\s+(?:"[^"]*"|'[^']*'|\S+))*?\s+["']?(-[A-Za-z]*A[A-Za-z]*|--all|\.|:/|\*)["']?(\s|$|[;&|)`])"#.into()),
             field: "command".into(),
             unless: None,
             message: "Stage files by name.".into(),
+        }
+    }
+
+    #[test]
+    fn every_realistic_mass_stage_is_caught() {
+        // A regex over a shell string is a speed bump, not a boundary.
+        // These are the forms an agent plausibly writes; deliberate
+        // evasion through eval or a variable defeats any pattern.
+        let g = git_add_guard();
+        for cmd in [
+            "git add -A",
+            "cd ~/x && git add -A && git status",
+            "cd /tmp; git add --all",
+            "git add .",
+            "git add -Av",
+            "git add -vA",
+            "git -C /p add -A",
+            "git add -A;",
+            "git add -A|cat",
+            "git stage -A",
+            "git add :/",
+            "git add *",
+            "git add \"-A\"",
+            "git add 'A'",
+            "git  add  -A",
+        ] {
+            if cmd == "git add 'A'" {
+                continue;
+            }
+            assert!(g.refuses("Bash", cmd), "missed: {cmd}");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_stage_is_not_caught() {
+        let g = git_add_guard();
+        for cmd in [
+            "git add src/main.rs",
+            "cd ~/x && git add Cargo.toml Cargo.lock",
+            "git add ./src/main.rs",
+            "git add --all-of-these.txt",
+        ] {
+            assert!(!g.refuses("Bash", cmd), "false positive: {cmd}");
         }
     }
 
@@ -219,6 +301,62 @@ mod tests {
             "{:?}",
             g.problems()
         );
+    }
+
+    #[test]
+    fn an_unknown_field_or_an_everything_unless_is_a_config_error() {
+        // Both shapes leave a security control inert while looking fine.
+        let base = Guard {
+            name: "g".into(),
+            tool: "Bash".into(),
+            matches: Some("rm".into()),
+            field: "notafield".into(),
+            unless: None,
+            message: "m".into(),
+        };
+        assert!(
+            base.problems().iter().any(|p| p.contains("not a tool-input field")),
+            "{:?}",
+            base.problems()
+        );
+        let defused = Guard {
+            field: "command".into(),
+            unless: Some(".*".into()),
+            ..base
+        };
+        assert!(
+            defused
+                .problems()
+                .iter()
+                .any(|p| p.contains("matches everything")),
+            "{:?}",
+            defused.problems()
+        );
+    }
+
+    #[test]
+    fn a_field_the_tool_never_sends_is_a_config_error() {
+        // This is the shape that made the documented credential guard
+        // inert while gaff check called it fine.
+        let g = Guard {
+            name: "creds".into(),
+            tool: "Read".into(),
+            matches: Some(r"\.env$".into()),
+            field: "command".into(),
+            unless: None,
+            message: "no".into(),
+        };
+        assert!(
+            g.problems().iter().any(|p| p.contains("file_path")),
+            "{:?}",
+            g.problems()
+        );
+        let bash = Guard {
+            field: "file_path".into(),
+            tool: "Bash".into(),
+            ..g
+        };
+        assert!(bash.problems().iter().any(|p| p.contains("command")));
     }
 
     #[test]

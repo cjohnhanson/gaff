@@ -102,6 +102,30 @@ impl Workflow {
         if self.steps.is_empty() {
             out.push(format!("workflow `{}`: no steps", self.name));
         }
+        // A control character cannot appear in a YAML scalar, and
+        // quoting does not save it. Refuse here, so a broken file is
+        // never written and the command exits non-zero.
+        let mut check_printable = |what: &str, v: &str| {
+            if v.chars().any(is_yaml_control) {
+                out.push(format!(
+                    "workflow `{}`: the {what} holds a control character, which cannot appear in YAML",
+                    self.name
+                ));
+            }
+        };
+        check_printable("name", &self.name);
+        check_printable("runner", &self.runs_on);
+        for b in &self.branches {
+            check_printable("branch", b);
+        }
+        for step in &self.steps {
+            if let Some(n) = &step.name {
+                check_printable("step name", n);
+            }
+            for a in &step.command {
+                check_printable("command", a);
+            }
+        }
         for step in &self.steps {
             match (&step.use_git, step.command.is_empty()) {
                 (Some(name), true) => {
@@ -131,6 +155,19 @@ impl Workflow {
     pub fn path(&self, cwd: &Path) -> PathBuf {
         cwd.join(".github/workflows")
             .join(format!("{}.yml", self.name))
+    }
+}
+
+/// Whether a character cannot appear in a YAML scalar.
+///
+/// A newline and a tab are fine, because a block scalar carries them.
+/// Everything else in this set breaks the document, and single-quoting
+/// does not help.
+const fn is_yaml_control(c: char) -> bool {
+    match c {
+        '\n' | '\t' => false,
+        '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}' | '\u{2028}' | '\u{2029}' | '\u{feff}' => true,
+        _ => false,
     }
 }
 
@@ -277,6 +314,17 @@ pub fn write_all(
     workflows: &[Workflow],
     git: &[crate::githook::GitHook],
 ) -> std::io::Result<Vec<String>> {
+    // Validate every name before writing any file. A partial write
+    // leaves the repo half-configured and the drift check then names a
+    // file that can never be produced.
+    for wf in workflows {
+        if wf.name.len() > 100 {
+            return Err(std::io::Error::other(format!(
+                "workflow `{}`: the name is too long to be a filename",
+                wf.name
+            )));
+        }
+    }
     let dir = cwd.join(".github/workflows");
     std::fs::create_dir_all(&dir)?;
     let mut written = Vec::new();
@@ -431,6 +479,26 @@ mod tests {
         assert!(render(&w, &[]).contains("- name: 'lint: rust'"));
         w.steps[0].name = Some("- rm -rf /".into());
         assert!(render(&w, &[]).contains("- name: '- rm -rf /'"));
+    }
+
+    #[test]
+    fn a_control_character_is_refused_rather_than_written() {
+        // Quoting does not rescue a control character, so the only safe
+        // move is to refuse before writing.
+        let mut w = wf();
+        w.steps = vec![Step {
+            name: Some("s".into()),
+            command: vec!["printf".into(), "\u{1b}[0m done".into()],
+            use_git: None,
+        }];
+        assert!(
+            w.problems(&[]).iter().any(|p| p.contains("control character")),
+            "{:?}",
+            w.problems(&[])
+        );
+        // A newline and a tab survive, because a block scalar carries them.
+        w.steps[0].command = vec!["sh".into(), "-c".into(), "a\nb\tc".into()];
+        assert!(!w.problems(&[]).iter().any(|p| p.contains("control character")));
     }
 
     #[test]

@@ -265,6 +265,10 @@ pub struct Every {
 pub enum Loaded {
     Absent,
     Ok(Config),
+    /// The repo config failed to parse, and the user config stands
+    /// alone. The guards survive, and the state is still degraded, so
+    /// `gaff doctor` must say so.
+    Degraded(Config),
     Broken(String),
 }
 
@@ -286,34 +290,29 @@ pub fn user_config_path() -> Option<std::path::PathBuf> {
 #[must_use]
 pub fn load_layered(cwd: &Path) -> Loaded {
     let user = match user_config_path() {
-        Some(p) => match std::fs::read_to_string(&p) {
-            Ok(text) => match serde_yaml_ng::from_str::<Config>(&text) {
+        Some(p) => match read_config_file(&p) {
+            Ok(Some(text)) => match serde_yaml_ng::from_str::<Config>(&text) {
                 Ok(cfg) => Some(cfg),
-                Err(e) => {
-                    return Loaded::Broken(format!("{}: {e}", p.display()));
-                }
+                Err(e) => return Loaded::Broken(format!("{}: {e}", p.display())),
             },
-            // An absent file is the ordinary case. Any other error means
-            // the file exists and gaff cannot read it, and treating that
-            // as "no guards" would silently disarm every refusal.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => {
-                return Loaded::Broken(format!("{}: {e}", p.display()));
-            }
+            Ok(None) => None,
+            Err(e) => return Loaded::Broken(e),
         },
         None => None,
     };
     match (user, load(cwd)) {
         (None, repo) => repo,
         (Some(user), Loaded::Absent) => Loaded::Ok(user),
-        (Some(user), Loaded::Ok(repo)) => Loaded::Ok(user.overlaid_with(repo)),
+        (Some(user), Loaded::Ok(repo) | Loaded::Degraded(repo)) => {
+            Loaded::Ok(user.overlaid_with(repo))
+        }
         // A repo that cannot be parsed contributes nothing. It must
         // not delete what the user declared, because the user's guards
         // are refusals and a repo could otherwise switch them all off
         // with one bad line.
         (Some(user), Loaded::Broken(err)) => {
             eprintln!("gaff: {CONFIG_PATH} is not valid: {err}. Using the user config alone.");
-            Loaded::Ok(user)
+            Loaded::Degraded(user)
         }
     }
 }
@@ -335,6 +334,12 @@ impl Config {
         // sanctions a profile by name, and a repo that could rewrite
         // that name would decide what the sanctioned profile does.
         let user_named: Vec<String> = self.profiles.keys().cloned().collect();
+        // Capture these before any merge. Reminders and sections share
+        // one pending-marker namespace, so a repo section taking a user
+        // reminder's name consumes that reminder's marker.
+        let user_reminder_names: Vec<String> =
+            self.reminders.iter().map(|r| r.name.clone()).collect();
+        let user_section_names: Vec<String> = self.sections.iter().map(|s| s.name.clone()).collect();
 
         self.reminders
             .retain(|u| !repo.reminders.iter().any(|r| r.name == u.name));
@@ -342,7 +347,22 @@ impl Config {
         self.sections
             .retain(|u| !repo.sections.iter().any(|r| r.name == u.name));
         self.sections.extend(repo.sections);
-        for (name, profile) in repo.profiles {
+        // Remember which entries the user declared, so a repo profile
+        // cannot filter them out.
+        let user_entries: Vec<String> = self
+            .reminders
+            .iter()
+            .map(|r| r.name.clone())
+            .chain(self.sections.iter().map(|s| s.name.clone()))
+            .collect();
+        for (name, mut profile) in repo.profiles {
+            // A repo profile filters the repo's own entries only. A
+            // repo that could filter the user's entries would silence
+            // them by shipping a profile and naming it the default.
+            if let Some(only) = &mut profile.only {
+                only.extend(user_entries.iter().cloned());
+            }
+            profile.disable.retain(|d| !user_entries.contains(d));
             if user_named.contains(&name) {
                 eprintln!(
                     "gaff: the repo redefines the profile `{name}`, which the user declared. Keeping the user's."
@@ -351,11 +371,52 @@ impl Config {
             }
             self.profiles.insert(name, profile);
         }
-        self.git.retain(|u| !repo.git.iter().any(|r| r.name == u.name));
-        self.git.extend(repo.git);
-        self.github
-            .retain(|u| !repo.github.iter().any(|r| r.name == u.name));
-        self.github.extend(repo.github);
+        // A repo may add a git entry or a workflow, and it may not
+        // replace one the user declared. Both run commands, and the
+        // consent a user gave was to their own entry, not to whatever
+        // a later pull puts under the same name.
+        for entry in repo.git {
+            if self.git.iter().any(|u| u.name == entry.name) {
+                eprintln!(
+                    "gaff: the repo declares a git entry named `{}`, which the user declared. Keeping the user's.",
+                    entry.name
+                );
+                continue;
+            }
+            self.git.push(entry);
+        }
+        for wf in repo.github {
+            if self.github.iter().any(|u| u.name == wf.name) {
+                eprintln!(
+                    "gaff: the repo declares a workflow named `{}`, which the user declared. Keeping the user's.",
+                    wf.name
+                );
+                continue;
+            }
+            self.github.push(wf);
+        }
+        self.sections.retain(|s| {
+            let clash = user_reminder_names.contains(&s.name)
+                && !user_section_names.contains(&s.name);
+            if clash {
+                eprintln!(
+                    "gaff: the repo declares a section named `{}`, which is a user reminder. Keeping the reminder.",
+                    s.name
+                );
+            }
+            !clash
+        });
+        self.reminders.retain(|r| {
+            let clash =
+                user_section_names.contains(&r.name) && !user_reminder_names.contains(&r.name);
+            if clash {
+                eprintln!(
+                    "gaff: the repo declares a reminder named `{}`, which is a user section. Keeping the section.",
+                    r.name
+                );
+            }
+            !clash
+        });
         // A guard comes from the user config only. A repo cannot add
         // one, and a repo cannot remove one.
         //
@@ -364,15 +425,20 @@ impl Config {
         // repository deciding which tool calls its reader may make, and
         // a repo declaring `tool: '.*'` would refuse every call. The
         // repo's guards are dropped here rather than merged.
-        if !repo.guards.is_empty() {
-            eprintln!(
-                "gaff: the repo config declares {} guard(s). A repo may not declare a guard, so they are ignored. Guards belong in $HOME/.config/gaff/gaff.yml.",
-                repo.guards.len()
-            );
-        }
+        // The repo's guards were already dropped by `load`. Nothing to
+        // merge here, and nothing to warn about twice.
 
+        // A repo may set the cap, but not so low that it silences what
+        // the user declared. A cap of one byte drops every user entry
+        // without touching a profile, which is the same silencing a
+        // repo profile is refused for.
         if repo.max_inject_bytes != DEFAULT_MAX_INJECT_BYTES {
-            self.max_inject_bytes = repo.max_inject_bytes;
+            let user_declared = !user_entries.is_empty();
+            self.max_inject_bytes = if user_declared {
+                repo.max_inject_bytes.max(self.max_inject_bytes)
+            } else {
+                repo.max_inject_bytes
+            };
         }
         if repo.default_profile.is_some() {
             self.default_profile = repo.default_profile;
@@ -384,24 +450,82 @@ impl Config {
     }
 }
 
+/// The largest config gaff will read.
+///
+/// A repo controls this file, and an unbounded read of a path a repo
+/// chose is a way to spend all of a machine's memory.
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+/// Read a config file that untrusted content may control.
+///
+/// The path must be a regular file. A repo can commit a symlink, and
+/// git carries it through a clone, so a `.gaff/gaff.yml` pointing at
+/// `/dev/zero` would read until the process died, and one pointing at
+/// a FIFO would block every tool call forever. Neither is a refusal,
+/// and both are worse than one.
+fn read_config_file(path: &Path) -> Result<Option<String>, String> {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(None);
+    };
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "{} is a symlink. gaff reads a regular file only, because a symlink can point at a device or a pipe.",
+            path.display()
+        ));
+    }
+    if !meta.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    if meta.len() > MAX_CONFIG_BYTES {
+        return Err(format!(
+            "{} is larger than {MAX_CONFIG_BYTES} bytes",
+            path.display()
+        ));
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
 #[must_use]
 pub fn load(cwd: &Path) -> Loaded {
     let path = cwd.join(CONFIG_PATH);
-    let Ok(bytes) = std::fs::read_to_string(&path) else {
-        return Loaded::Absent;
+    let bytes = match read_config_file(&path) {
+        Ok(Some(text)) => text,
+        Ok(None) => return Loaded::Absent,
+        Err(e) => return Loaded::Broken(e),
     };
     match serde_yaml_ng::from_str::<Config>(&bytes) {
-        Ok(cfg) => Loaded::Ok(cfg),
+        Ok(mut cfg) => {
+            // A repo may never declare a guard. Guards are the one
+            // blocking feature, and a repo is untrusted content. This
+            // is done here rather than at merge time, so a repo cannot
+            // reach the guards through a path that skips the merge,
+            // such as a machine with no user config at all.
+            if !cfg.guards.is_empty() {
+                eprintln!(
+                    "gaff: {CONFIG_PATH} declares {} guard(s). A repo may not declare a guard, so they are ignored. Guards belong in $HOME/.config/gaff/gaff.yml.",
+                    cfg.guards.len()
+                );
+                cfg.guards.clear();
+            }
+            Loaded::Ok(cfg)
+        }
         // Name this one, because the generic serde message does not say
         // where handlers belong, and the reader has to know that a repo
         // may never declare a command.
-        Err(e) if e.to_string().contains("unknown field `handlers`") => Loaded::Broken(
-            "a repo may not declare handlers. They are user-scoped, in \
+        Err(e) if e.to_string().contains("unknown field `handlers`") => Loaded::Broken(format!(
+            "{}: a repo may not declare handlers. They are user-scoped, in \
              $HOME/.config/gaff/handlers.yml, because a repo-declared command \
-             would run on clone."
-                .to_string(),
-        ),
-        Err(e) => Loaded::Broken(e.to_string()),
+             would run on clone.",
+            path.display()
+        )),
+        // Name the file. A message that did not say which config failed
+        // was reported under the repo path even when the user config
+        // was the one at fault.
+        Err(e) => Loaded::Broken(format!("{}: {e}", path.display())),
     }
 }
 
@@ -675,5 +799,67 @@ mod transition_layering_tests {
         let merged = user.overlaid_with(repo);
         assert!(merged.profiles.contains_key("safe"));
         assert!(merged.profiles.contains_key("repoonly"));
+    }
+}
+
+#[cfg(test)]
+mod repo_silencing_tests {
+    use super::*;
+
+    fn cfg(y: &str) -> Config {
+        serde_yaml_ng::from_str(y).expect("fixture must parse")
+    }
+
+    fn user() -> Config {
+        cfg("reminders: [{name: safety, every: {tool_calls: 1}, text: KEEP}]\ngit: [{name: scan, on: [pre-commit], command: [echo, USER]}]\n")
+    }
+
+    #[test]
+    fn a_repo_profile_cannot_filter_a_user_entry() {
+        // A repo could otherwise ship a profile, name it the default,
+        // and silence everything the user declared.
+        let repo = cfg("profiles: {quiet: {only: []}}\ndefault_profile: quiet\n");
+        let merged = user().overlaid_with(repo);
+        let effective = merged.with_profile(Some("quiet"));
+        assert_eq!(effective.reminders.len(), 1, "the user entry survives");
+    }
+
+    #[test]
+    fn a_repo_cannot_lower_the_cap_below_the_users() {
+        let repo = cfg("max_inject_bytes: 1\n");
+        let merged = user().overlaid_with(repo);
+        assert!(merged.max_inject_bytes > 1, "a one-byte cap silences everything");
+    }
+
+    #[test]
+    fn a_repo_may_still_set_a_cap_when_the_user_declared_nothing() {
+        let merged = cfg("reminders: []\n").overlaid_with(cfg("max_inject_bytes: 64\n"));
+        assert_eq!(merged.max_inject_bytes, 64);
+    }
+
+    #[test]
+    fn a_repo_cannot_replace_a_user_git_entry() {
+        let repo = cfg("git: [{name: scan, on: [pre-commit], command: [echo, REPO]}]\n");
+        let merged = user().overlaid_with(repo);
+        assert_eq!(merged.git.len(), 1);
+        assert_eq!(merged.git[0].command[1], "USER");
+    }
+
+    #[test]
+    fn a_repo_section_cannot_take_a_user_reminders_name() {
+        // They share one pending-marker namespace, so the section would
+        // consume the reminder's marker and silence it.
+        let repo = cfg("sections: [{name: safety, file: s.md, refresh: {tool_calls: 1}}]\n");
+        let merged = user().overlaid_with(repo);
+        assert!(merged.sections.is_empty(), "the colliding section is dropped");
+        assert_eq!(merged.reminders.len(), 1);
+    }
+
+    #[test]
+    fn a_repo_may_still_add_its_own_entries() {
+        let repo = cfg("sections: [{name: reposec, file: s.md}]\ngit: [{name: repogit, on: [pre-commit], command: [true]}]\n");
+        let merged = user().overlaid_with(repo);
+        assert_eq!(merged.sections.len(), 1);
+        assert_eq!(merged.git.len(), 2);
     }
 }

@@ -1,9 +1,14 @@
 //! The command line surface.
 //!
-//! The exit-code rule: every gaff invocation exits 0 or 1. It never
-//! exits 2. The agent side treats exit 2 as the blocking code, and no
-//! gaff failure may block a session. This covers a config typo, an
-//! unwritable state directory, and a bad flag.
+//! The exit-code rule: a gaff *failure* exits 0 or 1, never 2. The
+//! agent side treats exit 2 as the blocking code, and no gaff fault
+//! may block a session. This covers a config typo, an unwritable state
+//! directory, and a bad flag.
+//!
+//! Two paths exit otherwise, and both are deliberate. A guard refuses
+//! a tool call with 2, which is the only channel the harness listens
+//! on. `githook` returns the failing command's own code, because a git
+//! hook exists to block a commit.
 //!
 //! This module parses the arguments by hand for that reason, because
 //! clap exits 2 on a usage error. It lives in the library rather than
@@ -78,7 +83,9 @@ Options:
   -h, --help       Print this help
   -V, --version    Print the version
 
-Every gaff invocation exits 0 or 1, never 2. See man gaff for details.";
+A hook exits 0 or 1, so a gaff fault never blocks a session. Two
+things exit otherwise, on purpose: a guard refuses a tool call with 2,
+and githook returns the failing command's own code.";
 
 fn fail(msg: &str) -> ExitCode {
     eprintln!("gaff: {msg}");
@@ -117,24 +124,38 @@ fn run_hook() -> ExitCode {
     let adapter = crate::adapter::detect(std::env::var("GAFF_HOST").ok().as_deref(), &payload);
     let envelope = (adapter.parse)(payload);
 
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let loaded = config::load_layered(&cwd);
+    let degraded = matches!(loaded, Loaded::Broken(_) | Loaded::Degraded(_));
+    let cfg = match loaded {
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
+        Loaded::Absent => config::Config::default(),
+        Loaded::Broken(err) => {
+            eprintln!("gaff: {err}. Continuing without reminders.");
+            config::Config::default()
+        }
+    };
+
+    // A guard is the one thing that may exit 2, and it runs first.
+    //
+    // It needs only the envelope and the config. Resolving the state
+    // directory or the profile before it would make a refusal depend
+    // on state gaff might fail to reach, and neither can select a
+    // guard anyway.
+    if envelope.kind == crate::event::Kind::PreToolCall
+        && let Some(refusal) = guard_refusal(&cfg, &envelope)
+    {
+        eprintln!("{refusal}");
+        return ExitCode::from(2);
+    }
+
     let Some(store) = resolve_store() else {
         eprintln!("gaff: no state directory. Set GAFF_STATE_DIR or HOME. Passing through.");
         return ExitCode::SUCCESS;
     };
-
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let cfg = match config::load_layered(&cwd) {
-        Loaded::Ok(cfg) => cfg,
-        Loaded::Absent => config::Config::default(),
-        Loaded::Broken(err) => {
-            eprintln!(
-                "gaff: the config {} is not valid: {err}. Continuing without reminders.",
-                config::CONFIG_PATH
-            );
-            store.mark_degraded();
-            config::Config::default()
-        }
-    };
+    if degraded {
+        store.mark_degraded();
+    }
 
     // Resolve the profile before the overlay. The session state is
     // authoritative, because it lives outside the repo tree.
@@ -148,15 +169,6 @@ fn run_hook() -> ExitCode {
         &cfg,
     );
     let cfg = cfg.with_profile(profile.as_deref());
-
-    // A guard is the one thing that may exit 2. It runs before any
-    // other work, so a refusal is not affected by anything else.
-    if envelope.kind == crate::event::Kind::PreToolCall
-        && let Some(refusal) = guard_refusal(&cfg, &envelope)
-    {
-        eprintln!("{refusal}");
-        return ExitCode::from(2);
-    }
 
     let handlers = crate::handler::load().handlers;
     if let Some(context) =
@@ -355,7 +367,7 @@ fn run_check(args: &[String]) -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Loaded::Broken(err) => return fail(&format!("{}: {err}", config::CONFIG_PATH)),
-        Loaded::Ok(cfg) => cfg,
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
     };
 
     let mut problems = Vec::new();
@@ -483,6 +495,11 @@ fn run_doctor() -> ExitCode {
 
     let loaded = config::load_layered(&cwd);
     match &loaded {
+        Loaded::Degraded(cfg) => println!(
+            "config:  DEGRADED — the repo config did not parse; the user config alone is live ({} reminder(s), {} section(s))",
+            cfg.reminders.len(),
+            cfg.sections.len()
+        ),
         Loaded::Ok(cfg) => println!(
             "config:  ok ({} reminder(s), {} section(s))",
             cfg.reminders.len(),
@@ -594,24 +611,41 @@ fn doctor_hooks(cwd: &std::path::Path) {
             Some(cwd.join(init::SETTINGS_PATH)),
         ),
     ];
-    let mut found = false;
+    // The host merges every scope, so gaff must too. Reporting each
+    // scope against the full event list called a complete split
+    // registration broken.
+    let mut union: Vec<String> = Vec::new();
+    let mut per_scope: Vec<String> = Vec::new();
     for (label, path) in scopes.into_iter().filter_map(|(l, p)| p.map(|p| (l, p))) {
         let events = registered_events(&path);
         if events.is_empty() {
             continue;
         }
-        found = true;
+        per_scope.push(format!("{label} ({})", events.len()));
+        for e in events {
+            if !union.contains(&e) {
+                union.push(e);
+            }
+        }
+    }
+    let found = !union.is_empty();
+    if found {
         let missing: Vec<&str> = crate::adapter::CLAUDE_CODE
             .hook_events
             .iter()
             .copied()
-            .filter(|e| !events.iter().any(|got| got == e))
+            .filter(|e| !union.iter().any(|got| got == e))
             .collect();
         if missing.is_empty() {
-            println!("hooks:   registered ({label}, all {} events)", events.len());
+            println!(
+                "hooks:   registered ({}), all {} events",
+                per_scope.join(" + "),
+                union.len()
+            );
         } else {
             println!(
-                "hooks:   PARTIAL ({label}); missing {}",
+                "hooks:   PARTIAL ({}); missing {}",
+                per_scope.join(" + "),
                 missing.join(", ")
             );
         }
@@ -619,6 +653,24 @@ fn doctor_hooks(cwd: &std::path::Path) {
     if !found {
         println!("hooks:   NOT registered (run `gaff init`)");
     }
+}
+
+/// Whether a registered command invokes `gaff hook`.
+///
+/// A tail match got this wrong both ways: it missed a command carrying
+/// a trailing flag, which gaff's own installer can produce, and it
+/// claimed `mygaff hook`, a different binary.
+fn is_gaff_hook_command(command: &str) -> bool {
+    let mut parts = command.split_whitespace();
+    while let Some(word) = parts.next() {
+        let stem = std::path::Path::new(word)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned());
+        if stem.as_deref() == Some("gaff") {
+            return parts.next() == Some("hook");
+        }
+    }
+    false
 }
 
 /// The events a settings file registers `gaff hook` on.
@@ -644,7 +696,7 @@ fn registered_events(path: &std::path::Path) -> Vec<String> {
                         hs.iter().any(|h| {
                             h.get("command")
                                 .and_then(|c| c.as_str())
-                                .is_some_and(|c| c.ends_with("gaff hook"))
+                                .is_some_and(is_gaff_hook_command)
                         })
                     })
                 })
@@ -661,7 +713,7 @@ fn registered_events(path: &std::path::Path) -> Vec<String> {
 /// or a pattern that does not compile. This is the command that answers
 /// "is my refusal actually armed".
 fn doctor_guards(loaded: &Loaded) {
-    let Loaded::Ok(cfg) = loaded else {
+    let (Loaded::Ok(cfg) | Loaded::Degraded(cfg)) = loaded else {
         println!("guards:  NONE ACTIVE — the config did not load");
         println!("         Every refusal is off until the config parses.");
         return;
@@ -711,7 +763,7 @@ fn run_docs(args: &[String]) -> ExitCode {
 fn run_profile(args: &[String]) -> ExitCode {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let cfg = match config::load_layered(&cwd) {
-        Loaded::Ok(cfg) => cfg,
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => {
             eprintln!("gaff: the config is not valid: {err}");
@@ -956,7 +1008,7 @@ fn run_init_git(uninstall: bool) -> ExitCode {
         };
     }
     let cfg = match config::load_layered(&cwd) {
-        Loaded::Ok(cfg) => cfg,
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => return fail(&err),
     };
@@ -989,7 +1041,7 @@ fn run_init_github() -> ExitCode {
         return fail("cannot resolve the working directory");
     };
     let cfg = match config::load_layered(&cwd) {
-        Loaded::Ok(cfg) => cfg,
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => return fail(&err),
     };
@@ -1032,7 +1084,7 @@ fn check_github() -> ExitCode {
         return fail("cannot resolve the working directory");
     };
     let cfg = match config::load_layered(&cwd) {
-        Loaded::Ok(cfg) => cfg,
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => return fail(&err),
     };
@@ -1077,7 +1129,7 @@ fn run_githook(args: &[String]) -> ExitCode {
         return fail("cannot resolve the working directory");
     };
     let cfg = match config::load_layered(&cwd) {
-        Loaded::Ok(cfg) => cfg,
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => {
             // A broken config must not silently pass a check that was
