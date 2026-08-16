@@ -1,4 +1,4 @@
-.Dd August 14, 2026
+.Dd August 16, 2026
 .Dt GAFF 1
 .Os
 .Sh NAME
@@ -13,9 +13,11 @@
 manages session context for a coding agent through the harness hook
 system: counters, cadence reminders, one-shot reminders, and prime
 sections.
-Every invocation exits 0 or 1.
-It never exits 2, because the agent side treats exit 2 as the blocking
-code, and no gaff failure may block a session.
+A hook exits 0 or 1, so a gaff fault never blocks a session.
+Three things exit otherwise, on purpose: a guard refuses a tool call
+with 2, a stop hold refuses a stop with 2, and
+.Cm githook
+returns the failing command's own code.
 .Sh COMMANDS
 .Bl -tag -width "remind <text>"
 .It Cm hook
@@ -97,8 +99,11 @@ gaff decides who is asking by structural identity, where a terminal on
 stdin is a human and anything else is an agent.
 .It Cm trust
 Allow handlers to run in this repo.
-The command refuses a caller whose stdin is not a terminal, so an agent
+Every agent tool call passes through
+.Cm gaff hook
+first, and a built-in guard there refuses this command, so an agent
 cannot grant consent through gaff.
+The user's shell has no hook, so it runs there.
 An agent that can write the home directory can still edit the file, so
 this raises the cost and makes the grant visible; it is not a sandbox.
 A handler's command runs with the repo as its working directory, and
@@ -107,18 +112,30 @@ tools such as
 .Xr make 1 ,
 and just read executable settings from there.
 So handlers are refused by default, and consent is per repo.
-Only a human at a terminal may grant it; the agent path is refused.
 Consent is recorded in
 .Pa ~/.config/gaff/trusted ,
 outside every repo tree.
 .It Cm log Op Fl -session Ar id
 Print the injection audit trail: every flush gaff delivered to the
 session, with the byte count and the entry names.
+.It Cm allow Ar guard
+Let the next tool call that
+.Ar guard
+would refuse through, once.
+The built-in guard in
+.Cm gaff hook
+refuses this command from an agent; run it from your shell.
 .It Cm docs Op Ar page
 Print the bundled documentation.
 Without
 .Ar page ,
 list the available pages.
+.It Cm prime
+Print what gaff is and how to use it, for an agent's context.
+The output depends only on the binary version: no arguments, config,
+or state changes it.
+Put it into an agent's context; policy about when to use gaff belongs
+to the caller.
 .El
 .Sh ENVIRONMENT
 .Bl -tag -width GAFF_STATE_DIR

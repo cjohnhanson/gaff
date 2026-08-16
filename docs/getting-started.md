@@ -55,3 +55,4 @@ the reminder already delivered.
     gaff status --session <id>    # counters, pending entries, one-shots
     gaff check                    # validate .gaff/gaff.yml
     gaff doctor                   # what is live in this clone
+    gaff prime                    # what gaff is, for an agent's context

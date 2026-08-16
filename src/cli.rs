@@ -22,7 +22,7 @@ use serde_json::json;
 
 use crate::config::{self, Loaded};
 use crate::engine;
-use crate::state::{resolve_root, Store};
+use crate::state::{Store, resolve_root};
 use crate::{docs, init};
 
 /// Run gaff with the given arguments, excluding the program name.
@@ -44,6 +44,10 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("githook") => run_githook(&args[1..]),
         Some("log") => run_log(&args[1..]),
         Some("docs") => run_docs(&args[1..]),
+        Some("prime") => {
+            print!("{}", prime());
+            ExitCode::SUCCESS
+        }
         Some("--version" | "-V" | "version") => {
             println!("gaff {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -53,11 +57,16 @@ pub fn run(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Some(other) => fail(&format!(
-            "unknown command `{other}` (available: hook, githook, remind, allow, status, init, check, doctor, trust, profile, log, docs)"
+            "unknown command `{other}` (available: {})",
+            COMMANDS.join(", ")
         )),
-        None => fail("usage: gaff <hook|githook|remind|allow|status|init|check|doctor|trust|profile|log|docs>"),
+        None => fail(&format!("usage: gaff <{}>", COMMANDS.join("|"))),
     }
 }
+
+/// The one-line description. The usage text opens with it and `prime`
+/// prints it, and a test holds the two byte-equal.
+pub const ABOUT: &str = "a context-lifecycle handler for coding agents";
 
 const USAGE: &str = "gaff — a context-lifecycle handler for coding agents
 
@@ -75,13 +84,15 @@ Commands:
   check            Validate .gaff/gaff.yml
                    (--handlers checks the user config;
                     --github reports a workflow that drifted)
-  trust            Allow handlers to run in this repo (terminal only)
+  trust            Allow handlers to run in this repo (the hook refuses
+                   it from an agent; run it from your shell)
   allow <guard>    Let the next call that guard would refuse through,
-                   once (terminal only)
+                   once (the hook refuses it from an agent)
   doctor           Show what is live in this clone
   profile          Show, list, or set the active profile
   log              Show the injection audit trail for a session
   docs [page]      Print the bundled documentation
+  prime            Print what gaff is and how to use it, for an agent's context
 
 Options:
   -h, --help       Print this help
@@ -91,6 +102,42 @@ A hook exits 0 or 1, so a gaff fault never blocks a session. Three
 things exit otherwise, on purpose: a guard refuses a tool call with 2,
 a goal refuses a stop with 2, and githook returns the failing
 command's own code.";
+
+/// Every command `run` dispatches. The usage test and the prime test
+/// both walk it, so a command that dispatches but is undocumented, or
+/// documented but does not dispatch, fails a test.
+const COMMANDS: [&str; 13] = [
+    "hook", "githook", "remind", "allow", "status", "init", "check", "doctor", "trust", "profile",
+    "log", "docs", "prime",
+];
+
+/// The prime: what gaff is, for an agent's context.
+///
+/// A pure function of the binary. It states what gaff does from the
+/// host's hooks, how an injected entry and a refusal look, and where
+/// config lives, then the commands an agent reaches for. It names no
+/// host, no sibling tool, and no harness syntax, and it directs
+/// nothing: which reminders to set, and when, is the caller's policy.
+/// Under 700 bytes, checked by a test.
+#[must_use]
+pub fn prime() -> String {
+    format!(
+        "# gaff\n\
+         {ABOUT}\n\
+         From the host's hooks, gaff runs guards on tool calls, injects sections and \
+         reminders at session start and on a cadence, and can hold the stop until a \
+         reminder clears. Each injected entry opens with a tag, gaff:<name> in square \
+         brackets, on its own line. A refused tool call names its guard. Repo config is \
+         .gaff/gaff.yml; user config is $HOME/.config/gaff/gaff.yml.\n\
+         Commands:\n\
+         \x20 gaff doctor\n\
+         \x20 gaff status\n\
+         \x20 gaff remind <text> (--after <n> | --at stop) [--id <id>]\n\
+         \x20 gaff remind --clear --id <id>\n\
+         \x20 gaff check\n\
+         More: gaff --help; gaff docs\n"
+    )
+}
 
 /// How many stops in a row a goal may refuse before gaff gives up on
 /// it. A condition that can never be met would otherwise end the
@@ -180,7 +227,9 @@ fn run_hook(args: &[String]) -> ExitCode {
             .zip(resolve_store())
             .is_some_and(|(sid, store)| store.take_allowance(sid, &guard));
         if allowed {
-            eprintln!("gaff: the guard `{guard}` would have refused this call. Allowed once by the user.");
+            eprintln!(
+                "gaff: the guard `{guard}` would have refused this call. Allowed once by the user."
+            );
         } else {
             eprintln!("{refusal}");
             return ExitCode::from(2);
@@ -330,54 +379,80 @@ fn refuse_stop(
     None
 }
 
-/// `gaff remind <text> --after <N> [--id <id>] [--session <sid>]`
-///
-/// Schedule a one-shot reminder N tool calls into the session's future.
-fn run_remind(args: &[String]) -> ExitCode {
-    let mut text: Option<String> = None;
-    let mut after: Option<u64> = None;
-    let mut id: Option<String> = None;
-    let mut session_flag: Option<String> = None;
-    let mut at_stop = false;
-    let mut clear = false;
-    let mut times: Option<u32> = None;
+/// The parsed arguments of `gaff remind`. Parsing is a pure function
+/// so a test can check what the command accepts without a store.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RemindArgs {
+    text: Option<String>,
+    after: Option<u64>,
+    id: Option<String>,
+    session: Option<String>,
+    at_stop: bool,
+    clear: bool,
+    times: Option<u32>,
+}
 
+/// Parse `gaff remind` arguments. `Err` carries the usage message.
+fn parse_remind(args: &[String]) -> Result<RemindArgs, String> {
+    let mut r = RemindArgs::default();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--after" => match it.next().map(|v| v.parse::<u64>()) {
-                Some(Ok(n)) => after = Some(n),
-                _ => return fail("--after requires a non-negative integer"),
+                Some(Ok(n)) => r.after = Some(n),
+                _ => return Err("--after requires a non-negative integer".into()),
             },
             // A one-shot normally fires at a tool-call count. `--at
             // stop` fires it at the stop instead, and holds the stop
             // open until it is cleared.
             "--at" => match it.next().map(String::as_str) {
-                Some("stop") => at_stop = true,
-                Some(other) => {
-                    return fail(&format!("--at takes `stop`, not `{other}`"));
-                }
-                None => return fail("--at requires a value"),
+                Some("stop") => r.at_stop = true,
+                Some(other) => return Err(format!("--at takes `stop`, not `{other}`")),
+                None => return Err("--at requires a value".into()),
             },
-            "--clear" => clear = true,
+            "--clear" => r.clear = true,
             // How many stops the hold refuses before it lets go on its
             // own. Without it, the hold lasts until cleared.
             "--times" => match it.next().map(|v| v.parse::<u32>()) {
-                Some(Ok(n)) if n > 0 => times = Some(n),
-                _ => return fail("--times requires a positive integer"),
+                Some(Ok(n)) if n > 0 => r.times = Some(n),
+                _ => return Err("--times requires a positive integer".into()),
             },
             "--id" => match it.next() {
-                Some(v) => id = Some(v.clone()),
-                None => return fail("--id requires a value"),
+                Some(v) => r.id = Some(v.clone()),
+                None => return Err("--id requires a value".into()),
             },
             "--session" => match it.next() {
-                Some(v) => session_flag = Some(v.clone()),
-                None => return fail("--session requires a value"),
+                Some(v) => r.session = Some(v.clone()),
+                None => return Err("--session requires a value".into()),
             },
-            other if text.is_none() && !other.starts_with("--") => text = Some(other.to_string()),
-            other => return fail(&format!("unexpected argument `{other}`")),
+            other if r.text.is_none() && !other.starts_with("--") => {
+                r.text = Some(other.to_string());
+            }
+            other => return Err(format!("unexpected argument `{other}`")),
         }
     }
+    if r.times.is_some() && !r.at_stop {
+        return Err("--times applies to --at stop".into());
+    }
+    Ok(r)
+}
+
+/// `gaff remind <text> --after <N> [--id <id>] [--session <sid>]`
+///
+/// Schedule a one-shot reminder N tool calls into the session's future.
+fn run_remind(args: &[String]) -> ExitCode {
+    let RemindArgs {
+        text,
+        after,
+        id,
+        session: session_flag,
+        at_stop,
+        clear,
+        times,
+    } = match parse_remind(args) {
+        Ok(r) => r,
+        Err(msg) => return fail(&msg),
+    };
 
     let Some(session) = session_from(session_flag.as_deref()) else {
         return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID.");
@@ -398,9 +473,6 @@ fn run_remind(args: &[String]) -> ExitCode {
         );
     };
 
-    if times.is_some() && !at_stop {
-        return fail("--times applies to --at stop");
-    }
     if at_stop {
         let id = id.unwrap_or_else(|| "hold".to_string());
         return match store.write_hold(&session, &id, &text, times) {
@@ -769,10 +841,18 @@ fn doctor_handlers() {
             println!(
                 "handlers: {} declared; this repo is {}",
                 cfg.handlers.len(),
-                if trusted { "trusted" } else { "NOT trusted (run `gaff trust`)" }
+                if trusted {
+                    "trusted"
+                } else {
+                    "NOT trusted (run `gaff trust`)"
+                }
             );
             for h in &cfg.handlers {
-                let state = if h.problems().is_empty() { "ok " } else { "BAD" };
+                let state = if h.problems().is_empty() {
+                    "ok "
+                } else {
+                    "BAD"
+                };
                 println!("  {state} {} -> {}", h.name, h.command.join(" "));
             }
         }
@@ -815,7 +895,6 @@ fn run_doctor() -> ExitCode {
     doctor_handlers();
     ExitCode::SUCCESS
 }
-
 
 /// Problems where one part of the config names another part that does
 /// not exist, or names the same thing twice.
@@ -860,7 +939,10 @@ fn cross_reference_problems(cfg: &config::Config) -> Vec<String> {
         }
     }
     for (label, names) in [
-        ("guard", cfg.guards.iter().map(|g| &g.name).collect::<Vec<_>>()),
+        (
+            "guard",
+            cfg.guards.iter().map(|g| &g.name).collect::<Vec<_>>(),
+        ),
         ("git entry", cfg.git.iter().map(|g| &g.name).collect()),
         ("workflow", cfg.github.iter().map(|w| &w.name).collect()),
     ] {
@@ -897,10 +979,7 @@ fn doctor_hooks(cwd: &std::path::Path) {
             "repo".to_string(),
             Some(cwd.join(".claude").join("settings.json")),
         ),
-        (
-            "local".to_string(),
-            Some(cwd.join(init::SETTINGS_PATH)),
-        ),
+        ("local".to_string(), Some(cwd.join(init::SETTINGS_PATH))),
     ];
     // The host merges every scope, so gaff must too. Reporting each
     // scope against the full event list called a complete split
@@ -1113,7 +1192,12 @@ fn run_profile(args: &[String]) -> ExitCode {
                 println!("(no profiles declared in .gaff/gaff.yml)");
             }
             for name in cfg.profiles.keys() {
-                let who = if cfg.transitions.clone().unwrap_or_default().agent_may_set(name) {
+                let who = if cfg
+                    .transitions
+                    .clone()
+                    .unwrap_or_default()
+                    .agent_may_set(name)
+                {
                     "agent or human"
                 } else {
                     "human only"
@@ -1179,11 +1263,7 @@ fn run_log(args: &[String]) -> ExitCode {
 
 /// Apply `gaff profile set`. Structural identity decides who is asking:
 /// a terminal on stdin is a human, anything else is an agent.
-fn set_profile(
-    cfg: &config::Config,
-    name: Option<String>,
-    session: Option<String>,
-) -> ExitCode {
+fn set_profile(cfg: &config::Config, name: Option<String>, session: Option<String>) -> ExitCode {
     let Some(name) = name else {
         return fail("usage: gaff profile set <name> [--session <sid>]");
     };
@@ -1193,7 +1273,13 @@ fn set_profile(
     let Some(session) = session else {
         return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID");
     };
-    if !std::io::stdin().is_terminal() && !cfg.transitions.clone().unwrap_or_default().agent_may_set(&name) {
+    if !std::io::stdin().is_terminal()
+        && !cfg
+            .transitions
+            .clone()
+            .unwrap_or_default()
+            .agent_may_set(&name)
+    {
         return fail(&format!(
             "profile `{name}` is human-only. Add it to transitions.agent_may_set to allow an agent switch."
         ));
@@ -1306,8 +1392,7 @@ fn check_handlers() -> ExitCode {
             }
         }
     }
-    let trusted = std::env::current_dir()
-        .is_ok_and(|d| crate::handler::is_trusted(&d));
+    let trusted = std::env::current_dir().is_ok_and(|d| crate::handler::is_trusted(&d));
     if !trusted {
         println!("note: this repo is not trusted, so no handler runs here. Run `gaff trust`.");
     }
@@ -1402,8 +1487,8 @@ fn report_github_problems(cfg: &config::Config) -> Option<ExitCode> {
     // is where the workflow plausibly belongs. On a repo with none, a
     // personal workflow is the whole point and the notice is noise for
     // the one person who is not making a mistake.
-    let repo_has_config = std::env::current_dir()
-        .is_ok_and(|d| d.join(config::CONFIG_PATH).exists());
+    let repo_has_config =
+        std::env::current_dir().is_ok_and(|d| d.join(config::CONFIG_PATH).exists());
     if repo_has_config {
         for wf in cfg.github.iter().filter(|w| w.user) {
             eprintln!(
@@ -1445,7 +1530,11 @@ fn check_github() -> ExitCode {
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => return fail(&err),
     };
-    let mut problems: Vec<String> = cfg.git.iter().flat_map(crate::githook::GitHook::problems).collect();
+    let mut problems: Vec<String> = cfg
+        .git
+        .iter()
+        .flat_map(crate::githook::GitHook::problems)
+        .collect();
     for wf in &cfg.github {
         problems.extend(wf.problems(&cfg.git));
     }
@@ -1492,7 +1581,11 @@ fn check_github() -> ExitCode {
         println!("ORPHAN  {orphan} (generated by gaff, declared by nothing)");
         drifted = true;
     }
-    if drifted { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+    if drifted {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `gaff allow <guard> [--session <sid>]` — let the next call a guard
@@ -1532,13 +1625,19 @@ fn run_allow(args: &[String]) -> ExitCode {
     // Name a guard that exists, so a typo does not read as a grant.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let known: Vec<String> = match config::load_layered(&cwd) {
-        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg.guards.iter().map(|g| g.name.clone()).collect(),
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => {
+            cfg.guards.iter().map(|g| g.name.clone()).collect()
+        }
         _ => Vec::new(),
     };
     if !known.iter().any(|n| n == &guard) {
         return fail(&format!(
             "no guard named `{guard}`. The guards are: {}.",
-            if known.is_empty() { "(none)".to_string() } else { known.join(", ") }
+            if known.is_empty() {
+                "(none)".to_string()
+            } else {
+                known.join(", ")
+            }
         ));
     }
     match store.write_allowance(&session, &guard) {
@@ -1702,7 +1801,14 @@ mod tests {
 
     #[test]
     fn help_and_version_succeed() {
-        for case in [vec!["--help"], vec!["-h"], vec!["help"], vec!["--version"], vec!["-V"], vec!["version"]] {
+        for case in [
+            vec!["--help"],
+            vec!["-h"],
+            vec!["help"],
+            vec!["--version"],
+            vec!["-V"],
+            vec!["version"],
+        ] {
             let code = run(&args(&case));
             assert_eq!(
                 format!("{code:?}"),
@@ -1716,10 +1822,7 @@ mod tests {
     #[test]
     fn the_usage_text_lists_every_command_the_dispatcher_accepts() {
         // A command that dispatches but is undocumented is a trap.
-        for cmd in [
-            "hook", "remind", "status", "init", "check", "doctor", "trust", "profile", "log",
-            "docs",
-        ] {
+        for cmd in COMMANDS {
             assert!(USAGE.contains(cmd), "the usage text omits `{cmd}`");
         }
     }
@@ -1728,5 +1831,154 @@ mod tests {
     fn no_arguments_is_a_usage_error_not_a_panic() {
         let code = run(&[]);
         assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
+    }
+}
+
+#[cfg(test)]
+mod prime_tests {
+    use super::*;
+
+    #[test]
+    fn the_usage_text_opens_with_the_about_string() {
+        assert!(
+            USAGE.starts_with(&format!("gaff — {ABOUT}\n")),
+            "USAGE line 1 is `gaff — {{ABOUT}}`"
+        );
+    }
+
+    /// The dispatcher is a hand-written match, so this reads it: every
+    /// command in COMMANDS has a `Some("<cmd>") =>` arm in `run`.
+    #[test]
+    fn every_command_dispatches() {
+        let src = include_str!("cli.rs");
+        let run_body = &src[src.find("pub fn run(").unwrap()..src.find("const USAGE").unwrap()];
+        for cmd in COMMANDS {
+            assert!(
+                run_body.contains(&format!("Some(\"{cmd}\") =>")),
+                "`run` does not dispatch `{cmd}`"
+            );
+        }
+        let arms = run_body.matches("Some(\"").count();
+        assert_eq!(
+            arms,
+            COMMANDS.len() + 2,
+            "run has an arm COMMANDS does not list (version and help excepted)"
+        );
+    }
+
+    #[test]
+    fn prime_has_the_contract_shape() {
+        let p = prime();
+        let lines: Vec<&str> = p.lines().collect();
+        assert!(p.len() <= 700, "prime is {} bytes; the cap is 700", p.len());
+        assert_eq!(lines[0], "# gaff");
+        assert_eq!(lines[1], ABOUT, "line 2 is the about string");
+        assert!(
+            p.ends_with('\n') && !p.ends_with("\n\n"),
+            "one trailing newline"
+        );
+        assert!(!p.contains('\t'), "no tabs");
+        assert!(!p.contains("[gaff:"), "no spoofable prefix");
+        assert!(
+            !p.chars().any(|c| c.is_control() && c != '\n'),
+            "no control chars"
+        );
+        assert!(
+            lines.iter().skip(1).all(|l| !l.starts_with('#')),
+            "no headings below line 1"
+        );
+        assert!(
+            lines
+                .last()
+                .unwrap()
+                .starts_with("More: gaff --help; gaff docs")
+        );
+        for word in [
+            "tisket",
+            "zettel",
+            "almanac",
+            "mdstore",
+            "Claude",
+            "codex",
+            "always",
+            "never",
+            "session start hook",
+            "before you",
+            "!gaff",
+            "terminal",
+        ] {
+            assert!(!p.contains(word), "prime must not say {word:?}");
+        }
+    }
+
+    /// Every `Commands:` line names a command `run` dispatches, and
+    /// every `remind` line, with its placeholders filled, parses.
+    #[test]
+    fn every_prime_command_exists() {
+        let p = prime();
+        let start = p.find("Commands:\n").expect("a Commands: block") + "Commands:\n".len();
+        let end = p.find("More:").expect("a More: line");
+        let block = &p[start..end];
+        assert!(block.lines().count() <= 7, "at most seven commands");
+        for line in block.lines() {
+            let mut words = line.split_whitespace();
+            assert_eq!(words.next(), Some("gaff"), "{line:?} starts with the tool");
+            let cmd = words.next().expect("a subcommand");
+            assert!(
+                COMMANDS.contains(&cmd),
+                "{line:?}: `{cmd}` is not a command"
+            );
+            if cmd != "remind" {
+                assert!(
+                    words.next().is_none(),
+                    "{line:?}: only remind takes arguments here"
+                );
+                continue;
+            }
+            // Expand `(a | b)` alternation, fill placeholders, and parse
+            // each expansion. `[--flag <x>]` is tried present and absent.
+            let rest: Vec<&str> = words.collect();
+            let joined = rest.join(" ");
+            let alternatives: Vec<String> = match (joined.find('('), joined.find(')')) {
+                (Some(a), Some(b)) => joined[a + 1..b]
+                    .split('|')
+                    .map(|alt| format!("{}{}{}", &joined[..a], alt.trim(), &joined[b + 1..]))
+                    .collect(),
+                _ => vec![joined.clone()],
+            };
+            for alt in alternatives {
+                // Optional groups are bracketed; try the line with every
+                // group present and with every group absent.
+                let mut present = String::new();
+                let mut absent = String::new();
+                let mut in_group = false;
+                for tok in alt.split_whitespace() {
+                    let opens = tok.starts_with('[');
+                    let closes = tok.ends_with(']');
+                    let bare = tok.trim_start_matches('[').trim_end_matches(']');
+                    let bare = match bare {
+                        "<text>" => "text",
+                        "<n>" => "3",
+                        "<id>" => "goal",
+                        t => t,
+                    };
+                    present.push_str(bare);
+                    present.push(' ');
+                    if !(opens || in_group) {
+                        absent.push_str(bare);
+                        absent.push(' ');
+                    }
+                    in_group = (opens || in_group) && !closes;
+                }
+                for form in [present, absent] {
+                    let args: Vec<String> = form.split_whitespace().map(str::to_string).collect();
+                    let parsed = parse_remind(&args);
+                    assert!(
+                        parsed.is_ok(),
+                        "{line:?} → `{form}` does not parse: {parsed:?}"
+                    );
+                }
+            }
+        }
     }
 }
