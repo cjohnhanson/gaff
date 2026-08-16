@@ -197,18 +197,16 @@ fn is_ours(path: &Path) -> bool {
 /// worst failure a blocking check can have.
 #[must_use]
 pub fn hooks_dir(cwd: &Path) -> Option<PathBuf> {
-    // Ask git first. It knows about every layout, including ones this
-    // function has not met.
-    if let Ok(out) = std::process::Command::new("git")
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .current_dir(cwd)
-        .output()
-        && out.status.success()
-    {
-        let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir).join("hooks"));
-        }
+    // Discover the git dir the way git does: walk up from cwd, follow
+    // a `.git` file. Then resolve the common dir from `<git_dir>/commondir`,
+    // which is how git itself locates it for a linked worktree.
+    if let Ok((path, _trust)) = gix_discover::upwards(cwd) {
+        let (git_dir, _work_tree) = path.into_repository_and_work_tree_directories();
+        let common = std::fs::read_to_string(git_dir.join("commondir"))
+            .ok()
+            .map_or_else(|| git_dir.clone(), |s| git_dir.join(s.trim()));
+        let common = common.canonicalize().unwrap_or(common);
+        return Some(common.join("hooks"));
     }
 
     let dot_git = cwd.join(".git");
@@ -526,6 +524,45 @@ pub fn run(cwd: &Path, entries: &[GitHook], hook: &str, args: &[String]) -> i32 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The layout git writes for a linked worktree, built with plain
+    /// filesystem calls: `<wt>/.git` is a file naming
+    /// `<main>/.git/worktrees/<name>`, and that dir's `commondir` names
+    /// the main git dir. Hooks resolve to the main dir, from either side.
+    #[test]
+    fn hooks_dir_resolves_a_linked_worktree_to_the_common_dir() {
+        let tmp = std::env::temp_dir().join(format!("gaff-wt-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let main = tmp.join("main");
+        let git = main.join(".git");
+        for d in ["objects", "refs", "hooks", "worktrees/wt"] {
+            std::fs::create_dir_all(git.join(d)).unwrap();
+        }
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let wt_git = git.join("worktrees").join("wt");
+        std::fs::write(wt_git.join("HEAD"), "ref: refs/heads/wt\n").unwrap();
+        std::fs::write(wt_git.join("commondir"), "../..\n").unwrap();
+        let wt = tmp.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt_git.join("gitdir"), format!("{}/.git\n", wt.display())).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", wt_git.display())).unwrap();
+
+        let want = git.canonicalize().unwrap().join("hooks");
+        assert_eq!(hooks_dir(&wt).unwrap(), want, "from the worktree");
+        assert_eq!(hooks_dir(&main).unwrap(), want, "from the main checkout");
+        let nested = wt.join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(
+            hooks_dir(&nested).unwrap(),
+            want,
+            "from a subdirectory of the worktree"
+        );
+        assert!(
+            hooks_dir(&tmp.join("elsewhere")).is_none(),
+            "outside any repo"
+        );
+    }
 
     fn entry(name: &str, on: &[&str], cmd: &[&str]) -> GitHook {
         GitHook {

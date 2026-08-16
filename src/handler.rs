@@ -642,15 +642,15 @@ fn safe_path(cwd: &Path) -> String {
 ///
 /// A grandchild inherits the stdout write end. Killing only the direct
 /// child can leave that pipe open. `unsafe` is forbidden in this crate,
-/// so this shells out rather than calling `kill(2)`.
+/// so the call goes through nix's safe wrapper for `killpg(2)`.
 fn kill_group(pid: u32) {
     #[cfg(unix)]
     {
-        let _ = Command::new("/bin/kill")
-            .args(["-9", &format!("-{pid}")])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        use nix::sys::signal::{Signal, killpg};
+        use nix::unistd::Pid;
+        if let Ok(raw) = i32::try_from(pid) {
+            let _ = killpg(Pid::from_raw(raw), Signal::SIGKILL);
+        }
     }
     #[cfg(not(unix))]
     let _ = pid;
