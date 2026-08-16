@@ -19,7 +19,7 @@ pub enum Error {
     #[error("cannot resolve the working directory")]
     NoWorkingDir,
 
-    #[error("no session. Pass --session or set CLAUDE_CODE_SESSION_ID.")]
+    #[error("no session. Pass --session, or set GAFF_SESSION_ID or the host's session variable.")]
     NoSession,
 
     #[error("the config {path} is not valid: {detail}")]

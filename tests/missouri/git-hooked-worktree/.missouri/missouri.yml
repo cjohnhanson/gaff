@@ -1,0 +1,5 @@
+doc: |
+  The worktree transition removes its repos, so only the config remains.
+assertions:
+  - name: "the git entry is still declared"
+    command: "grep -q no-todos .gaff/gaff.yml"

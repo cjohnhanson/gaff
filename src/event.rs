@@ -280,10 +280,10 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    /// Build an envelope from a Claude Code hook payload.
-    ///
-    /// The host-specific mapping lives in [`crate::adapter`]. This
+    /// Build an envelope from a Claude Code hook payload. Test-only:
+    /// the host-specific mapping lives in [`crate::adapter`], and this
     /// delegate keeps the call sites in the tests short.
+    #[cfg(test)]
     #[must_use]
     pub fn from_claude_code(json: Value) -> Self {
         (crate::adapter::CLAUDE_CODE.parse)(json)

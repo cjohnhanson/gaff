@@ -20,9 +20,10 @@ event goes through up to three stages:
 
 The counters are per session. gaff reads the `session_id` from the event
 payload. A subagent has its own session and its own counters. `gaff
-remind` runs inside a session and resolves the session from
-`CLAUDE_CODE_SESSION_ID`, which Claude Code exports to a shell
-subprocess.
+remind` runs inside a session and resolves the session from `--session`,
+then `GAFF_SESSION_ID`, then the host's own variable, which each adapter
+names (Claude Code exports `CLAUDE_CODE_SESSION_ID` to a shell
+subprocess).
 
 ## Compaction
 

@@ -32,6 +32,15 @@ pub struct Adapter {
     pub sniff: fn(&Value) -> bool,
     /// Where `gaff init` registers the hooks, relative to the repo root.
     pub settings_path: &'static str,
+    /// The host's other settings scopes that may also carry hooks, for
+    /// `doctor`: the repo-shared file relative to the repo root, and the
+    /// user file relative to `$HOME`.
+    pub repo_settings_path: &'static str,
+    pub user_settings_path: &'static str,
+    /// The environment variable this host exports to a subprocess with
+    /// the session id, so `gaff remind` and friends can find their
+    /// session without a flag.
+    pub session_env: &'static str,
     /// The events gaff subscribes to on this host.
     pub hook_events: &'static [&'static str],
     /// Read one tool-input field out of this host's raw payload.
@@ -65,6 +74,9 @@ pub const CLAUDE_CODE: Adapter = Adapter {
     parse: from_claude_code,
     sniff: |json| json.get("hook_event_name").is_some(),
     settings_path: ".claude/settings.local.json",
+    repo_settings_path: ".claude/settings.json",
+    user_settings_path: ".claude/settings.json",
+    session_env: "CLAUDE_CODE_SESSION_ID",
     hook_events: CLAUDE_CODE_EVENTS,
     tool_field: claude_code_tool_field,
 };
@@ -153,6 +165,37 @@ fn claude_code_kind(event: &str) -> Kind {
         "Stop" => Kind::Stop,
         other => Kind::Other(other.to_string()),
     }
+}
+
+/// The session id for a command run inside a session: the flag, then
+/// gaff's own `GAFF_SESSION_ID`, then whichever host variable is set.
+/// Nothing above the adapter knows what any host calls it.
+#[must_use]
+pub fn session_from_env(flag: Option<&str>) -> Option<String> {
+    if let Some(f) = flag {
+        return Some(f.to_string());
+    }
+    if let Ok(s) = std::env::var("GAFF_SESSION_ID")
+        && !s.is_empty()
+    {
+        return Some(s);
+    }
+    ADAPTERS
+        .iter()
+        .find_map(|a| std::env::var(a.session_env).ok().filter(|s| !s.is_empty()))
+}
+
+/// The one-line hint for a missing session, naming every host's variable.
+#[must_use]
+pub fn session_hint() -> String {
+    let hosts: Vec<String> = ADAPTERS
+        .iter()
+        .map(|a| format!("{} for {}", a.session_env, a.name))
+        .collect();
+    format!(
+        "no session. Pass --session, or set GAFF_SESSION_ID or the host's variable ({}).",
+        hosts.join(", ")
+    )
 }
 
 /// Look up an adapter by name.

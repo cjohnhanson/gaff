@@ -1,5 +1,46 @@
 doc: |
   The transition removes its repo, so only the config remains.
+transitions:
+  # A linked worktree. git reads hooks from the common dir, so a hook
+  # installed from the worktree lands in main/.git/hooks and runs on a
+  # commit made in the worktree; installed from the main checkout, it
+  # runs in the worktree too. gaff finds that dir without a git process.
+  - name: "a linked worktree installs into and runs from the common hooks dir"
+    command: |
+      mkdir -p work && cd work
+      git init -q -b main .
+      git config user.email t@example.com
+      git config user.name tester
+      cp -R ../.gaff .gaff
+      # The config is committed, as repo config is, so the worktree
+      # checks it out too.
+      echo base > base.txt && git add base.txt .gaff && git commit -q -m base
+      git worktree add -q ../wt -b feature
+
+      # Install from the worktree: the script lands in the common dir.
+      (cd ../wt && gaff init --git > install.log 2>&1) || { echo "FAIL: init from worktree"; cat ../wt/install.log; exit 1; }
+      test -x .git/hooks/pre-commit || { echo "FAIL: hook not in main/.git/hooks"; ls -la .git/hooks; exit 1; }
+      test ! -e .git/worktrees/wt/hooks/pre-commit || { echo "FAIL: hook written to the worktree's own git dir"; exit 1; }
+
+      # A commit in the worktree runs it: a clean file passes, a FIXME
+      # is blocked.
+      (cd ../wt && echo fine > ok.txt && git add ok.txt && git commit -q -m ok) || { echo "FAIL: a clean commit in the worktree must pass"; exit 1; }
+      (cd ../wt && echo FIXME > bad.txt && git add bad.txt && ! git commit -q -m bad > blocked.log 2>&1 && grep -q 'found a FIXME' blocked.log) || { echo "FAIL: the worktree commit was not blocked by the hook"; cat ../wt/blocked.log 2>/dev/null; exit 1; }
+      test "$(git -C ../wt log --oneline | wc -l | tr -d ' ')" = "2" || { echo "FAIL: the bad commit landed in the worktree"; exit 1; }
+
+      # A commit from a subdirectory of the worktree runs the hook too:
+      # git resolves hooks against the common dir from anywhere inside.
+      mkdir -p ../wt/sub && (cd ../wt/sub && echo FIXME > deep.txt && git add deep.txt && ! git commit -q -m deep > blocked2.log 2>&1 && grep -q 'found a FIXME' blocked2.log) || { echo "FAIL: a commit from a worktree subdirectory was not blocked"; exit 1; }
+
+      # Uninstall from the main checkout removes it for both.
+      gaff init --git --uninstall > /dev/null 2>&1
+      test ! -e .git/hooks/pre-commit || { echo "FAIL: uninstall left the hook"; exit 1; }
+
+      git worktree remove --force ../wt
+      cd .. && rm -rf work wt
+      echo WORKTREE_OK
+    target: ../git-hooked-worktree
+    stdout: "WORKTREE_OK\n"
 assertions:
   - name: "the git entry is still declared"
     command: "grep -q no-todos .gaff/gaff.yml"

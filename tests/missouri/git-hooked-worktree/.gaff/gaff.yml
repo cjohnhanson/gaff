@@ -1,0 +1,9 @@
+reminders: []
+git:
+  - name: no-todos
+    on:
+      - git:pre-commit
+    command:
+      - sh
+      - -c
+      - "! grep -rq FIXME --include=*.txt . || { echo 'found a FIXME'; exit 1; }"

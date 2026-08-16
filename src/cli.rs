@@ -161,8 +161,7 @@ fn resolve_store() -> Option<Store> {
 }
 
 fn session_from(flag: Option<&str>) -> Option<String> {
-    flag.map(ToString::to_string)
-        .or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())
+    crate::adapter::session_from_env(flag)
 }
 
 /// Read one hook payload from stdin. Write the response to stdout.
@@ -455,7 +454,7 @@ fn run_remind(args: &[String]) -> ExitCode {
     };
 
     let Some(session) = session_from(session_flag.as_deref()) else {
-        return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID.");
+        return fail(&crate::adapter::session_hint());
     };
     let Some(store) = resolve_store() else {
         return fail("no state directory. Set GAFF_STATE_DIR or HOME.");
@@ -518,7 +517,7 @@ fn run_status(args: &[String]) -> ExitCode {
         }
     }
     let Some(session) = session_from(session_flag.as_deref()) else {
-        return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID.");
+        return fail(&crate::adapter::session_hint());
     };
     let Some(store) = resolve_store() else {
         return fail("no state directory. Set GAFF_STATE_DIR or HOME.");
@@ -586,7 +585,7 @@ fn run_init(args: &[String]) -> ExitCode {
         return run_init_github();
     }
     let adapter = match host.as_deref() {
-        None => &crate::adapter::CLAUDE_CODE,
+        None => crate::adapter::ADAPTERS[0],
         Some(name) => match crate::adapter::by_name(name) {
             Some(a) => a,
             None => {
@@ -612,11 +611,11 @@ fn run_init(args: &[String]) -> ExitCode {
             } else {
                 "registered in"
             };
-            println!("gaff hooks {verb} {}", init::SETTINGS_PATH);
+            println!("gaff hooks {verb} {}", adapter.settings_path);
             ExitCode::SUCCESS
         }
         Ok(init::Outcome::Unchanged) => {
-            println!("already up to date: {}", init::SETTINGS_PATH);
+            println!("already up to date: {}", adapter.settings_path);
             ExitCode::SUCCESS
         }
         Err(e) => fail(&e.to_string()),
@@ -966,20 +965,24 @@ fn cross_reference_problems(cfg: &config::Config) -> Vec<String> {
 /// read a file that merely mentioned the command, including one that
 /// banned it, as a registration.
 fn doctor_hooks(cwd: &std::path::Path) {
+    for adapter in crate::adapter::ADAPTERS {
+        doctor_hooks_for(adapter, cwd);
+    }
+}
+
+fn doctor_hooks_for(adapter: &crate::adapter::Adapter, cwd: &std::path::Path) {
     let scopes = [
         (
             "user".to_string(),
-            std::env::var("HOME").ok().map(|h| {
-                std::path::Path::new(&h)
-                    .join(".claude")
-                    .join("settings.json")
-            }),
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::Path::new(&h).join(adapter.user_settings_path)),
         ),
         (
             "repo".to_string(),
-            Some(cwd.join(".claude").join("settings.json")),
+            Some(cwd.join(adapter.repo_settings_path)),
         ),
-        ("local".to_string(), Some(cwd.join(init::SETTINGS_PATH))),
+        ("local".to_string(), Some(cwd.join(adapter.settings_path))),
     ];
     // The host merges every scope, so gaff must too. Reporting each
     // scope against the full event list called a complete split
@@ -1000,7 +1003,7 @@ fn doctor_hooks(cwd: &std::path::Path) {
     }
     let found = !union.is_empty();
     if found {
-        let missing: Vec<&str> = crate::adapter::CLAUDE_CODE
+        let missing: Vec<&str> = adapter
             .hook_events
             .iter()
             .copied()
@@ -1235,7 +1238,7 @@ fn run_log(args: &[String]) -> ExitCode {
     let Some(session) = session_from(session_flag.as_deref()) else {
         let sessions = store.sessions();
         if sessions.is_empty() {
-            return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID");
+            return fail(&crate::adapter::session_hint());
         }
         eprintln!("gaff: no session given. Known sessions:");
         for s in sessions {
@@ -1271,7 +1274,7 @@ fn set_profile(cfg: &config::Config, name: Option<String>, session: Option<Strin
         return fail(&format!("unknown profile `{name}`"));
     }
     let Some(session) = session else {
-        return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID");
+        return fail(&crate::adapter::session_hint());
     };
     if !std::io::stdin().is_terminal()
         && !cfg
@@ -1617,7 +1620,7 @@ fn run_allow(args: &[String]) -> ExitCode {
         return fail("usage: gaff allow <guard-name> [--session <sid>]");
     };
     let Some(session) = session_from(session_flag.as_deref()) else {
-        return fail("no session. Pass --session or set CLAUDE_CODE_SESSION_ID.");
+        return fail(&crate::adapter::session_hint());
     };
     let Some(store) = resolve_store() else {
         return fail("no state directory. Set GAFF_STATE_DIR or HOME.");
