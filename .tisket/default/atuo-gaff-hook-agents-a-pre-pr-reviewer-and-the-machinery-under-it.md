@@ -131,3 +131,4 @@ Build in this order: profile guards → `agents:` schema → `gaff run` (spawn, 
 ## Edges filed here, not v1
 
 - `gaff remind --clear` resolves against the caller's cwd; from the wrong directory it clears nothing and prints "released."
+2026-08-16. Prime contract designed by workflow (3 designers, 6 attacks, synthesis, cold check), filed in mdstore as dxyx with one issue per tool. Note: almanac, tisket, zettel checkouts are on branch fix/round-three (another session's); their tracker commits from today are on that branch, not main. gaff and mdstore trackers are on main.
