@@ -93,7 +93,7 @@ pub fn uninstall_for(
                         continue;
                     };
                     let before = inner.len();
-                    inner.retain(|h| h["command"] != command);
+                    inner.retain(|h| !runs_command(&h["command"], command));
                     if inner.len() != before {
                         changed = true;
                         if inner.is_empty() {
@@ -140,12 +140,33 @@ fn hooks_map(settings: &mut Map<String, Value>) -> &mut Map<String, Value> {
         .expect("edit_settings refuses a non-object hooks key")
 }
 
-/// True when a matcher-group entry holds a hook with exactly this
-/// command.
+/// True when a matcher-group entry holds a hook that runs this command.
 fn has_command(entry: &Value, command: &str) -> bool {
     entry["hooks"]
         .as_array()
-        .is_some_and(|hooks| hooks.iter().any(|h| h["command"] == command))
+        .is_some_and(|hooks| hooks.iter().any(|h| runs_command(&h["command"], command)))
+}
+
+/// Whether a registered hook command is this command, by any path.
+///
+/// A registration may name the binary bare (`gaff hook`), by an
+/// absolute path (`/nix/store/…/bin/gaff hook`), or by a profile link.
+/// Exact string equality treated each as a different hook, so uninstall
+/// left the absolute-path registration in place and reported "already
+/// up to date" while the hook ran twice. Compare the argv tail: the
+/// program's basename plus its arguments.
+fn runs_command(registered: &Value, command: &str) -> bool {
+    let Some(reg) = registered.as_str() else {
+        return false;
+    };
+    let tail = |s: &str| -> Vec<String> {
+        let mut words: Vec<String> = s.split_whitespace().map(String::from).collect();
+        if let Some(first) = words.first_mut() {
+            *first = first.rsplit('/').next().unwrap_or(first).to_string();
+        }
+        words
+    };
+    tail(reg) == tail(command)
 }
 
 /// Load the settings, mutate them, write a temporary file, and rename
@@ -518,5 +539,66 @@ mod link_tests {
         );
         assert!(sibling.contains("opus"), "and keep its own keys: {sibling}");
         std::fs::remove_dir_all(&d).ok();
+    }
+}
+
+#[cfg(test)]
+mod path_match_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("gaff-pathmatch-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(d.join(".claude")).unwrap();
+        d
+    }
+
+    #[test]
+    fn uninstall_removes_a_registration_by_absolute_path() {
+        // The live file held `/nix/store/…/bin/gaff hook` beside another
+        // tool's hook in one group. Exact matching against `gaff hook`
+        // found nothing, printed "already up to date", and left the hook
+        // running twice.
+        let d = scratch("abs");
+        let path = d.join(".claude/settings.local.json");
+        std::fs::write(
+            &path,
+            r#"{"hooks":{"SessionStart":[{"hooks":[{"command":"/Users/x/.nix-profile/bin/gaff hook","type":"command"},{"command":"/x/demerit snapshot","type":"command"}]}]}}"#,
+        )
+        .unwrap();
+        uninstall(&d, "gaff hook").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("gaff hook"), "{after}");
+        assert!(after.contains("demerit snapshot"), "the other tool's hook survives: {after}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn install_sees_an_absolute_path_registration_as_already_present() {
+        let d = scratch("dup");
+        let path = d.join(".claude/settings.local.json");
+        std::fs::write(
+            &path,
+            r#"{"hooks":{"PreToolUse":[{"hooks":[{"command":"/opt/bin/gaff hook","type":"command"}]}]}}"#,
+        )
+        .unwrap();
+        install(&d, "gaff hook").unwrap();
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let pre = after["hooks"]["PreToolUse"].as_array().unwrap();
+        let ours = pre
+            .iter()
+            .flat_map(|e| e["hooks"].as_array().cloned().unwrap_or_default())
+            .filter(|h| runs_command(&h["command"], "gaff hook"))
+            .count();
+        assert_eq!(ours, 1, "the absolute-path entry counts as present: {pre:?}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_different_program_with_the_same_argument_is_not_ours() {
+        assert!(!runs_command(&serde_json::json!("/x/gaffer hook"), "gaff hook"));
+        assert!(!runs_command(&serde_json::json!("gaff hooks"), "gaff hook"));
+        assert!(runs_command(&serde_json::json!("  /a/b/gaff   hook "), "gaff hook"));
     }
 }
