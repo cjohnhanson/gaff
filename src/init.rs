@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 /// The default settings path. `gaff init --host <name>` uses the named
 /// adapter's path instead.
@@ -190,7 +190,10 @@ fn edit_settings(
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("{}: not a regular file. Refusing to rewrite it.", path.display()),
+            format!(
+                "{}: not a regular file. Refusing to rewrite it.",
+                path.display()
+            ),
         ));
     }
     // Absent and unreadable are different things, and treating them
@@ -453,7 +456,10 @@ mod preservation_tests {
         let after = settings(&d);
         let zeta = after.find("zeta").expect("zeta kept");
         let alpha = after.find("alpha").expect("alpha kept");
-        assert!(zeta < alpha, "alphabetizing a user's file is noise: {after}");
+        assert!(
+            zeta < alpha,
+            "alphabetizing a user's file is noise: {after}"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -516,7 +522,10 @@ mod link_tests {
         .unwrap();
         uninstall(&d, "gaff hook").unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("matcher"), "the user's entry survives: {after}");
+        assert!(
+            after.contains("matcher"),
+            "the user's entry survives: {after}"
+        );
         assert!(!after.contains("gaff hook"), "{after}");
         std::fs::remove_dir_all(&d).ok();
     }
@@ -569,7 +578,10 @@ mod path_match_tests {
         uninstall(&d, "gaff hook").unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(!after.contains("gaff hook"), "{after}");
-        assert!(after.contains("demerit snapshot"), "the other tool's hook survives: {after}");
+        assert!(
+            after.contains("demerit snapshot"),
+            "the other tool's hook survives: {after}"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -591,14 +603,23 @@ mod path_match_tests {
             .flat_map(|e| e["hooks"].as_array().cloned().unwrap_or_default())
             .filter(|h| runs_command(&h["command"], "gaff hook"))
             .count();
-        assert_eq!(ours, 1, "the absolute-path entry counts as present: {pre:?}");
+        assert_eq!(
+            ours, 1,
+            "the absolute-path entry counts as present: {pre:?}"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
     fn a_different_program_with_the_same_argument_is_not_ours() {
-        assert!(!runs_command(&serde_json::json!("/x/gaffer hook"), "gaff hook"));
+        assert!(!runs_command(
+            &serde_json::json!("/x/gaffer hook"),
+            "gaff hook"
+        ));
         assert!(!runs_command(&serde_json::json!("gaff hooks"), "gaff hook"));
-        assert!(runs_command(&serde_json::json!("  /a/b/gaff   hook "), "gaff hook"));
+        assert!(runs_command(
+            &serde_json::json!("  /a/b/gaff   hook "),
+            "gaff hook"
+        ));
     }
 }

@@ -98,15 +98,15 @@ pub fn handle_with(
         // makes it the one point where "is this actually done" can
         // still change the answer. gaff used to do nothing here.
         Kind::Stop | Kind::ToolBatch => flush(&FlushCtx {
-                config,
-                store,
-                session,
-                gaff_dir,
-                mode: section_mode(store, session),
-                handlers,
-                cwd,
-                event: envelope.kind.as_str(),
-            }),
+            config,
+            store,
+            session,
+            gaff_dir,
+            mode: section_mode(store, session),
+            handlers,
+            cwd,
+            event: envelope.kind.as_str(),
+        }),
         _ => None,
     }
 }
@@ -207,7 +207,12 @@ fn arm_crossings(
         .reminders
         .iter()
         .map(|r| (r.name.as_str(), &r.every))
-        .chain(config.sections.iter().map(|s| (s.name.as_str(), &s.refresh)))
+        .chain(
+            config
+                .sections
+                .iter()
+                .map(|s| (s.name.as_str(), &s.refresh)),
+        )
         .chain(handlers.iter().map(|h| (h.name.as_str(), &h.every)));
     for (name, every) in cadences {
         if let Some(n) = unit(every)
@@ -241,8 +246,13 @@ enum EntryKind {
     /// Nothing to consume. gaff emits this entry whenever it selects
     /// the entry. A session-start section with no pending refresh is one.
     Unconditional,
-    Recurring { name: String, multiple: u64 },
-    Oneshot { id: String },
+    Recurring {
+        name: String,
+        multiple: u64,
+    },
+    Oneshot {
+        id: String,
+    },
 }
 
 /// Which sections a flush delivers. `All` primes the context at session
@@ -348,12 +358,7 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
 /// gaff consumes an entry only when it emits the entry. An entry that
 /// overflows the cap stays pending, except a handler entry, whose
 /// cadence is already spent.
-fn merge(
-    entries: Vec<Entry>,
-    config: &Config,
-    store: &Store,
-    session: &str,
-) -> Option<String> {
+fn merge(entries: Vec<Entry>, config: &Config, store: &Store, session: &str) -> Option<String> {
     // A stable partition, so config order still holds inside each
     // layer. The user's entries get the budget first.
     let mut ordered: Vec<Entry> = Vec::with_capacity(entries.len());
@@ -493,7 +498,6 @@ mod tests {
     use crate::state::Store;
     use serde_json::json;
 
-
     fn gd() -> &'static Path {
         Path::new("/nonexistent-gaff-dir")
     }
@@ -572,7 +576,11 @@ mod tests {
             gd(),
         );
         assert_eq!(out.as_deref(), Some("[gaff:r] hello"));
-        assert_eq!(store.pending_multiple("s", "r"), None, "gaff consumed the pending marker");
+        assert_eq!(
+            store.pending_multiple("s", "r"),
+            None,
+            "gaff consumed the pending marker"
+        );
     }
 
     #[test]
@@ -681,19 +689,23 @@ mod tests {
             ..Config::default()
         };
 
-        let start = json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
+        let start =
+            json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
         let out = handle(&event(start), &config, &store, &dir);
         assert_eq!(out.as_deref(), Some("[gaff:conv]\nUse tabs."));
 
         // Mid-session: nothing is pending, so a prompt emits nothing.
-        let prompt = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "x"});
+        let prompt =
+            json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "x"});
         assert_eq!(handle(&event(prompt.clone()), &config, &store, &dir), None);
 
         // Two tool calls cross the refresh cadence. The next prompt
         // re-injects the section.
         for id in ["t1", "t2"] {
             let _ = handle(
-                &event(json!({"hook_event_name": "PostToolUse", "session_id": "s", "tool_use_id": id})),
+                &event(
+                    json!({"hook_event_name": "PostToolUse", "session_id": "s", "tool_use_id": id}),
+                ),
                 &config,
                 &store,
                 &dir,
@@ -701,7 +713,11 @@ mod tests {
         }
         let out = handle(&event(prompt.clone()), &config, &store, &dir);
         assert_eq!(out.as_deref(), Some("[gaff:conv]\nUse tabs."));
-        assert_eq!(handle(&event(prompt), &config, &store, &dir), None, "gaff consumed the refresh");
+        assert_eq!(
+            handle(&event(prompt), &config, &store, &dir),
+            None,
+            "gaff consumed the refresh"
+        );
     }
 
     #[test]
@@ -718,7 +734,8 @@ mod tests {
             max_inject_bytes: 4096,
             ..Config::default()
         };
-        let start = json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
+        let start =
+            json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
         assert_eq!(handle(&event(start), &config, &store, gd()), None);
     }
 
@@ -742,9 +759,10 @@ mod tests {
                     refresh: Every::default(),
                 }],
                 max_inject_bytes: 4096,
-            ..Config::default()
+                ..Config::default()
             };
-            let start = json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
+            let start =
+                json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
             let out = handle(&event(start), &config, &store, &gaff);
             assert_eq!(out, None, "escaping path `{bad}` must inject nothing");
         }
@@ -778,7 +796,6 @@ mod regression {
     fn gd() -> &'static Path {
         Path::new("/nonexistent-gaff-dir")
     }
-
 
     #[test]
     fn oneshot_with_nonzero_at_fires_after_crossing() {
@@ -907,7 +924,10 @@ mod budget_tests {
         };
         let err = crate::config::read_section_body(&section, &d).unwrap_err();
         assert!(err.contains("outside"), "got {err}");
-        assert!(!err.contains("PRIVATE"), "the body must not leak into the error");
+        assert!(
+            !err.contains("PRIVATE"),
+            "the body must not leak into the error"
+        );
         std::fs::remove_dir_all(&base).ok();
     }
 

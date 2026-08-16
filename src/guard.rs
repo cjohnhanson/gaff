@@ -67,12 +67,7 @@ const KNOWN_FIELDS: [&str; 7] = [
 /// zero-width assertion such as `\b` finds no boundary in an empty
 /// string, so an empty-string test passed it while it exempted every
 /// real command.
-const UNLESS_PROBES: [&str; 4] = [
-    "git add -A",
-    "rm -rf /",
-    "/etc/passwd",
-    "echo hello world",
-];
+const UNLESS_PROBES: [&str; 4] = ["git add -A", "rm -rf /", "/etc/passwd", "echo hello world"];
 
 /// The distinct values of `items`, in first-seen order.
 fn dedup(items: &[&str]) -> Vec<String> {
@@ -467,10 +462,8 @@ fn word_before(chars: &[char], at: usize) -> bool {
     while i < body.len() {
         let c = body[i];
         if c == '-' {
-            let ranged = i > 0
-                && i + 1 < body.len()
-                && is_word(body[i - 1])
-                && is_word(body[i + 1]);
+            let ranged =
+                i > 0 && i + 1 < body.len() && is_word(body[i - 1]) && is_word(body[i + 1]);
             if !ranged {
                 return false;
             }
@@ -543,7 +536,10 @@ impl Guard {
             ));
         }
         if !self.tool.is_empty() && Regex::new(&format!("^(?:{})$", self.tool)).is_err() {
-            out.push(format!("guard `{}`: the tool pattern is invalid", self.name));
+            out.push(format!(
+                "guard `{}`: the tool pattern is invalid",
+                self.name
+            ));
         }
         // A field the tool never sends means the guard can never fire.
         // The credential guard in the docs is one omitted line from
@@ -559,10 +555,8 @@ impl Guard {
                 TOOL_FIELDS.iter().filter(|(t, _)| re.is_match(t)).collect();
             let live = |fields: &[&str]| fields.contains(&self.field.as_str());
             if !named.is_empty() && !named.iter().any(|(_, f)| live(f)) {
-                let expected: Vec<&str> = named
-                    .iter()
-                    .flat_map(|(_, f)| f.iter().copied())
-                    .collect();
+                let expected: Vec<&str> =
+                    named.iter().flat_map(|(_, f)| f.iter().copied()).collect();
                 let hint = if expected.is_empty() {
                     "That tool sends no field gaff can match. Drop `matches` to refuse every call to it.".to_string()
                 } else {
@@ -596,7 +590,10 @@ impl Guard {
             if let Some(p) = pattern
                 && let Err(e) = Regex::new(p)
             {
-                out.push(format!("guard `{}`: the {label} pattern is invalid: {e}", self.name));
+                out.push(format!(
+                    "guard `{}`: the {label} pattern is invalid: {e}",
+                    self.name
+                ));
             }
         }
         out
@@ -1030,7 +1027,10 @@ mod tests {
     #[test]
     fn another_tool_is_untouched() {
         let g = git_add_guard();
-        assert!(!g.refuses("Edit", "git add -A"), "the guard names Bash only");
+        assert!(
+            !g.refuses("Edit", "git add -A"),
+            "the guard names Bash only"
+        );
     }
 
     #[test]
@@ -1086,7 +1086,9 @@ mod tests {
             message: "m".into(),
         };
         assert!(
-            base.problems().iter().any(|p| p.contains("not a tool-input field")),
+            base.problems()
+                .iter()
+                .any(|p| p.contains("not a tool-input field")),
             "{:?}",
             base.problems()
         );
@@ -1169,9 +1171,8 @@ mod tests {
             unless: None,
             message: "Edit in a worktree.".into(),
         };
-        let value = |f: &str| {
-            (f == "file_path").then(|| "/Users/x/Projects/monorepo/src/a.py".to_string())
-        };
+        let value =
+            |f: &str| (f == "file_path").then(|| "/Users/x/Projects/monorepo/src/a.py".to_string());
         assert!(first_refusal(std::slice::from_ref(&g), "Edit", &value).is_some());
         let other = |f: &str| (f == "file_path").then(|| "/Users/x/other/a.py".to_string());
         assert!(first_refusal(std::slice::from_ref(&g), "Edit", &other).is_none());
@@ -1522,7 +1523,11 @@ mod heuristic_tests {
         for m in [r"a[\d]b", r"a[\s]b", r"a[\w]b"] {
             assert!(!unless_subsumes(m, r"\\"), "{m:?} holds no backslash");
         }
-        assert!(unless_subsumes(r"a[\d]b", "a"), "{:?}", representatives(r"a[\d]b"));
+        assert!(
+            unless_subsumes(r"a[\d]b", "a"),
+            "{:?}",
+            representatives(r"a[\d]b")
+        );
     }
 
     #[test]
@@ -1598,8 +1603,16 @@ mod heuristic_tests {
         assert!(!shipped.is_empty(), "the docs show at least one guard");
         for pattern in shipped {
             let guard = g(&pattern, None);
-            assert!(guard.problems().is_empty(), "{pattern}: {:?}", guard.problems());
-            assert!(guard.warnings().is_empty(), "{pattern}: {:?}", guard.warnings());
+            assert!(
+                guard.problems().is_empty(),
+                "{pattern}: {:?}",
+                guard.problems()
+            );
+            assert!(
+                guard.warnings().is_empty(),
+                "{pattern}: {:?}",
+                guard.warnings()
+            );
         }
     }
 }
@@ -1850,10 +1863,7 @@ mod heredoc_tests {
 
     #[test]
     fn without_heredocs_keeps_the_command_lines() {
-        assert_eq!(
-            without_heredocs("a <<X\nbody\nX\nb"),
-            "a <<X\nb\n"
-        );
+        assert_eq!(without_heredocs("a <<X\nbody\nX\nb"), "a <<X\nb\n");
         assert_eq!(without_heredocs("plain"), "plain\n");
     }
 }

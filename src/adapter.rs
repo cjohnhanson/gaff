@@ -80,7 +80,12 @@ fn claude_code_tool_field(raw: &Value, field: &str) -> Option<String> {
         Value::String(s) => Some(s.clone()),
         Value::Array(items) => {
             let parts: Option<Vec<&str>> = items.iter().map(Value::as_str).collect();
-            parts.map(|p| p.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" "))
+            parts.map(|p| {
+                p.iter()
+                    .map(|a| shell_quote(a))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
         }
         _ => None,
     }
@@ -258,7 +263,10 @@ mod kind_tests {
     fn an_unmapped_host_event_stays_first_class_and_permits_nothing() {
         let env = (CLAUDE_CODE.parse)(json!({"hook_event_name": "SomeFutureEvent"}));
         assert_eq!(env.kind, Kind::Other("SomeFutureEvent".to_string()));
-        assert!(!env.kind.is_flush(), "an unknown event is never a flush point");
+        assert!(
+            !env.kind.is_flush(),
+            "an unknown event is never a flush point"
+        );
         assert!(!env.capability().verified);
     }
 
@@ -278,7 +286,13 @@ mod kind_tests {
 
     #[test]
     fn a_normalized_name_round_trips_through_a_config() {
-        for k in [Kind::SessionStart, Kind::Prompt, Kind::ToolCall, Kind::ToolBatch, Kind::Stop] {
+        for k in [
+            Kind::SessionStart,
+            Kind::Prompt,
+            Kind::ToolCall,
+            Kind::ToolBatch,
+            Kind::Stop,
+        ] {
             assert_eq!(Kind::parse(k.as_str()), k);
         }
     }

@@ -152,7 +152,11 @@ impl Config {
 /// entry as completely as the others, so all four fields are held to
 /// one rule: a repo profile governs the repo's own entries and nothing
 /// the user declared.
-fn sanitize_repo_profile(mut profile: Profile, user_entries: &[String], user_cap: usize) -> Profile {
+fn sanitize_repo_profile(
+    mut profile: Profile,
+    user_entries: &[String],
+    user_cap: usize,
+) -> Profile {
     if let Some(only) = &mut profile.only {
         only.extend(user_entries.iter().cloned());
     }
@@ -379,9 +383,7 @@ pub fn read_section_body(section: &Section, gaff_dir: &Path) -> Result<String, S
         // a link, canonicalizing it would follow the link and then
         // every file under the target would compare as "inside", which
         // is the same hole one level up.
-        if std::fs::symlink_metadata(gaff_dir)
-            .is_ok_and(|m| m.file_type().is_symlink())
-        {
+        if std::fs::symlink_metadata(gaff_dir).is_ok_and(|m| m.file_type().is_symlink()) {
             return Err(format!(
                 "section `{}`: {} is a symlink. gaff reads a repo section from a real directory in the repo.",
                 section.name,
@@ -450,12 +452,20 @@ fn read_confined(section: &Section, path: &Path, no_follow: bool) -> Result<Stri
     }
     #[cfg(not(unix))]
     let _ = no_follow;
-    let mut file = open
-        .open(path)
-        .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
-    let meta = file
-        .metadata()
-        .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
+    let mut file = open.open(path).map_err(|e| {
+        format!(
+            "section `{}`: cannot read {}: {e}",
+            section.name,
+            path.display()
+        )
+    })?;
+    let meta = file.metadata().map_err(|e| {
+        format!(
+            "section `{}`: cannot read {}: {e}",
+            section.name,
+            path.display()
+        )
+    })?;
     if !meta.is_file() {
         return Err(format!(
             "section `{}`: {} is not a regular file",
@@ -471,8 +481,13 @@ fn read_confined(section: &Section, path: &Path, no_follow: bool) -> Result<Stri
         ));
     }
     let mut body = String::new();
-    std::io::Read::read_to_string(&mut file, &mut body)
-        .map_err(|e| format!("section `{}`: cannot read {}: {e}", section.name, path.display()))?;
+    std::io::Read::read_to_string(&mut file, &mut body).map_err(|e| {
+        format!(
+            "section `{}`: cannot read {}: {e}",
+            section.name,
+            path.display()
+        )
+    })?;
     Ok(body)
 }
 
@@ -1000,11 +1015,12 @@ mod profile_tests {
     #[test]
     fn the_transition_policy_names_the_agent_settable_profiles() {
         let cfg = base();
-        assert!(cfg
-            .transitions
-            .clone()
-            .unwrap_or_default()
-            .agent_may_set("focus"));
+        assert!(
+            cfg.transitions
+                .clone()
+                .unwrap_or_default()
+                .agent_may_set("focus")
+        );
         assert!(
             !cfg.transitions.unwrap_or_default().agent_may_set("quiet"),
             "human only"
@@ -1035,7 +1051,9 @@ mod layer_tests {
         // under the user's label, and nothing downstream can tell them
         // apart. A clone is untrusted content, so the user's entry
         // stands and the repo's is dropped.
-        let user = cfg("reminders:\n  - name: same\n    every: {tool_calls: 1}\n    text: FROM_USER\n  - name: keep\n    every: {tool_calls: 2}\n    text: K\n");
+        let user = cfg(
+            "reminders:\n  - name: same\n    every: {tool_calls: 1}\n    text: FROM_USER\n  - name: keep\n    every: {tool_calls: 2}\n    text: K\n",
+        );
         let repo =
             cfg("reminders:\n  - name: same\n    every: {tool_calls: 5}\n    text: FROM_REPO\n");
         let merged = user.overlaid_with(repo);
@@ -1062,11 +1080,13 @@ mod layer_tests {
         let user = cfg("transitions:\n  agent_may_set: [safe]\n");
         let repo = cfg("transitions:\n  agent_may_set: [safe, dangerous]\n");
         let merged = user.overlaid_with(repo);
-        assert!(merged
-            .transitions
-            .clone()
-            .unwrap_or_default()
-            .agent_may_set("safe"));
+        assert!(
+            merged
+                .transitions
+                .clone()
+                .unwrap_or_default()
+                .agent_may_set("safe")
+        );
         assert!(
             !merged
                 .transitions
@@ -1081,10 +1101,12 @@ mod layer_tests {
         let user = cfg("reminders: []\n");
         let repo = cfg("transitions:\n  agent_may_set: [focus]\n");
         let merged = user.overlaid_with(repo);
-        assert!(merged
-            .transitions
-            .unwrap_or_default()
-            .agent_may_set("focus"));
+        assert!(
+            merged
+                .transitions
+                .unwrap_or_default()
+                .agent_may_set("focus")
+        );
     }
 
     #[test]
@@ -1175,7 +1197,9 @@ mod transition_layering_tests {
     fn a_repo_cannot_redefine_a_profile_the_user_declared() {
         // The user sanctions a profile by name. A repo that rewrote
         // that name would decide what the sanctioned profile does.
-        let user = cfg("reminders: [{name: safety, every: {tool_calls: 1}, text: KEEP}]\nprofiles: {safe: {}}\ntransitions: {agent_may_set: [safe]}\n");
+        let user = cfg(
+            "reminders: [{name: safety, every: {tool_calls: 1}, text: KEEP}]\nprofiles: {safe: {}}\ntransitions: {agent_may_set: [safe]}\n",
+        );
         let repo = cfg("profiles: {safe: {only: []}}\n");
         let merged = user.overlaid_with(repo);
         let effective = merged.with_profile(Some("safe"));
@@ -1206,7 +1230,9 @@ mod repo_silencing_tests {
     }
 
     fn user() -> Config {
-        cfg("reminders: [{name: safety, every: {tool_calls: 1}, text: KEEP}]\ngit: [{name: scan, on: [pre-commit], command: [echo, USER]}]\n")
+        cfg(
+            "reminders: [{name: safety, every: {tool_calls: 1}, text: KEEP}]\ngit: [{name: scan, on: [pre-commit], command: [echo, USER]}]\n",
+        )
     }
 
     #[test]
@@ -1269,7 +1295,9 @@ mod repo_silencing_tests {
 
     #[test]
     fn a_repo_may_still_add_its_own_entries() {
-        let repo = cfg("sections: [{name: reposec, file: s.md}]\ngit: [{name: repogit, on: [pre-commit], command: [true]}]\n");
+        let repo = cfg(
+            "sections: [{name: reposec, file: s.md}]\ngit: [{name: repogit, on: [pre-commit], command: [true]}]\n",
+        );
         let merged = user().overlaid_with(repo);
         assert_eq!(merged.sections.len(), 1);
         assert_eq!(merged.git.len(), 2);
@@ -1321,7 +1349,8 @@ mod boundary_tests {
     fn a_repo_profile_cannot_retime_a_user_entry() {
         // A cadence of a few million silences an entry as completely as
         // `disable` does.
-        let user = user_cfg("reminders:\n  - name: safety\n    every: {tool_calls: 1}\n    text: S\n");
+        let user =
+            user_cfg("reminders:\n  - name: safety\n    every: {tool_calls: 1}\n    text: S\n");
         let repo = repo_cfg(
             "profiles:\n  slow:\n    cadence:\n      safety: {tool_calls: 999999}\ndefault_profile: slow\n",
         );

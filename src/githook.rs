@@ -185,8 +185,7 @@ const BANNER: &str = "# Installed by gaff. Edit .gaff/gaff.yml, then run `gaff i
 /// mentions gaff in a comment, and claiming it means overwriting it and
 /// then deleting it on uninstall.
 fn is_ours(path: &Path) -> bool {
-    std::fs::read_to_string(path)
-        .is_ok_and(|s| s.lines().nth(1).is_some_and(|l| l == BANNER))
+    std::fs::read_to_string(path).is_ok_and(|s| s.lines().nth(1).is_some_and(|l| l == BANNER))
 }
 
 /// The directory git actually reads hooks from.
@@ -413,9 +412,10 @@ fn set_executable(path: &Path) -> std::io::Result<()> {
 fn spawn_with_stdin(command: &mut Command, input: Option<&[u8]>) -> std::io::Result<i32> {
     let mut child = command.spawn()?;
     if let Some(bytes) = input {
-        let mut pipe = child.stdin.take().ok_or_else(|| {
-            std::io::Error::other("the child was given no stdin pipe")
-        })?;
+        let mut pipe = child
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("the child was given no stdin pipe"))?;
         let owned = bytes.to_vec();
         std::thread::spawn(move || {
             use std::io::Write as _;
@@ -664,7 +664,11 @@ mod ownership_tests {
         // The second tool's hook has nowhere to be kept, so gaff must
         // refuse instead of overwriting it.
         let d = repo("second");
-        std::fs::write(d.join(".git/hooks/pre-commit"), "#!/bin/sh\necho ORIGINAL\n").unwrap();
+        std::fs::write(
+            d.join(".git/hooks/pre-commit"),
+            "#!/bin/sh\necho ORIGINAL\n",
+        )
+        .unwrap();
         install(&d, &[entry()], "gaff githook").unwrap();
         std::fs::write(d.join(".git/hooks/pre-commit"), "#!/bin/sh\necho SECOND\n").unwrap();
 
@@ -766,7 +770,10 @@ mod stdin_tests {
             serde_yaml_ng::from_str("- name: scan\n  on: [pre-commit]\n  command: [/bin/true]\n")
                 .unwrap();
         install(&d, &entries, "gaff hook").unwrap();
-        assert!(stale_installs(&d, &entries).is_empty(), "declared is not stale");
+        assert!(
+            stale_installs(&d, &entries).is_empty(),
+            "declared is not stale"
+        );
         assert_eq!(
             stale_installs(&d, &[]),
             vec!["pre-commit".to_string()],
@@ -778,7 +785,11 @@ mod stdin_tests {
     #[test]
     fn a_foreign_hook_is_never_reported_as_stale() {
         let d = repo("foreign");
-        std::fs::write(d.join(".git/hooks/pre-commit"), "#!/bin/sh\n# someone else\n").unwrap();
+        std::fs::write(
+            d.join(".git/hooks/pre-commit"),
+            "#!/bin/sh\n# someone else\n",
+        )
+        .unwrap();
         assert!(stale_installs(&d, &[]).is_empty());
         std::fs::remove_dir_all(&d).ok();
     }

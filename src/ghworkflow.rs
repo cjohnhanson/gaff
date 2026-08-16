@@ -576,10 +576,11 @@ mod tests {
         );
         // A newline and a tab survive, because a block scalar carries them.
         w.steps[0].command = vec!["sh".into(), "-c".into(), "a\nb\tc".into()];
-        assert!(!w
-            .problems(&[])
-            .iter()
-            .any(|p| p.contains("control character")));
+        assert!(
+            !w.problems(&[])
+                .iter()
+                .any(|p| p.contains("control character"))
+        );
     }
 
     #[test]

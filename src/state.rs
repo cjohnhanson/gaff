@@ -28,7 +28,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt as _;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct Store {
     root: PathBuf,
@@ -397,7 +397,10 @@ impl Store {
             return Ok(false);
         }
         std::fs::create_dir_all(self.session_dir(session))?;
-        std::fs::write(self.session_dir(session).join("profile"), format!("{name}\n"))?;
+        std::fs::write(
+            self.session_dir(session).join("profile"),
+            format!("{name}\n"),
+        )?;
         std::fs::write(self.session_dir(session).join("reprime"), "")?;
         Ok(true)
     }
@@ -477,7 +480,11 @@ impl Store {
         let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) else {
             return false;
         };
-        let refused = v.get("refused").and_then(serde_json::Value::as_u64).unwrap_or(0) + 1;
+        let refused = v
+            .get("refused")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            + 1;
         v["refused"] = serde_json::json!(refused);
         let _ = std::fs::write(&path, v.to_string());
         // Spent once the budget is exceeded, not met. `--times 3` means
@@ -518,7 +525,12 @@ impl Store {
     /// Consume the allowance for a named guard, if one is present.
     #[must_use]
     pub fn take_allowance(&self, session: &str, guard: &str) -> bool {
-        std::fs::remove_file(self.session_dir(session).join("allow").join(sanitize(guard))).is_ok()
+        std::fs::remove_file(
+            self.session_dir(session)
+                .join("allow")
+                .join(sanitize(guard)),
+        )
+        .is_ok()
     }
 
     /// The guards this session currently holds an allowance for.
@@ -774,7 +786,10 @@ mod profile_state_tests {
     fn setting_a_profile_arms_one_reprime() {
         let s = store("set");
         assert!(s.profile("x").is_none(), "absent state reads as no profile");
-        assert!(s.set_profile("x", "focus").unwrap(), "the switch changed it");
+        assert!(
+            s.set_profile("x", "focus").unwrap(),
+            "the switch changed it"
+        );
         assert_eq!(s.profile("x").as_deref(), Some("focus"));
         assert!(s.take_reprime("x"), "a switch arms a re-prime");
         assert!(!s.take_reprime("x"), "the marker is consumed once");
@@ -791,7 +806,11 @@ mod profile_state_tests {
         let s = store("log");
         assert!(s.injections("x").is_empty());
         s.record_injection("x", "PostToolBatch", "[gaff:build-clean] keep it green");
-        s.record_injection("x", "SessionStart", "[gaff:prime]\nbody\n\n[gaff:skills] more");
+        s.record_injection(
+            "x",
+            "SessionStart",
+            "[gaff:prime]\nbody\n\n[gaff:skills] more",
+        );
         let lines = s.injections("x");
         assert_eq!(lines.len(), 2, "one line per injection, in order");
         assert_eq!(lines[0]["event"], "PostToolBatch");
@@ -845,7 +864,8 @@ mod hold_tests {
     #[test]
     fn a_hold_survives_until_it_is_released() {
         let s = store("basic");
-        s.write_hold("sess", "intent", "finish the work", None).unwrap();
+        s.write_hold("sess", "intent", "finish the work", None)
+            .unwrap();
         let held = s.holds("sess");
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].id, "intent");
@@ -879,11 +899,15 @@ mod hold_tests {
     fn a_budgeted_hold_spends_itself() {
         // "Push back this many times, then let me stop."
         let s = store("budget");
-        s.write_hold("sess", "nudge", "are you sure", Some(3)).unwrap();
+        s.write_hold("sess", "nudge", "are you sure", Some(3))
+            .unwrap();
         assert!(!s.refuse_hold("sess", "nudge"), "refusal 1 of 3");
         assert!(!s.refuse_hold("sess", "nudge"), "refusal 2 of 3");
         assert!(!s.refuse_hold("sess", "nudge"), "refusal 3 of 3");
-        assert!(s.refuse_hold("sess", "nudge"), "the fourth stop goes through");
+        assert!(
+            s.refuse_hold("sess", "nudge"),
+            "the fourth stop goes through"
+        );
     }
 
     #[test]
@@ -900,7 +924,8 @@ mod hold_tests {
         // An id arrives from the command line and names a file. A `/`
         // or a `..` in one would put that file somewhere else.
         let s = store("escape");
-        s.write_hold("sess", "../../etc/passwd", "nope", None).unwrap();
+        s.write_hold("sess", "../../etc/passwd", "nope", None)
+            .unwrap();
         let held = s.holds("sess");
         assert_eq!(held.len(), 1);
         assert!(!held[0].id.contains('/'), "{:?}", held[0].id);
@@ -933,15 +958,24 @@ mod allowance_tests {
     fn an_allowance_is_consumed_by_exactly_one_take() {
         let s = store("once");
         s.write_allowance("sess", "no-mass-stage").unwrap();
-        assert!(s.take_allowance("sess", "no-mass-stage"), "the first take succeeds");
-        assert!(!s.take_allowance("sess", "no-mass-stage"), "the second finds nothing");
+        assert!(
+            s.take_allowance("sess", "no-mass-stage"),
+            "the first take succeeds"
+        );
+        assert!(
+            !s.take_allowance("sess", "no-mass-stage"),
+            "the second finds nothing"
+        );
     }
 
     #[test]
     fn an_allowance_names_one_guard() {
         let s = store("named");
         s.write_allowance("sess", "no-mass-stage").unwrap();
-        assert!(!s.take_allowance("sess", "no-commit-all"), "a different guard is not covered");
+        assert!(
+            !s.take_allowance("sess", "no-commit-all"),
+            "a different guard is not covered"
+        );
         assert!(s.take_allowance("sess", "no-mass-stage"));
     }
 
