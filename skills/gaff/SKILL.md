@@ -24,8 +24,9 @@ that matters later but not now:
     gaff remind "check whether the CI run finished" --after 10
 
 The reminder fires once, about 10 counted tool calls later, at the next
-safe injection point. gaff resolves the session from
-CLAUDE_CODE_SESSION_ID. Use the command when you start something slow,
+safe injection point. gaff resolves the session from --session, then
+GAFF_SESSION_ID, then the host's own variable (CLAUDE_CODE_SESSION_ID
+under Claude Code). Use the command when you start something slow,
 such as CI, a build, or a deploy. Use it when you defer a cleanup. Use it
 when a task has a step you may forget under context pressure.
 
@@ -35,7 +36,7 @@ erased what the reminder told you.
 
 ## See what gaff injected
 
-    gaff log --session $CLAUDE_CODE_SESSION_ID
+    gaff log --session $GAFF_SESSION_ID   # or the host's variable, e.g. $CLAUDE_CODE_SESSION_ID
 
 One line per delivered flush, with the event, the byte count, and the
 entry names. Read this when a reminder seems to have fired at the wrong
@@ -43,7 +44,7 @@ time, or when you want to know what is consuming your context.
 
 ## Inspect state
 
-    gaff status --session $CLAUDE_CODE_SESSION_ID
+    gaff status --session $GAFF_SESSION_ID   # or the host's variable, e.g. $CLAUDE_CODE_SESSION_ID
 
 The command prints JSON: `tool_calls`, `prompts`, `pending` (the armed
 recurring entries), and `oneshots` (with their `fired` flags).

@@ -1,7 +1,8 @@
 doc: |
   Sessions isolate. The same tool_use_id counts in each of two sessions.
-  gaff remind resolves its session from --session or
-  CLAUDE_CODE_SESSION_ID. It refuses when neither exists.
+  gaff remind resolves its session from --session, then GAFF_SESSION_ID,
+  then the host's own variable (CLAUDE_CODE_SESSION_ID for Claude Code).
+  It refuses when none exists.
 transitions:
   - name: "two sessions, two ledgers, remind targets the right one"
     command: |
@@ -14,7 +15,9 @@ transitions:
       gaff remind "no home" --after 1 >/dev/null 2>&1; c=$?
       [ "$c" -eq 1 ] || { echo "FAIL: sessionless remind exit $c"; exit 1; }
       gaff remind "check the deploy" --after 1 --id deploy --session s-b || { echo "FAIL: remind s-b"; exit 1; }
-      CLAUDE_CODE_SESSION_ID=s-a gaff remind "env resolved" --after 5 --id envtest || { echo "FAIL: remind env"; exit 1; }
+      CLAUDE_CODE_SESSION_ID=s-a gaff remind "env resolved" --after 5 --id envtest || { echo "FAIL: remind host env"; exit 1; }
+      GAFF_SESSION_ID=s-a gaff remind "env resolved" --after 5 --id envtest2 || { echo "FAIL: remind gaff env"; exit 1; }
+      gaff remind "no session" --after 1 2>&1 | grep -q 'GAFF_SESSION_ID' || { echo "FAIL: the message names the variables"; exit 1; }
       A=$(gaff status --session s-a | jq -r '.tool_calls'); B=$(gaff status --session s-b | jq -r '.tool_calls')
       [ "$A" = "1" ] && [ "$B" = "1" ] || { echo "FAIL: counts a=$A b=$B"; exit 1; }
       echo SESSIONS_OK
