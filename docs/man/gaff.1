@@ -131,9 +131,9 @@ load, no declared workflow may drift, then each hook's entries run,
 pre-commit then pre-push, with a synthesized push on stdin for the
 latter.
 A requested hook with no entry fails the run.
-.It Cm reviews
-Print the reviews a change must pass, one to a line, in declaration
-order.
+.It Cm reviews Op Cm check Op Fl -head Ar sha
+With no argument, print the reviews a change must pass, one to a line,
+in declaration order.
 A merge gate reads the list from here rather than from the config file,
 so a format change cannot break the gate silently.
 Where the repository config holds no
@@ -147,6 +147,32 @@ any.
 The user config and the repository config both contribute names, and
 neither drops a name from the other.
 A user config cannot state the policy for a repository that omits one.
+.Pp
+.Cm reviews check
+reads git's pre-push ref lines on standard input and refuses a push
+whose tips carry no sign-off for every declared review.
+A sign-off is one line of the tip's
+.Ql reviews
+git note, reading
+.Ql signoff[NAME] PASS SHA EVIDENCE .
+Prose around the lines is ignored.
+The sha names the commit the reviewer read, so a sign-off cannot carry
+forward onto a commit nobody read.
+Six faults refuse a push: a declared review with no sign-off, a verdict
+of
+.Ql FAIL ,
+a sign-off naming another commit, two sign-offs for one review,
+evidence under three words, and no note at all.
+.Pp
+.Fl -head Ar sha
+names the reviewed commit for a pull-request event, whose checkout is a
+merge commit no reviewer saw.
+Only
+.Cm ci
+passes it.
+It is an argument rather than an environment variable because a
+pre-push hook takes its argv from the committed config, which a shell
+cannot add to.
 .It Cm docs Op Ar page
 Print the bundled documentation.
 Without
@@ -261,5 +287,5 @@ A git hook exists to block, so
 .Cm githook
 returns the exit code of the command that failed.
 .Sh SEE ALSO
-.Xr tisket 1 ,
-.Xr missouri 1
+.Xr missouri 1 ,
+.Xr tisket 1
