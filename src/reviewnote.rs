@@ -53,30 +53,155 @@ pub fn parse_refs(stdin: &str) -> Vec<PushedRef> {
 pub enum Missing {
     /// No note at all on the commit.
     Note,
-    /// A note exists and does not name these declared reviews.
+    /// No sign-off line for these declared reviews.
     Reviews(Vec<String>),
+    /// A review signed off as failed. Naming it is the point.
+    Failed(Vec<String>),
+    /// A sign-off names a different commit than the one being pushed.
+    WrongCommit { review: String, named: String },
+    /// Two sign-off lines for one review. Which one counts is unclear,
+    /// so neither does.
+    Duplicate(String),
+    /// Evidence under the floor. A script cannot grade evidence. It can
+    /// refuse a keystroke.
+    ThinEvidence { review: String, words: usize },
 }
 
-/// Check one note body against the declared review names.
+/// The fewest words of evidence a sign-off may carry.
 ///
-/// The match is case-insensitive and by substring, because a note is
-/// prose. `None` means the tip passes.
+/// A floor, not a judgment. A script cannot tell a real reason from a
+/// plausible one, so it refuses only the case where nobody tried.
+const EVIDENCE_FLOOR: usize = 3;
+
+/// One parsed sign-off line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signoff {
+    pub review: String,
+    pub passed: bool,
+    pub commit: String,
+    pub evidence_words: usize,
+}
+
+/// Read the sign-off lines out of a note body.
+///
+/// The form is one line, anchored at the start of a line:
+///
+/// ```text
+/// signoff[fresh-eyes] PASS 4f1c2ab removed the guard and walk_up went red
+/// ```
+///
+/// Prose around the lines is ignored, so a note can carry a narrative.
+/// A line that does not parse is not a sign-off and is ignored, which
+/// leaves its review unsigned rather than silently accepted.
 #[must_use]
-pub fn shortfall(note: Option<&str>, required: &[String]) -> Option<Missing> {
-    let Some(note) = note else {
-        return Some(Missing::Note);
-    };
-    let lower = note.to_lowercase();
-    let absent: Vec<String> = required
-        .iter()
-        .filter(|name| !lower.contains(&name.to_lowercase()))
-        .cloned()
-        .collect();
-    if absent.is_empty() {
-        None
-    } else {
-        Some(Missing::Reviews(absent))
+pub fn parse_signoffs(note: &str) -> Vec<Signoff> {
+    note.lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("signoff[")?;
+            let close = rest.find(']')?;
+            let review = rest[..close].to_string();
+            if review.is_empty() {
+                return None;
+            }
+            let mut f = rest[close + 1..].split_whitespace();
+            let verdict = f.next()?;
+            let passed = match verdict {
+                "PASS" => true,
+                "FAIL" => false,
+                _ => return None,
+            };
+            let commit = f.next()?.to_string();
+            Some(Signoff {
+                review,
+                passed,
+                commit,
+                evidence_words: f.count(),
+            })
+        })
+        .collect()
+}
+
+/// Check a note against the declared reviews, for one commit.
+///
+/// Every declared review needs one sign-off line that passed, names
+/// this commit, and carries evidence.
+///
+/// Substring matching was the first design and it is unsound. A note
+/// reading `mutation: skipped this round` contains `mutation`, and a
+/// note reading `fresh-eyes: FAILED, do not merge` contains
+/// `fresh-eyes`. Prose about a review reads exactly like a record of
+/// one, so the line form carries a verdict instead.
+///
+/// The commit binding matters most. Without it a sign-off copies
+/// forward onto a later commit nobody read, and nothing says so.
+///
+/// An empty policy passes every tip. A repo writing `reviews: []` has
+/// stated that it requires no review. An absent declaration never
+/// reaches here: the caller refuses it, because no policy must not
+/// read as no review required.
+#[must_use]
+pub fn shortfall(note: Option<&str>, required: &[String], commit: &str) -> Vec<Missing> {
+    if required.is_empty() {
+        return Vec::new();
     }
+    let Some(note) = note else {
+        return vec![Missing::Note];
+    };
+    let signoffs = parse_signoffs(note);
+    let mut faults = Vec::new();
+    let mut unsigned = Vec::new();
+
+    for name in required {
+        let mine: Vec<&Signoff> = signoffs.iter().filter(|s| &s.review == name).collect();
+        match mine.len() {
+            0 => {
+                unsigned.push(name.clone());
+                continue;
+            }
+            1 => {}
+            _ => {
+                faults.push(Missing::Duplicate(name.clone()));
+                continue;
+            }
+        }
+        let s = mine[0];
+        if !s.passed {
+            faults.push(Missing::Failed(vec![name.clone()]));
+            continue;
+        }
+        // A short sha is what a person writes, so match either way.
+        if !commit.starts_with(&s.commit) && !s.commit.starts_with(commit) {
+            faults.push(Missing::WrongCommit {
+                review: name.clone(),
+                named: s.commit.clone(),
+            });
+            continue;
+        }
+        if s.evidence_words < EVIDENCE_FLOOR {
+            faults.push(Missing::ThinEvidence {
+                review: name.clone(),
+                words: s.evidence_words,
+            });
+        }
+    }
+
+    // A FAIL on a review the policy does not require still refuses the
+    // push. A reviewer who wrote one meant it.
+    let mut failed_extra: Vec<String> = signoffs
+        .iter()
+        .filter(|s| !s.passed && !required.contains(&s.review))
+        .map(|s| s.review.clone())
+        .collect();
+    failed_extra.sort();
+    failed_extra.dedup();
+    if !failed_extra.is_empty() {
+        faults.push(Missing::Failed(failed_extra));
+    }
+
+    if !unsigned.is_empty() {
+        faults.insert(0, Missing::Reviews(unsigned));
+    }
+    faults
 }
 
 /// The commit a pull request proposes, read from the event payload.
@@ -161,7 +286,7 @@ fn peel(cwd: &std::path::Path, sha: &str) -> String {
 pub struct Verdict {
     pub commit: String,
     pub remote_ref: String,
-    pub missing: Option<Missing>,
+    pub faults: Vec<Missing>,
 }
 
 /// Check every pushed tip against the declared reviews.
@@ -191,7 +316,7 @@ pub fn check(
             let commit = peel(cwd, &r.local_sha);
             let note = note_body(cwd, &commit);
             Verdict {
-                missing: shortfall(note.as_deref(), required),
+                faults: shortfall(note.as_deref(), required, &commit),
                 commit,
                 remote_ref: r.remote_ref.clone(),
             }
@@ -205,6 +330,12 @@ mod tests {
 
     fn req(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    const SHA: &str = "4f1c2ab9d0e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9";
+
+    fn ok_line(review: &str) -> String {
+        format!("signoff[{review}] PASS {SHA} removed the guard and the named test went red\n")
     }
 
     #[test]
@@ -236,40 +367,146 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_note_is_a_shortfall() {
+    fn a_missing_note_is_a_fault() {
         assert_eq!(
-            shortfall(None, &req(["fresh-eyes"].as_slice())),
-            Some(Missing::Note)
+            shortfall(None, &req(&["fresh-eyes"]), SHA),
+            vec![Missing::Note]
         );
     }
 
     #[test]
-    fn a_note_naming_every_review_passes() {
-        let note = "fresh-eyes: a reviewer read it. Mutation: guard removed, test red.";
+    fn a_signed_off_note_passes() {
+        let note = ok_line("fresh-eyes") + &ok_line("mutation");
+        assert!(shortfall(Some(&note), &req(&["fresh-eyes", "mutation"]), SHA).is_empty());
+    }
+
+    #[test]
+    fn prose_around_the_lines_is_ignored() {
+        let note = format!(
+            "A reviewer read the change.\n\n{}\nNotes follow.\n",
+            ok_line("fresh-eyes")
+        );
+        assert!(shortfall(Some(&note), &req(&["fresh-eyes"]), SHA).is_empty());
+    }
+
+    #[test]
+    fn prose_naming_a_review_does_not_sign_it_off() {
+        // The substring design passed this. A note about a review reads
+        // exactly like a record of one.
+        let note = "mutation: skipped this round, see the ticket\n";
         assert_eq!(
-            shortfall(Some(note), &req(&["fresh-eyes", "mutation"])),
-            None
+            shortfall(Some(note), &req(&["mutation"]), SHA),
+            vec![Missing::Reviews(req(&["mutation"]))]
         );
     }
 
     #[test]
-    fn a_note_missing_one_review_names_it() {
-        let note = "fresh-eyes: a reviewer read it.";
+    fn a_failed_signoff_refuses_the_push() {
+        let note = format!("signoff[fresh-eyes] FAIL {SHA} the guard has no test\n");
         assert_eq!(
-            shortfall(Some(note), &req(&["fresh-eyes", "mutation"])),
-            Some(Missing::Reviews(req(&["mutation"])))
+            shortfall(Some(&note), &req(&["fresh-eyes"]), SHA),
+            vec![Missing::Failed(req(&["fresh-eyes"]))]
         );
     }
 
     #[test]
-    fn an_empty_policy_accepts_any_note() {
-        // `reviews: []` states that an author chose no required review.
-        assert_eq!(shortfall(Some("anything"), &[]), None);
+    fn a_failed_signoff_for_an_undeclared_review_still_refuses() {
+        // A reviewer who wrote FAIL meant it, whatever the policy lists.
+        let note =
+            ok_line("fresh-eyes") + &format!("signoff[security] FAIL {SHA} a hole is open\n");
+        assert_eq!(
+            shortfall(Some(&note), &req(&["fresh-eyes"]), SHA),
+            vec![Missing::Failed(req(&["security"]))]
+        );
     }
 
     #[test]
-    fn an_empty_policy_still_requires_a_note() {
-        assert_eq!(shortfall(None, &[]), Some(Missing::Note));
+    fn a_signoff_naming_another_commit_is_refused() {
+        // Without this a sign-off copies forward onto a commit nobody
+        // read, and nothing says so.
+        let other = "0000000000000000000000000000000000000001";
+        let note = format!("signoff[fresh-eyes] PASS {other} read it closely enough\n");
+        assert_eq!(
+            shortfall(Some(&note), &req(&["fresh-eyes"]), SHA),
+            vec![Missing::WrongCommit {
+                review: "fresh-eyes".to_string(),
+                named: other.to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_short_sha_matches_the_commit() {
+        let note = format!(
+            "signoff[fresh-eyes] PASS {} read it closely enough\n",
+            &SHA[..7]
+        );
+        assert!(shortfall(Some(&note), &req(&["fresh-eyes"]), SHA).is_empty());
+    }
+
+    #[test]
+    fn two_signoffs_for_one_review_are_refused() {
+        let note = ok_line("fresh-eyes") + &ok_line("fresh-eyes");
+        assert_eq!(
+            shortfall(Some(&note), &req(&["fresh-eyes"]), SHA),
+            vec![Missing::Duplicate("fresh-eyes".to_string())]
+        );
+    }
+
+    #[test]
+    fn evidence_under_the_floor_is_refused() {
+        let note = format!("signoff[fresh-eyes] PASS {SHA} looked\n");
+        assert_eq!(
+            shortfall(Some(&note), &req(&["fresh-eyes"]), SHA),
+            vec![Missing::ThinEvidence {
+                review: "fresh-eyes".to_string(),
+                words: 1
+            }]
+        );
+    }
+
+    #[test]
+    fn a_line_not_anchored_at_the_start_is_not_a_signoff() {
+        let note = format!("  signoff[fresh-eyes] PASS {SHA} indented so it does not count\n");
+        assert_eq!(
+            shortfall(Some(&note), &req(&["fresh-eyes"]), SHA),
+            vec![Missing::Reviews(req(&["fresh-eyes"]))]
+        );
+    }
+
+    #[test]
+    fn an_unknown_verdict_is_not_a_signoff() {
+        let note = format!("signoff[fresh-eyes] MAYBE {SHA} not a verdict\n");
+        assert_eq!(
+            shortfall(Some(&note), &req(&["fresh-eyes"]), SHA),
+            vec![Missing::Reviews(req(&["fresh-eyes"]))]
+        );
+    }
+
+    #[test]
+    fn an_empty_review_name_is_not_a_signoff() {
+        let note = format!("signoff[] PASS {SHA} names no review\n");
+        assert!(parse_signoffs(&note).is_empty());
+    }
+
+    #[test]
+    fn an_empty_policy_requires_no_note() {
+        // `reviews: []` states that a repo requires no review. An absent
+        // declaration is a different thing and the caller refuses it.
+        assert!(shortfall(None, &[], SHA).is_empty());
+    }
+
+    #[test]
+    fn every_unsigned_review_is_named_at_once() {
+        let note = ok_line("fresh-eyes");
+        assert_eq!(
+            shortfall(
+                Some(&note),
+                &req(&["fresh-eyes", "mutation", "security"]),
+                SHA
+            ),
+            vec![Missing::Reviews(req(&["mutation", "security"]))]
+        );
     }
 
     #[test]
@@ -288,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_sha_is_refused() {
+    fn a_short_sha_in_a_payload_is_refused() {
         let body = r#"{"pull_request":{"head":{"sha":"abc"}}}"#;
         assert_eq!(head_sha_from_event(body), None);
     }
