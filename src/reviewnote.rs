@@ -210,9 +210,16 @@ pub fn shortfall(note: Option<&str>, required: &[String], commit: &str) -> Vec<M
 /// No reviewer saw that commit, so checking it would refuse every pull
 /// request. The branch head is what a reviewer read.
 ///
-/// Both variables come from the runner. A local shell that sets one
-/// still faces the ordinary check, so a single variable cannot turn
-/// the review requirement off.
+/// THE ENVIRONMENT DOES NOT REACH THIS. An earlier version keyed the
+/// override on `GITHUB_ACTIONS`, `GITHUB_EVENT_NAME` and
+/// `GITHUB_EVENT_PATH`. Those are ordinary variables, and nothing
+/// tells a runner from a shell, so setting all three and writing a
+/// payload file pushed an unreviewed commit past the gate. A reviewer
+/// reproduced it against a bare remote.
+///
+/// Only `gaff ci` calls this, and it passes what it read to
+/// `reviews check --head`. A pre-push hook takes its argv from the
+/// committed config, so no shell variable can introduce the override.
 #[must_use]
 pub fn pull_request_head(env: &dyn Fn(&str) -> Option<String>) -> Option<Result<String, String>> {
     if env("GITHUB_ACTIONS").as_deref() != Some("true")
@@ -231,17 +238,15 @@ pub fn pull_request_head(env: &dyn Fn(&str) -> Option<String>) -> Option<Result<
 
 /// Pull `.pull_request.head.sha` out of an event payload.
 ///
-/// A payload holds many sha fields, so the first one found is the
-/// wrong answer. This walks to the head object before reading.
+/// Parsed, not searched. String searching walked to the first `"sha"`
+/// after the first `"head"`, which is a different key whenever the
+/// payload nests one, and fell through to `base.sha` when `head.sha`
+/// was absent. Each wrong answer names a commit that is already
+/// reviewed, so the check passed.
 #[must_use]
 pub fn head_sha_from_event(body: &str) -> Option<String> {
-    let pr = body.find("\"pull_request\"")?;
-    let head = body[pr..].find("\"head\"")? + pr;
-    let sha_key = body[head..].find("\"sha\"")? + head;
-    let rest = &body[sha_key + 5..];
-    let open = rest.find('"')? + 1;
-    let close = rest[open..].find('"')? + open;
-    let sha = &rest[open..close];
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let sha = v.get("pull_request")?.get("head")?.get("sha")?.as_str()?;
     if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
         Some(sha.to_string())
     } else {
@@ -517,6 +522,30 @@ mod tests {
             head_sha_from_event(body).as_deref(),
             Some("2222222222222222222222222222222222222222")
         );
+    }
+
+    #[test]
+    fn a_nested_head_object_does_not_win_over_the_real_one() {
+        // The string search walked to the first "sha" after the first
+        // "head", so a nested object took the answer.
+        let body = r#"{"pull_request":{"head":{"repo":{"sha":"1111111111111111111111111111111111111111"},"sha":"2222222222222222222222222222222222222222"}}}"#;
+        assert_eq!(
+            head_sha_from_event(body).as_deref(),
+            Some("2222222222222222222222222222222222222222")
+        );
+    }
+
+    #[test]
+    fn an_absent_head_sha_does_not_fall_through_to_base() {
+        // The search fell through to base.sha, which names a commit
+        // that is already reviewed, so the check passed.
+        let body = r#"{"pull_request":{"base":{"sha":"1111111111111111111111111111111111111111"},"head":{}}}"#;
+        assert_eq!(head_sha_from_event(body), None);
+    }
+
+    #[test]
+    fn malformed_json_names_no_head() {
+        assert_eq!(head_sha_from_event("not json at all"), None);
     }
 
     #[test]
