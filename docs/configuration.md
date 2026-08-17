@@ -38,9 +38,9 @@ keeping the user's label on it.
 - `default_profile` takes the repo value, unless it names a profile the
   user declared. The same holds for a committed `.gaff/profile`. A repo
   may select its own profiles, not the user's.
-- A repo profile filters and retimes the repo's own entries. Its `only`,
-  `disable`, `cadence`, and `max_inject_bytes` do not reach a user
-  entry.
+- A repo profile governs the repo's own entries. It runs with `base:
+  true` forced, its `disable` reaches only its own names, and it carries
+  no guard and no stop rule. Those block, and a repo may not.
 - `transitions`: the user value wins whenever the user sets one. That
   field says which profiles an agent may grant itself, and a repo must
   never widen it.
@@ -85,39 +85,78 @@ crosses, at the next safe injection point.
 
 ## Profiles
 
-A profile is a named overlay on the entries the config already
-declares. A profile never adds an entry. It selects from the declared
-entries and may override their cadences, so one file still states
-everything a repo can inject.
+A profile is a named bundle. It declares its own sections, reminders,
+guards, and stop rule. The effective config for a session is the base
+entries plus the active bundle. A bundle's handlers live in
+`handlers.yml` under its own `profiles` map, because a command comes
+only from that one owner-only file.
 
 ```yaml
 profiles:
-  focus:
-    only: [build-clean]        # keep only these entries
-    cadence:
-      build-clean: {tool_calls: 2}   # override the cadence
-  quiet:
-    disable: [chatty]          # drop these entries
-    max_inject_bytes: 512      # a tighter cap under this profile
-default_profile: focus
+  reviewer:
+    base: false                # deliver only this bundle's entries
+    sections:
+      - name: review-brief
+        file: sections/review-brief.md
+    reminders:
+      - name: cite
+        every: {tool_calls: 10}
+        text: Cite file and line.
+    guards:
+      - name: read-only
+        tool: Bash
+        matches: 'rm\s+-rf'
+        message: This session reads and reports.
+    stop:
+      hold: Append findings to the scratch first.
+      times: 2
+    max_inject_bytes: 65536
+default_profile: null
 transitions:
-  agent_may_set: [focus]       # every other profile is human-only
+  agent_may_set: [reviewer]    # every other profile is human-only
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `only` | every entry | Keep only the named entries |
-| `disable` | `[]` | Drop the named entries; applied after `only` |
-| `cadence` | `{}` | Cadence overrides, keyed by entry name |
+| `base` | `true` | When false, deliver only the bundle's sections and reminders, not the base ones. Guards always compose regardless. |
+| `sections` | `[]` | The bundle's own sections |
+| `reminders` | `[]` | The bundle's own reminders |
+| `guards` | `[]` | The bundle's own guards; user layer only |
+| `stop` | none | A `hold` text and optional `times`; user layer only |
+| `disable` | `[]` | Drop these base entries when `base` is true |
 | `max_inject_bytes` | the base cap | The cap under this profile |
+
+How the entries compose:
+
+- Guards always compose, base plus bundle. No profile removes a base
+  guard.
+- Sections and reminders compose base plus bundle when `base` is true,
+  and deliver the bundle's alone when `base` is false. A bundle entry
+  comes before the base entries of its kind, so the reason the profile
+  exists spends the byte cap and the session-start budget first.
+- A bundle entry that takes a base entry's name of the same kind
+  replaces it. This is how a bundle retimes a base reminder.
+- A bundle's `stop` rule becomes a hold the first time the session
+  stops under it, under the id `profile-<name>`. `gaff remind --clear
+  --id profile-<name>` releases it, and a compaction does not re-arm a
+  released hold.
 
 The resolution path is `GAFF_PROFILE`, then the session state, then a
 `.gaff/profile` file, then `default_profile`. The first hit wins. An
 unknown name applies nothing and warns, because a typo must never
-silently empty the config.
+silently empty the config. `GAFF_PROFILE` cannot select a bundle that
+carries guards or a stop rule unless `transitions.agent_may_set` names
+it, because that channel is not a trusted one. A hook agent selects a
+child's bundle by writing session state before the spawn.
 
 A switch re-primes: the next flush delivers every section rather than
 wait for each refresh cadence.
+
+The keys `only` and `cadence` are removed. `base: false` plus the
+bundle's own declarations replace `only`, and a bundle entry that
+shadows a base entry by name replaces `cadence`. A config that still
+carries either key drops that one profile with a migration line, and
+`gaff check` fails on it.
 
 ### The transition policy
 
@@ -272,6 +311,28 @@ handlers:
 `branch_prefix` reads `.git/HEAD` directly and follows a worktree's
 `gitdir:` file. It never runs `git`, because that would honor the
 repo's own `.git/config`.
+
+### Per-profile handlers
+
+A profile's handlers live in `handlers.yml` under a `profiles` map,
+keyed by profile name. A command stays in this one owner-only file,
+never in `gaff.yml`. The active profile's handlers run first, then the
+base handlers.
+
+```yaml
+handlers:
+  - name: ci                    # base: active under every profile
+    events: [session_start]
+    every: {tool_calls: 20}
+    command: ["/opt/homebrew/bin/gh", "run", "list", "--limit", "1"]
+profiles:
+  reviewer:
+    - name: diff
+      events: [session_start]
+      every: {tool_calls: 1}
+      command: ["/usr/bin/git", "diff", "main...HEAD"]
+      max_bytes: 65536
+```
 
 ### What runs, and what that costs you
 
