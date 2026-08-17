@@ -1,0 +1,54 @@
+doc: |
+  gaff ci runs the declared git gates against HEAD the way CI does:
+  config valid, workflows undrifted, then each hook's entries with a
+  synthesized pre-push ref line. A hook with no entry fails the run,
+  because a CI checkout has no installed hook script to refuse for it.
+transitions:
+  - name: "ci runs both hooks with a synthesized push, fails closed, and honors --hook"
+    command: |
+      git init -q -b main . || { echo "FAIL: git init"; exit 1; }
+      git config user.email t@e && git config user.name t
+      git add .gaff && git commit -qm one || { echo "FAIL: commit one"; exit 1; }
+      SHA=$(git rev-parse HEAD)
+
+      # The workflow must exist and match, or ci refuses before any hook.
+      if gaff ci > /dev/null 2>&1; then echo "FAIL: ci passed with the workflow missing"; exit 1; fi
+      gaff init --github > /dev/null 2>&1 || { echo "FAIL: init --github"; exit 1; }
+      grep -q "uses: 'cjohnhanson/gaff@main'" .github/workflows/gate.yml || { echo "FAIL: uses step not rendered"; exit 1; }
+      grep -q "'ref': 'main'" .github/workflows/gate.yml || { echo "FAIL: with not rendered"; exit 1; }
+      git add .github && git commit -qm wf || { echo "FAIL: commit wf"; exit 1; }
+      SHA=$(git rev-parse HEAD)
+
+      gaff ci > ci.log 2>&1 || { echo "FAIL: ci"; cat ci.log; exit 1; }
+      test "$(cat marker)" = "committed" || { echo "FAIL: pre-commit entry did not run"; exit 1; }
+      test "$(cat refs.txt)" = "refs/heads/main $SHA refs/heads/main 0000000000000000000000000000000000000000" || { echo "FAIL: ref line: $(cat refs.txt)"; exit 1; }
+      test "$(cat args.txt)" = "origin " || { echo "FAIL: args: $(cat args.txt)"; exit 1; }
+
+      # GITHUB_REF names the branch under build; GITHUB_SHA that differs is only a warning.
+      rm -f refs.txt
+      GITHUB_REF=refs/heads/feature GITHUB_SHA=0000000000000000000000000000000000000001 gaff ci --hook pre-push > ci2.log 2>&1 || { echo "FAIL: ci with GITHUB_REF"; cat ci2.log; exit 1; }
+      grep -q "refs/heads/feature $SHA" refs.txt || { echo "FAIL: GITHUB_REF not used: $(cat refs.txt)"; exit 1; }
+      grep -q "testing HEAD" ci2.log || { echo "FAIL: no GITHUB_SHA mismatch warning"; exit 1; }
+
+      # --hook pre-commit only: the pre-push entry does not run.
+      rm -f marker refs.txt
+      gaff ci --hook pre-commit > /dev/null 2>&1 || { echo "FAIL: --hook pre-commit"; exit 1; }
+      test -f marker || { echo "FAIL: pre-commit did not run"; exit 1; }
+      test ! -f refs.txt || { echo "FAIL: pre-push ran under --hook pre-commit"; exit 1; }
+
+      # A hand-edited workflow drifts and ci refuses.
+      cp .github/workflows/gate.yml wf.bak && printf 'name: edited\n' > .github/workflows/gate.yml
+      if gaff ci > /dev/null 2>&1; then echo "FAIL: ci passed on a drifted workflow"; exit 1; fi
+      cp wf.bak .github/workflows/gate.yml && rm wf.bak
+
+      # Fail closed: a requested hook with no entry.
+      if gaff ci --hook post-commit > /dev/null 2>&1; then echo "FAIL: unknown hook accepted"; exit 1; fi
+      printf 'reminders: []\ngit:\n  - name: mark\n    on: [pre-commit]\n    command: [sh, -c, "true"]\n' > .gaff/gaff.yml
+      if gaff ci > /dev/null 2>&1; then echo "FAIL: ci passed with no pre-push entry"; exit 1; fi
+      gaff ci --hook pre-commit > /dev/null 2>&1 || { echo "FAIL: --hook pre-commit after narrowing"; exit 1; }
+      git checkout -q -- .gaff/gaff.yml
+
+      rm -rf .git .github marker refs.txt args.txt ci.log ci2.log
+      echo CI_OK
+    target: ../ci-ran
+    stdout: "CI_OK\n"

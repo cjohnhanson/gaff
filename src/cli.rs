@@ -44,6 +44,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("githook") => run_githook(&args[1..]),
         Some("log") => run_log(&args[1..]),
         Some("docs") => run_docs(&args[1..]),
+        Some("ci") => run_ci(&args[1..]),
         Some("prime") => {
             print!("{}", prime());
             ExitCode::SUCCESS
@@ -92,6 +93,7 @@ Commands:
   profile          Show, list, or set the active profile
   log              Show the injection audit trail for a session
   docs [page]      Print the bundled documentation
+  ci [--hook H]    Run the declared git gates against HEAD, as CI does
   prime            Print what gaff is and how to use it, for an agent's context
 
 Options:
@@ -106,9 +108,9 @@ command's own code.";
 /// Every command `run` dispatches. The usage test and the prime test
 /// both walk it, so a command that dispatches but is undocumented, or
 /// documented but does not dispatch, fails a test.
-const COMMANDS: [&str; 13] = [
+const COMMANDS: [&str; 14] = [
     "hook", "githook", "remind", "allow", "status", "init", "check", "doctor", "trust", "profile",
-    "log", "docs", "prime",
+    "log", "docs", "prime", "ci",
 ];
 
 /// The prime: what gaff is, for an agent's context.
@@ -1984,4 +1986,245 @@ mod prime_tests {
             }
         }
     }
+}
+
+/// `gaff ci [--hook <name>]...`
+///
+/// Run the repo's declared git gates against HEAD, the way CI runs
+/// them. Three phases, each failing the run: the config must load, no
+/// declared workflow may drift from its committed render, and the git
+/// entries for each requested hook run in declaration order. The
+/// default hook set is pre-commit then pre-push. A requested hook with
+/// no entry fails: a CI checkout has no installed hook scripts, so
+/// without this rule a branch that deletes an entry runs nothing and
+/// lands green.
+fn run_ci(args: &[String]) -> ExitCode {
+    let hooks = match ci_hooks(args) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    let cfg = match ci_config(&cwd) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    ci_phases(&cwd, &cfg, &hooks)
+}
+
+/// The hook set `gaff ci` runs: `--hook` values, else both.
+fn ci_hooks(args: &[String]) -> Result<Vec<String>, ExitCode> {
+    let mut hooks: Vec<String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--hook" => match it.next() {
+                Some(v) if v == "pre-commit" || v == "pre-push" => hooks.push(v.clone()),
+                Some(v) => {
+                    return Err(fail(&format!(
+                        "--hook takes pre-commit or pre-push, not `{v}`; CI cannot synthesize another hook's input"
+                    )));
+                }
+                None => return Err(fail("--hook requires a value")),
+            },
+            other => return Err(fail(&format!("unexpected argument `{other}`"))),
+        }
+    }
+    if hooks.is_empty() {
+        hooks = vec!["pre-commit".to_string(), "pre-push".to_string()];
+    }
+    Ok(hooks)
+}
+
+/// The config `gaff ci` certifies. In CI a partial or missing config
+/// gates nothing, and nothing is exactly what must not pass.
+fn ci_config(cwd: &std::path::Path) -> Result<config::Config, ExitCode> {
+    match config::load_layered(cwd) {
+        Loaded::Ok(cfg) => Ok(cfg),
+        Loaded::Degraded(_) => Err(fail(&format!(
+            "{} could not be read, so the checks it declares cannot run",
+            config::CONFIG_PATH
+        ))),
+        Loaded::Absent => Err(fail(&format!(
+            "no config at {}; a repo with no gates has nothing for ci to certify",
+            config::CONFIG_PATH
+        ))),
+        Loaded::Broken(err) => Err(fail(&err)),
+    }
+}
+
+/// The three phases: declarations valid, workflows undrifted, hooks run.
+fn ci_phases(cwd: &std::path::Path, cfg: &config::Config, hooks: &[String]) -> ExitCode {
+    // Phase 1: the declarations themselves.
+    let mut problems: Vec<String> = cfg
+        .git
+        .iter()
+        .flat_map(crate::githook::GitHook::problems)
+        .collect();
+    for wf in &cfg.github {
+        problems.extend(wf.problems(&cfg.git));
+    }
+    if !problems.is_empty() {
+        for p in &problems {
+            eprintln!("gaff: ci: {p}");
+        }
+        return ExitCode::FAILURE;
+    }
+    // Phase 2: no declared workflow may drift from its committed file.
+    // The required check proving the workflow matches the declaration
+    // is what makes an accidental hand-edit visible.
+    let mut drifted = false;
+    for wf in &cfg.github {
+        match crate::ghworkflow::drift(wf, &cfg.git, cwd) {
+            crate::ghworkflow::Drift::Match => {}
+            crate::ghworkflow::Drift::Missing => {
+                eprintln!(
+                    "gaff: ci: workflow `{}` is declared and its file is missing. Run `gaff init --github`.",
+                    wf.name
+                );
+                drifted = true;
+            }
+            crate::ghworkflow::Drift::Differs => {
+                eprintln!(
+                    "gaff: ci: workflow `{}` differs from its declaration. Run `gaff init --github`, or fix the declaration.",
+                    wf.name
+                );
+                drifted = true;
+            }
+        }
+    }
+    if drifted {
+        return ExitCode::FAILURE;
+    }
+    // Phase 3: the hooks, fail closed.
+    for hook in hooks {
+        let due = cfg.git.iter().filter(|e| e.runs_on(hook)).count();
+        if due == 0 {
+            eprintln!(
+                "gaff: ci: no git entry runs on {hook}, so there is nothing to certify. Declare one, or drop --hook {hook}."
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    let head = match ci_head(cwd) {
+        Ok(h) => h,
+        Err(e) => return fail(&e),
+    };
+    if let Ok(github_sha) = std::env::var("GITHUB_SHA")
+        && !github_sha.is_empty()
+        && github_sha != head.sha
+    {
+        eprintln!(
+            "gaff: ci: testing HEAD {} (the checkout), not GITHUB_SHA {github_sha}",
+            head.sha
+        );
+    }
+    for hook in hooks {
+        let (args, stdin): (Vec<String>, Option<Vec<u8>>) = if hook == "pre-push" {
+            // git's pre-push contract: the remote name and URL as
+            // arguments, and one ref line per push on stdin. The
+            // synthesized local ref is never refs/notes/*, so a
+            // notes exemption in a gate cannot fire here.
+            let line = format!(
+                "{branch} {sha} {branch} 0000000000000000000000000000000000000000\n",
+                branch = head.branch,
+                sha = head.sha
+            );
+            (
+                vec![
+                    "origin".to_string(),
+                    head.origin_url.clone().unwrap_or_default(),
+                ],
+                Some(line.into_bytes()),
+            )
+        } else {
+            (Vec::new(), None)
+        };
+        let code = crate::githook::run_with_stdin(cwd, &cfg.git, hook, &args, stdin.as_deref());
+        if code != 0 {
+            return ExitCode::from(u8::try_from(code.clamp(0, 255)).unwrap_or(1));
+        }
+    }
+    println!("gaff ci: ok");
+    ExitCode::SUCCESS
+}
+
+/// What `gaff ci` knows about HEAD, read from git's files. gaff spawns
+/// no git process, so the sha, the branch, and the origin URL come from
+/// the repository's own files through gix-discover.
+struct CiHead {
+    sha: String,
+    branch: String,
+    origin_url: Option<String>,
+}
+
+fn ci_head(cwd: &std::path::Path) -> Result<CiHead, String> {
+    let (path, _trust) =
+        gix_discover::upwards(cwd).map_err(|e| format!("not a git repository: {e}"))?;
+    let (git_dir, _work_tree) = path.into_repository_and_work_tree_directories();
+    let head_text = std::fs::read_to_string(git_dir.join("HEAD"))
+        .map_err(|e| format!("cannot read HEAD: {e}"))?;
+    let head_text = head_text.trim();
+    let (branch, sha) = if let Some(refname) = head_text.strip_prefix("ref: ") {
+        let sha = resolve_ref(&git_dir, refname.trim())
+            .ok_or_else(|| format!("cannot resolve {refname}"))?;
+        (refname.trim().to_string(), sha)
+    } else {
+        // Detached HEAD holds the sha itself.
+        ("refs/heads/detached".to_string(), head_text.to_string())
+    };
+    // CI knows better than the checkout which branch is being built.
+    let branch = match std::env::var("GITHUB_REF") {
+        Ok(r) if r.starts_with("refs/heads/") => r,
+        _ => branch,
+    };
+    Ok(CiHead {
+        sha,
+        branch,
+        origin_url: origin_url_from_config(&git_dir),
+    })
+}
+
+/// A loose ref file, then packed-refs. Plain file reads; no process.
+fn resolve_ref(git_dir: &std::path::Path, refname: &str) -> Option<String> {
+    // The common dir holds refs for a linked worktree.
+    let common = std::fs::read_to_string(git_dir.join("commondir"))
+        .map_or_else(|_| git_dir.to_path_buf(), |s| git_dir.join(s.trim()));
+    if let Ok(sha) = std::fs::read_to_string(common.join(refname)) {
+        return Some(sha.trim().to_string());
+    }
+    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
+    for line in packed.lines() {
+        if let Some((sha, name)) = line.split_once(' ')
+            && name.trim() == refname
+        {
+            return Some(sha.trim().to_string());
+        }
+    }
+    None
+}
+
+/// `remote.origin.url` from the repo config file. A minimal scan: the
+/// `[remote "origin"]` section's `url =` line. Enough for the argument
+/// git would pass a pre-push hook; a repo with no remote passes none.
+fn origin_url_from_config(git_dir: &std::path::Path) -> Option<String> {
+    let common = std::fs::read_to_string(git_dir.join("commondir"))
+        .map_or_else(|_| git_dir.to_path_buf(), |s| git_dir.join(s.trim()));
+    let text = std::fs::read_to_string(common.join("config")).ok()?;
+    let mut in_origin = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_origin = line == "[remote \"origin\"]";
+            continue;
+        }
+        if in_origin
+            && let Some(rest) = line.strip_prefix("url")
+            && let Some(url) = rest.trim_start().strip_prefix('=')
+        {
+            return Some(url.trim().to_string());
+        }
+    }
+    None
 }

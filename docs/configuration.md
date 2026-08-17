@@ -518,6 +518,10 @@ github:
       - use_git: fmt          # reuse the git entry's command
       - name: audit
         command: ["cargo", "audit"]
+      - name: install missouri
+        uses: cjohnhanson/missouri@main   # a GitHub action
+        with:
+          ref: main
 ```
 
 `gaff init --github` renders each workflow to
@@ -531,7 +535,7 @@ can run it.
 | `on` | required | The triggering events |
 | `branches` | none | Restrict a `push` or `pull_request` trigger |
 | `runs_on` | `ubuntu-latest` | The runner |
-| `steps` | required | Each step carries `command` or `use_git` |
+| `steps` | required | Each step carries `command`, `use_git`, or `uses` (with optional `with` inputs, rendered in sorted key order) |
 
 gaff renders `push`, `pull_request`, `merge_group`,
 `workflow_dispatch`, `schedule`, and `release`.
@@ -542,6 +546,29 @@ gaff renders `push`, `pull_request`, `merge_group`,
 the workflow. A check then runs in the git hook and in CI from a single
 declaration. Change the command in one place, run `gaff init --github`,
 and the workflow follows.
+
+### The gates in CI: `gaff ci`
+
+`gaff ci` runs the repo's declared git gates against HEAD, the way CI
+must run them. It has three phases, and each one fails the run. The
+config must load. No declared workflow may drift from its committed
+file. Then the git entries for each requested hook run in declaration
+order: `pre-commit`, then `pre-push`, or the set `--hook` names. A
+requested hook with no entry fails the run: a CI checkout has no
+installed hook script, so without that rule a branch that deletes an
+entry runs nothing and lands green.
+
+For `pre-push`, gaff synthesizes what git would send: `origin` and the
+origin URL as arguments, and one ref line on stdin,
+`refs/heads/<branch> <sha> refs/heads/<branch> <zero-sha>`. The sha is
+HEAD's; the branch is `GITHUB_REF` when it names a branch, else the
+checkout's branch, else `refs/heads/detached`. `GITHUB_SHA` never
+changes what is tested; a mismatch prints a warning.
+
+The gaff repository publishes a composite action, `cjohnhanson/gaff`,
+that installs gaff and runs `gaff ci`. The workflow that gates these
+repositories is one `uses:` step, generated from the same declaration
+as the hooks, so hooks and CI cannot drift apart.
 
 The render is deterministic, so regenerating an unchanged config
 produces identical bytes and no diff.

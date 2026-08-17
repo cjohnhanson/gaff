@@ -1,0 +1,5 @@
+doc: |
+  The transition removes its repo, so only the config remains.
+assertions:
+  - name: "the declarations are still there"
+    command: "grep -q 'name: gate' .gaff/gaff.yml && grep -q refs .gaff/gaff.yml"

@@ -1,0 +1,28 @@
+reminders: []
+git:
+  - name: mark
+    on:
+      - pre-commit
+    command:
+      - sh
+      - -c
+      - "echo committed > marker"
+  - name: refs
+    on:
+      - pre-push
+    command:
+      - sh
+      - -c
+      - "cat > refs.txt; echo \"$1 $2\" > args.txt"
+      - x
+github:
+  - name: gate
+    on:
+      - push
+    steps:
+      - name: install missouri
+        uses: cjohnhanson/missouri@main
+      - name: gaff
+        uses: cjohnhanson/gaff@main
+        with:
+          ref: main

@@ -43,7 +43,7 @@ fn default_runner() -> String {
 }
 
 /// One step. It carries a command, or it names a git entry to reuse.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
     #[serde(default)]
@@ -56,6 +56,15 @@ pub struct Step {
     /// twice.
     #[serde(default)]
     pub use_git: Option<String>,
+    /// A GitHub action to run, as `owner/repo@ref`. The one step kind
+    /// gaff cannot express as a command: provisioning a binary through
+    /// another repository's action.
+    #[serde(default)]
+    pub uses: Option<String>,
+    /// Inputs for `uses`. A map, rendered in sorted key order so the
+    /// render is deterministic; GitHub reads no meaning into the order.
+    #[serde(default)]
+    pub with: std::collections::BTreeMap<String, String>,
 }
 
 /// The events gaff knows how to render a trigger for.
@@ -168,6 +177,38 @@ impl Workflow {
     fn step_problems(&self, git: &[crate::githook::GitHook]) -> Vec<String> {
         let mut out = Vec::new();
         for step in &self.steps {
+            if let Some(action) = &step.uses {
+                if step.use_git.is_some() || !step.command.is_empty() {
+                    out.push(format!(
+                        "workflow `{}`: a step sets `uses` together with `command` or `use_git`",
+                        self.name
+                    ));
+                }
+                if action.is_empty() || action.chars().any(|c| is_yaml_control(c) || c == '\n') {
+                    out.push(format!(
+                        "workflow `{}`: a `uses` value is empty or holds a control character",
+                        self.name
+                    ));
+                }
+                for (k, v) in &step.with {
+                    if k.is_empty()
+                        || k.chars().any(|c| is_yaml_control(c) || c == '\n')
+                        || v.chars().any(|c| is_yaml_control(c) || c == '\n')
+                    {
+                        out.push(format!(
+                            "workflow `{}`: a `with` key or value is empty or holds a control character",
+                            self.name
+                        ));
+                    }
+                }
+                continue;
+            }
+            if !step.with.is_empty() {
+                out.push(format!(
+                    "workflow `{}`: `with` applies to a `uses` step only",
+                    self.name
+                ));
+            }
             match (&step.use_git, step.command.is_empty()) {
                 (Some(name), true) => match git
                     .iter()
@@ -296,6 +337,22 @@ pub fn render(wf: &Workflow, git: &[crate::githook::GitHook]) -> String {
     );
 
     for step in &wf.steps {
+        if let Some(action) = &step.uses {
+            let label = step.name.clone().unwrap_or_else(|| action.clone());
+            let _ = write!(
+                out,
+                "      - name: {}\n        uses: {}\n",
+                yaml_scalar(&label),
+                yaml_scalar(action)
+            );
+            if !step.with.is_empty() {
+                out.push_str("        with:\n");
+                for (k, v) in &step.with {
+                    let _ = writeln!(out, "          {}: {}", yaml_scalar(k), yaml_scalar(v));
+                }
+            }
+            continue;
+        }
         let (label, argv) = step.use_git.as_ref().map_or_else(
             || {
                 (
@@ -437,11 +494,13 @@ mod tests {
                     name: None,
                     command: vec![],
                     use_git: Some("fmt".into()),
+                    ..Default::default()
                 },
                 Step {
                     name: Some("test".into()),
                     command: vec!["cargo".into(), "test".into()],
                     use_git: None,
+                    ..Default::default()
                 },
             ],
         }
@@ -501,6 +560,7 @@ mod tests {
             name: Some("s".into()),
             command: vec!["sh".into(), "-c".into(), "echo hi && exit 0".into()],
             use_git: None,
+            ..Default::default()
         }];
         let out = render(&w, &[]);
         assert!(
@@ -518,6 +578,7 @@ mod tests {
             name: Some("fix".into()),
             command: vec!["echo".into(), "fix #123 now".into()],
             use_git: None,
+            ..Default::default()
         }];
         let out = render(&w, &[]);
         assert!(
@@ -529,6 +590,7 @@ mod tests {
             name: Some("multi".into()),
             command: vec!["sh".into(), "-c".into(), "echo a\necho b".into()],
             use_git: None,
+            ..Default::default()
         }];
         let out = render(&w, &[]);
         for line in out
@@ -551,6 +613,7 @@ mod tests {
             name: Some("lint: rust".into()),
             command: vec!["true".into()],
             use_git: None,
+            ..Default::default()
         }];
         assert!(render(&w, &[]).contains("- name: 'lint: rust'"));
         w.steps[0].name = Some("- rm -rf /".into());
@@ -566,6 +629,7 @@ mod tests {
             name: Some("s".into()),
             command: vec!["printf".into(), "\u{1b}[0m done".into()],
             use_git: None,
+            ..Default::default()
         }];
         assert!(
             w.problems(&[])
@@ -683,5 +747,55 @@ mod newline_tests {
             "{:?}",
             w.problems(&[])
         );
+    }
+
+    #[test]
+    fn a_uses_step_renders_with_sorted_inputs_and_rejects_bad_shapes() {
+        let mut w = wf("name: gate\non: [push]\nsteps:\n  - command: [true]\n");
+        w.steps = vec![Step {
+            name: Some("install missouri".into()),
+            uses: Some("cjohnhanson/missouri@main".into()),
+            with: [
+                ("ref".to_string(), "main".to_string()),
+                ("cache".to_string(), "yes".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        }];
+        assert!(w.problems(&[]).is_empty(), "{:?}", w.problems(&[]));
+        let text = render(&w, &[]);
+        assert!(text.contains("      - name: 'install missouri'\n        uses: 'cjohnhanson/missouri@main'\n        with:\n          'cache': 'yes'\n          'ref': 'main'\n"), "{text}");
+        // A label falls back to the action name.
+        w.steps[0].name = None;
+        assert!(render(&w, &[]).contains("- name: 'cjohnhanson/missouri@main'"));
+        // uses with command is refused; with without uses is refused;
+        // a control character is refused.
+        w.steps[0].command = vec!["x".into()];
+        assert!(w.problems(&[]).iter().any(|p| p.contains("together")));
+        w.steps[0].command.clear();
+        w.steps[0].uses = None;
+        assert!(w.problems(&[]).iter().any(|p| p.contains("`with` applies")));
+        w.steps[0].uses = Some("bad\u{7}action".into());
+        assert!(
+            w.problems(&[])
+                .iter()
+                .any(|p| p.contains("control character"))
+        );
+    }
+
+    #[test]
+    fn a_uses_step_parses_from_yaml_and_round_trips_the_drift_check() {
+        let yaml = "name: gate\non: [push]\nsteps:\n  - name: gaff\n    uses: cjohnhanson/gaff@main\n    with:\n      ref: main\n";
+        let w: Workflow = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(w.steps[0].uses.as_deref(), Some("cjohnhanson/gaff@main"));
+        assert_eq!(w.steps[0].with.get("ref").map(String::as_str), Some("main"));
+        let d = std::env::temp_dir().join(format!("gaff-uses-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(w.path(&d).parent().unwrap()).unwrap();
+        std::fs::write(w.path(&d), render(&w, &[])).unwrap();
+        assert!(matches!(drift(&w, &[], &d), Drift::Match));
+        std::fs::write(w.path(&d), "edited\n").unwrap();
+        assert!(matches!(drift(&w, &[], &d), Drift::Differs));
     }
 }

@@ -483,7 +483,31 @@ pub fn run(cwd: &Path, entries: &[GitHook], hook: &str, args: &[String]) -> i32 
     } else {
         None
     };
+    run_due_with_stdin(cwd, &due, hook, args, stdin_bytes.as_deref())
+}
 
+/// Run hook entries with a caller-supplied stdin. `gaff ci` synthesizes
+/// the pre-push ref line, because no push is in flight there; the hook
+/// path reads the real stream in `run`.
+#[must_use]
+pub fn run_with_stdin(
+    cwd: &Path,
+    entries: &[GitHook],
+    hook: &str,
+    args: &[String],
+    stdin_bytes: Option<&[u8]>,
+) -> i32 {
+    let due: Vec<&GitHook> = entries.iter().filter(|e| e.runs_on(hook)).collect();
+    run_due_with_stdin(cwd, &due, hook, args, stdin_bytes)
+}
+
+fn run_due_with_stdin(
+    cwd: &Path,
+    due: &[&GitHook],
+    hook: &str,
+    args: &[String],
+    stdin_bytes: Option<&[u8]>,
+) -> i32 {
     let mut worst = 0;
     for entry in due {
         eprintln!("gaff: {hook}: {}", entry.name);
@@ -497,7 +521,7 @@ pub fn run(cwd: &Path, entries: &[GitHook], hook: &str, args: &[String]) -> i32 
             } else {
                 Stdio::inherit()
             });
-        let code = match spawn_with_stdin(&mut command, stdin_bytes.as_deref()) {
+        let code = match spawn_with_stdin(&mut command, stdin_bytes) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("gaff: {hook}: `{}` did not start: {e}", entry.name);

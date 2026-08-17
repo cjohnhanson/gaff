@@ -125,6 +125,12 @@ would refuse through, once.
 The built-in guard in
 .Cm gaff hook
 refuses this command from an agent; run it from your shell.
+.It Cm ci Op Fl -hook Ar name
+Run the declared git gates against HEAD, as CI does: the config must
+load, no declared workflow may drift, then each hook's entries run,
+pre-commit then pre-push, with a synthesized push on stdin for the
+latter.
+A requested hook with no entry fails the run.
 .It Cm docs Op Ar page
 Print the bundled documentation.
 Without
