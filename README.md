@@ -106,3 +106,15 @@ this. The suite's error-surface path checks that every failure exits 0
 or 1, never the blocking code 2. Exit 2 is reserved for the two places
 that mean it: a guard refusing a tool call, and `gaff githook` relaying
 the failing command's own code.
+
+## Related
+
+- [tisket](https://github.com/cjohnhanson/tisket) — issue tracker. Markdown issues with YAML frontmatter, in the repository
+- [zettel](https://github.com/cjohnhanson/zettel) — zettelkasten notes for a repository
+- [almanac](https://github.com/cjohnhanson/almanac) — agent skill index, over pluggable sources
+- [missouri](https://github.com/cjohnhanson/missouri) — end-to-end tests as directed graphs of filesystem states
+- [mdstore](https://github.com/cjohnhanson/mdstore) — the frontmattered markdown library the other three store documents with
+
+## License
+
+MIT.
