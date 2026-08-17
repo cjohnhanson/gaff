@@ -64,7 +64,7 @@ session, which is worse than no support.
 The CLI lives in `src/cli.rs` inside the library, and `src/main.rs` is a
 shim. That keeps the whole command surface testable in process and
 matches the other tools in this ecosystem (tisket, zettel, almanac,
-belmont).
+missouri).
 
 ## Testing
 
