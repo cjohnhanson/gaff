@@ -96,6 +96,7 @@ Commands:
   docs [page]      Print the bundled documentation
   ci [--hook H]    Run the declared git gates against HEAD, as CI does
   reviews          Print the reviews a change must pass, one to a line
+  reviews check    Refuse a push whose tips name no review (reads stdin)
   prime            Print what gaff is and how to use it, for an agent's context
 
 Options:
@@ -2049,20 +2050,118 @@ fn review_problems(reviews: Option<&[String]>) -> Vec<String> {
     problems
 }
 
-/// `gaff reviews`: print the required reviews, one to a line.
+/// `gaff reviews [check]`: the review policy, and the gate that holds it.
 ///
-/// A merge gate reads the list from here. A gate that parsed the
-/// config file itself would break when the format changes, and it
-/// would then require nothing.
+/// With no argument it prints the required reviews, one to a line. A
+/// merge gate reads the list from here. A gate that parsed the config
+/// file itself would break when the format changes, and it would then
+/// require nothing.
+///
+/// `check` reads git's pre-push ref lines on stdin and refuses a push
+/// whose tips do not name every declared review.
 ///
 /// An absent declaration and an empty one differ. A repo that states
 /// no `reviews:` key gets an error, because no policy must not read as
 /// "no review is required". A repo that writes `reviews: []` succeeds
 /// and prints nothing, because an author chose that.
 fn run_reviews(args: &[String]) -> ExitCode {
-    if let Some(arg) = args.first() {
-        return fail(&format!("unexpected argument `{arg}` (reviews takes none)"));
+    match args.first().map(String::as_str) {
+        None => run_reviews_list(),
+        Some("check") => run_reviews_check(&args[1..]),
+        Some(arg) => fail(&format!(
+            "unexpected argument `{arg}` (reviews takes `check` or nothing)"
+        )),
     }
+}
+
+/// `gaff reviews check`: refuse a push whose tips carry no review note.
+///
+/// Reads git's pre-push ref lines on stdin, so a pre-push hook pipes
+/// its own stdin straight through. Each declared review must be named
+/// in the note on every pushed tip.
+///
+/// The check is a claim check. It cannot verify that a review happened,
+/// only that someone wrote that it did. What it changes is what a
+/// reviewer acting in good faith thinks to do before writing the note.
+fn run_reviews_check(args: &[String]) -> ExitCode {
+    if let Some(arg) = args.first() {
+        return fail(&format!(
+            "unexpected argument `{arg}` (reviews check takes none)"
+        ));
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    let cfg = match ci_config(&cwd) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let Some(required) = cfg.reviews.as_ref() else {
+        return fail(
+            "no reviews are declared in .gaff/gaff.yml. A gate that read this as \"none \
+             required\" would merge an unreviewed change. Write `reviews: []` there to state \
+             that none are required, or list the reviews a change must pass.",
+        );
+    };
+
+    let mut stdin = String::new();
+    if std::io::stdin().read_to_string(&mut stdin).is_err() {
+        return fail("cannot read the pushed refs from stdin");
+    }
+    let refs = crate::reviewnote::parse_refs(&stdin);
+
+    let env = |k: &str| std::env::var(k).ok();
+    let head_override = match crate::reviewnote::pull_request_head(&env) {
+        Some(Ok(sha)) => {
+            println!("reviews: pull request. Reading the note on {sha}.");
+            Some(sha)
+        }
+        Some(Err(why)) => return fail(&format!("this is a pull request event and {why}")),
+        None => None,
+    };
+
+    let verdicts = crate::reviewnote::check(&cwd, &refs, required, head_override.as_deref());
+    let mut refused = false;
+    for v in &verdicts {
+        match &v.missing {
+            None => {}
+            Some(crate::reviewnote::Missing::Note) => {
+                refused = true;
+                eprintln!(
+                    "reviews: no review note on {} (pushing to {}).",
+                    v.commit, v.remote_ref
+                );
+                eprintln!("  A reviewer who did not write the change reads it, then records it:");
+                eprintln!(
+                    "    git notes --ref=reviews add -m '<review>: <who> <scope>' {}",
+                    v.commit
+                );
+            }
+            Some(crate::reviewnote::Missing::Reviews(absent)) => {
+                refused = true;
+                eprintln!(
+                    "reviews: the note on {} names no {}.",
+                    v.commit,
+                    absent.join(", no ")
+                );
+                eprintln!("  `gaff reviews` lists what a change must pass here.");
+                eprintln!("  Amend the note in place:");
+                eprintln!(
+                    "    git notes --ref=reviews add -f -m '<review>: <who> <scope>' {}",
+                    v.commit
+                );
+            }
+        }
+    }
+    if refused {
+        return ExitCode::from(1);
+    }
+    println!("reviews: ok");
+    ExitCode::SUCCESS
+}
+
+/// `gaff reviews`: print the required reviews, one to a line.
+fn run_reviews_list() -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
