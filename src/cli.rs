@@ -2123,35 +2123,61 @@ fn run_reviews_check(args: &[String]) -> ExitCode {
     let verdicts = crate::reviewnote::check(&cwd, &refs, required, head_override.as_deref());
     let mut refused = false;
     for v in &verdicts {
-        match &v.missing {
-            None => {}
-            Some(crate::reviewnote::Missing::Note) => {
-                refused = true;
-                eprintln!(
-                    "reviews: no review note on {} (pushing to {}).",
-                    v.commit, v.remote_ref
-                );
-                eprintln!("  A reviewer who did not write the change reads it, then records it:");
-                eprintln!(
-                    "    git notes --ref=reviews add -m '<review>: <who> <scope>' {}",
-                    v.commit
-                );
-            }
-            Some(crate::reviewnote::Missing::Reviews(absent)) => {
-                refused = true;
-                eprintln!(
-                    "reviews: the note on {} names no {}.",
-                    v.commit,
-                    absent.join(", no ")
-                );
-                eprintln!("  `gaff reviews` lists what a change must pass here.");
-                eprintln!("  Amend the note in place:");
-                eprintln!(
-                    "    git notes --ref=reviews add -f -m '<review>: <who> <scope>' {}",
-                    v.commit
-                );
+        if v.faults.is_empty() {
+            continue;
+        }
+        refused = true;
+        for fault in &v.faults {
+            match fault {
+                crate::reviewnote::Missing::Note => {
+                    eprintln!(
+                        "reviews: no review note on {} (pushing to {}).",
+                        v.commit, v.remote_ref
+                    );
+                }
+                crate::reviewnote::Missing::Reviews(absent) => {
+                    eprintln!(
+                        "reviews: {} carries no sign-off for {}.",
+                        v.commit,
+                        absent.join(", ")
+                    );
+                }
+                crate::reviewnote::Missing::Failed(names) => {
+                    eprintln!(
+                        "reviews: {} is signed off as failed for {}.",
+                        v.commit,
+                        names.join(", ")
+                    );
+                }
+                crate::reviewnote::Missing::WrongCommit { review, named } => {
+                    eprintln!(
+                        "reviews: the {review} sign-off on {} names {named}, a different commit.",
+                        v.commit
+                    );
+                    eprintln!("  A sign-off names the commit its reviewer read.");
+                }
+                crate::reviewnote::Missing::Duplicate(review) => {
+                    eprintln!(
+                        "reviews: {} carries two {review} sign-offs, so neither counts.",
+                        v.commit
+                    );
+                }
+                crate::reviewnote::Missing::ThinEvidence { review, words } => {
+                    eprintln!(
+                        "reviews: the {review} sign-off on {} gives {words} words of evidence.",
+                        v.commit
+                    );
+                }
             }
         }
+        eprintln!("  `gaff reviews` lists what a change must pass here.");
+        eprintln!("  A reviewer who did not write the change reads it, then records one line:");
+        eprintln!(
+            "    git notes --ref=reviews add -f -m \
+             'signoff[<review>] PASS {} <what was checked, and how>' {}",
+            &v.commit[..v.commit.len().min(7)],
+            v.commit
+        );
     }
     if refused {
         return ExitCode::from(1);
