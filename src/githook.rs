@@ -497,7 +497,28 @@ pub fn run_with_stdin(
     args: &[String],
     stdin_bytes: Option<&[u8]>,
 ) -> i32 {
-    let due: Vec<&GitHook> = entries.iter().filter(|e| e.runs_on(hook)).collect();
+    // The same broken-entry refusal as `run`: a malformed entry must
+    // not vanish, whichever path runs the hook.
+    let mut broken = Vec::new();
+    let due: Vec<&GitHook> = entries
+        .iter()
+        .filter(|e| e.runs_on(hook))
+        .filter(|e| {
+            let problems = e.problems();
+            if problems.is_empty() {
+                return true;
+            }
+            broken.extend(problems);
+            false
+        })
+        .collect();
+    if !broken.is_empty() {
+        for p in &broken {
+            eprintln!("gaff: {hook}: {p}");
+        }
+        eprintln!("gaff: {hook}: refusing, because a declared check could not run.");
+        return 1;
+    }
     run_due_with_stdin(cwd, &due, hook, args, stdin_bytes)
 }
 

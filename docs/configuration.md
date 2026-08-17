@@ -518,10 +518,10 @@ github:
       - use_git: fmt          # reuse the git entry's command
       - name: audit
         command: ["cargo", "audit"]
-      - name: install missouri
-        uses: cjohnhanson/missouri@main   # a GitHub action
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2      # a GitHub action
         with:
-          ref: main
+          shared-key: gate
 ```
 
 `gaff init --github` renders each workflow to
@@ -566,9 +566,12 @@ checkout's branch, else `refs/heads/detached`. `GITHUB_SHA` never
 changes what is tested; a mismatch prints a warning.
 
 The gaff repository publishes a composite action, `cjohnhanson/gaff`,
-that installs gaff and runs `gaff ci`. The workflow that gates these
-repositories is one `uses:` step, generated from the same declaration
-as the hooks, so hooks and CI cannot drift apart.
+that installs a pinned gaff and runs `gaff ci`. A repository that
+declares its gates in `.gaff/gaff.yml` and one `github:` workflow with
+that action as a step gets hooks and CI from the same declaration, so
+the two cannot drift apart. The action installs no toolchain beyond
+gaff; a Rust repository whose gates run clippy adds
+`rustup component add clippy rustfmt` as a step of its own.
 
 The render is deterministic, so regenerating an unchanged config
 produces identical bytes and no diff.

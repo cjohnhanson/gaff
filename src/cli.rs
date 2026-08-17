@@ -2094,6 +2094,15 @@ fn ci_phases(cwd: &std::path::Path, cfg: &config::Config, hooks: &[String]) -> E
             }
         }
     }
+    // A generated workflow that nothing declares keeps running in CI
+    // with no declaration behind it; check --github refuses that, and
+    // so does ci.
+    for orphan in crate::ghworkflow::orphans(cwd, &cfg.github) {
+        eprintln!(
+            "gaff: ci: {orphan} is a workflow gaff generated and no declaration names it. Declare it, or remove it."
+        );
+        drifted = true;
+    }
     if drifted {
         return ExitCode::FAILURE;
     }
@@ -2167,8 +2176,11 @@ fn ci_head(cwd: &std::path::Path) -> Result<CiHead, String> {
         .map_err(|e| format!("cannot read HEAD: {e}"))?;
     let head_text = head_text.trim();
     let (branch, sha) = if let Some(refname) = head_text.strip_prefix("ref: ") {
-        let sha = resolve_ref(&git_dir, refname.trim())
-            .ok_or_else(|| format!("cannot resolve {refname}"))?;
+        let sha = resolve_ref(&git_dir, refname.trim()).ok_or_else(|| {
+            format!(
+                "cannot resolve {refname}: the branch has no commit yet, or the ref is unreadable"
+            )
+        })?;
         (refname.trim().to_string(), sha)
     } else {
         // Detached HEAD holds the sha itself.
@@ -2212,19 +2224,114 @@ fn origin_url_from_config(git_dir: &std::path::Path) -> Option<String> {
     let common = std::fs::read_to_string(git_dir.join("commondir"))
         .map_or_else(|_| git_dir.to_path_buf(), |s| git_dir.join(s.trim()));
     let text = std::fs::read_to_string(common.join("config")).ok()?;
+    origin_url_from_config_text(&text)
+}
+
+/// The origin URL out of a git config's text. Section names compare
+/// case-insensitively and allow any whitespace before the quoted
+/// subsection; keys compare case-insensitively; a trailing `;` or `#`
+/// comment on a line is dropped. `pushurl` wins over `url`, because
+/// git hands a pre-push hook the push URL.
+fn origin_url_from_config_text(text: &str) -> Option<String> {
     let mut in_origin = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_origin = line == "[remote \"origin\"]";
+    let mut url = None;
+    let mut pushurl = None;
+    for raw in text.lines() {
+        let line = raw.split([';', '#']).next().unwrap_or("").trim();
+        if line.is_empty() {
             continue;
         }
-        if in_origin
-            && let Some(rest) = line.strip_prefix("url")
-            && let Some(url) = rest.trim_start().strip_prefix('=')
-        {
-            return Some(url.trim().to_string());
+        if let Some(inner) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            let mut parts = inner.trim().splitn(2, char::is_whitespace);
+            let section = parts.next().unwrap_or("");
+            let sub = parts.next().map_or("", str::trim);
+            in_origin = section.eq_ignore_ascii_case("remote") && sub == "\"origin\"";
+            continue;
+        }
+        if !in_origin {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim().to_string();
+        if key.eq_ignore_ascii_case("pushurl") {
+            pushurl = Some(value);
+        } else if key.eq_ignore_ascii_case("url") {
+            url = Some(value);
         }
     }
-    None
+    pushurl.or(url)
+}
+
+#[cfg(test)]
+mod ci_tests {
+    use super::*;
+
+    #[test]
+    fn the_origin_url_parser_reads_what_git_writes_and_what_hands_write() {
+        assert_eq!(
+            origin_url_from_config_text(
+                "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = git@example.invalid:acme/project.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+            ),
+            Some("git@example.invalid:acme/project.git".to_string())
+        );
+        // A tab in the header, an upper-case key, and a trailing comment.
+        assert_eq!(
+            origin_url_from_config_text(
+                "[remote\t\"origin\"] ; the one\n  URL = https://example.invalid/r # here\n"
+            ),
+            Some("https://example.invalid/r".to_string())
+        );
+        // pushurl wins: git hands pre-push the push URL.
+        assert_eq!(
+            origin_url_from_config_text("[remote \"origin\"]\n\turl = a\n\tpushurl = b\n"),
+            Some("b".to_string())
+        );
+        // Another remote's url is not origin's.
+        assert_eq!(
+            origin_url_from_config_text("[remote \"upstream\"]\n\turl = x\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn ci_hooks_defaults_to_both_and_refuses_an_unknown_hook() {
+        let both = ci_hooks(&[]).unwrap();
+        assert_eq!(both, vec!["pre-commit".to_string(), "pre-push".to_string()]);
+        let one = ci_hooks(&["--hook".to_string(), "pre-push".to_string()]).unwrap();
+        assert_eq!(one, vec!["pre-push".to_string()]);
+        assert!(ci_hooks(&["--hook".to_string(), "post-commit".to_string()]).is_err());
+        assert!(ci_hooks(&["--bogus".to_string()]).is_err());
+    }
+
+    #[test]
+    fn a_ref_resolves_loose_then_packed_and_through_commondir() {
+        let d = std::env::temp_dir().join(format!("gaff-ciref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let git = d.join("main/.git");
+        std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+        std::fs::write(git.join("refs/heads/main"), "aaaa\n").unwrap();
+        assert_eq!(
+            resolve_ref(&git, "refs/heads/main").as_deref(),
+            Some("aaaa")
+        );
+        std::fs::remove_file(git.join("refs/heads/main")).unwrap();
+        std::fs::write(
+            git.join("packed-refs"),
+            "# pack-refs with: peeled\nbbbb refs/heads/main\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_ref(&git, "refs/heads/main").as_deref(),
+            Some("bbbb")
+        );
+        // A linked worktree's git dir names the common dir.
+        let wt = git.join("worktrees/wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("commondir"), "../..\n").unwrap();
+        assert_eq!(resolve_ref(&wt, "refs/heads/main").as_deref(), Some("bbbb"));
+        assert_eq!(resolve_ref(&git, "refs/heads/nope"), None);
+    }
 }

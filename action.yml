@@ -12,14 +12,13 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: 'rust components'
-      shell: bash
-      run: rustup component add clippy rustfmt
     - name: 'resolve gaff ref'
       id: resolve
       shell: bash
+      env:
+        REF: ${{ inputs.ref }}
       run: |
-        ref='${{ inputs.ref }}'
+        ref="$REF"
         sha=$(git ls-remote https://github.com/cjohnhanson/gaff "refs/heads/$ref" | cut -f1)
         [ -n "$sha" ] || sha=$(git ls-remote https://github.com/cjohnhanson/gaff "refs/tags/$ref" | cut -f1)
         [ -n "$sha" ] || sha="$ref"
