@@ -530,6 +530,17 @@ impl Store {
         }
     }
 
+    /// Whether a hold with this id is currently armed. The id is
+    /// sanitized, so a caller compares against the same on-disk name
+    /// `write_hold` and `holds` use.
+    #[must_use]
+    pub fn has_hold(&self, session: &str, id: &str) -> bool {
+        self.session_dir(session)
+            .join("holds")
+            .join(sanitize(id))
+            .exists()
+    }
+
     /// Whether a profile hold has been released this session.
     #[must_use]
     pub fn is_released(&self, session: &str, id: &str) -> bool {

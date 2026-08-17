@@ -1229,6 +1229,24 @@ mod profile_tests {
     }
 
     #[test]
+    fn a_dotted_profile_hold_is_found_by_the_store() {
+        // A profile name with a `.` sanitizes to a different on-disk id.
+        // The store must find the hold under the sanitized name, or the
+        // times budget resets on every stop.
+        let dir = std::env::temp_dir().join(format!("gaff-hold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::state::Store::new(dir.clone());
+        store
+            .write_hold("s", "profile-code.review", "hold", Some(2))
+            .unwrap();
+        assert!(
+            store.has_hold("s", "profile-code.review"),
+            "the hold is found under the sanitized id"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn the_env_gate_refuses_a_bundle_that_carries_law() {
         // A bundle with a guard is law, human-only, even with no
         // transitions declared.

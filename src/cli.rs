@@ -333,8 +333,10 @@ fn materialize_profile_hold(
         return;
     };
     let id = format!("profile-{}", profile.unwrap_or(""));
-    let present = store.holds(session).iter().any(|h| h.id == id);
-    if !present && !store.is_released(session, &id) {
+    // Ask the store, which sanitizes the id to its on-disk name. A
+    // profile name with a `.` or a space would otherwise never match a
+    // stored hold, so the `times` budget would reset on every stop.
+    if !store.has_hold(session, &id) && !store.is_released(session, &id) {
         let _ = store.write_hold(session, &id, &stop.hold, stop.times);
     }
 }
@@ -991,6 +993,30 @@ fn cross_reference_problems(cfg: &config::Config) -> Vec<String> {
                 problems.push(format!(
                     "profile `{pname}`: `{name}` is both a {prev} and a {kind}; names are one keyspace"
                 ));
+            }
+        }
+        // A bundle entry that collides cross-kind with a base entry
+        // shares one pending marker with it at runtime, and one of the
+        // two stops firing. A same-kind name is the retime and is fine.
+        // Only matters when the bundle keeps the base entries.
+        if profile.base {
+            let base_reminders: Vec<&str> = cfg.reminders.iter().map(|r| r.name.as_str()).collect();
+            let base_sections: Vec<&str> = cfg.sections.iter().map(|s| s.name.as_str()).collect();
+            for r in &profile.reminders {
+                if base_sections.contains(&r.name.as_str()) {
+                    problems.push(format!(
+                        "profile `{pname}`: reminder `{}` collides with a base section; names are one keyspace",
+                        r.name
+                    ));
+                }
+            }
+            for s in &profile.sections {
+                if base_reminders.contains(&s.name.as_str()) {
+                    problems.push(format!(
+                        "profile `{pname}`: section `{}` collides with a base reminder; names are one keyspace",
+                        s.name
+                    ));
+                }
             }
         }
         // A bundle's own guards are validated like base guards.
