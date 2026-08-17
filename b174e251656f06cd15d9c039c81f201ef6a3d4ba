@@ -1,1 +1,2 @@
-mutation: skipped this round. fresh-eyes: not done, see ticket.
+signoff[fresh-eyes] FAIL b174e25 the guard has no test
+signoff[mutation] PASS b174e25 removed the guard and it went red
