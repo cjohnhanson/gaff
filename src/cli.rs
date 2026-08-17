@@ -2050,6 +2050,13 @@ fn review_problems(reviews: Option<&[String]>) -> Vec<String> {
     problems
 }
 
+/// What a repo sees when `.gaff/gaff.yml` declares no `reviews:` key.
+///
+/// An unknown policy is not an empty one, so the check refuses rather
+/// than requiring nothing.
+const NO_POLICY: &str = "`.gaff/gaff.yml` declares no `reviews:` key. Add one. Write \
+     `reviews: []` if a change needs no review, or list the reviews it must pass.";
+
 /// `gaff reviews [check]`: the review policy, and the gate that holds it.
 ///
 /// With no argument it prints the required reviews, one to a line. A
@@ -2080,9 +2087,8 @@ fn run_reviews(args: &[String]) -> ExitCode {
 /// its own stdin straight through. Each declared review must be named
 /// in the note on every pushed tip.
 ///
-/// The check is a claim check. It cannot verify that a review happened,
-/// only that someone wrote that it did. What it changes is what a
-/// reviewer acting in good faith thinks to do before writing the note.
+/// The check reads a claim. It shows that someone recorded a review.
+/// It cannot show that the review happened.
 /// True for a hex string long enough to name a commit.
 fn is_hex_sha(s: &str) -> bool {
     s.len() >= 7 && s.len() <= 40 && s.chars().all(|c| c.is_ascii_hexdigit())
@@ -2183,11 +2189,7 @@ fn run_reviews_check(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     let Some(required) = cfg.reviews.as_ref() else {
-        return fail(
-            "no reviews are declared in .gaff/gaff.yml. A gate that read this as \"none \
-             required\" would merge an unreviewed change. Write `reviews: []` there to state \
-             that none are required, or list the reviews a change must pass.",
-        );
+        return fail(NO_POLICY);
     };
 
     let mut stdin = String::new();
@@ -2231,20 +2233,13 @@ fn run_reviews_list() -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
-    // One read. The merge holds the rule that the repo states the
-    // policy, so reading the repo layer a second time to test it would
-    // open a window where the two reads disagree.
+    // One config read. Two reads could disagree with each other.
     let cfg = match ci_config(&cwd) {
         Ok(c) => c,
         Err(code) => return code,
     };
     let Some(names) = cfg.reviews.as_ref() else {
-        return fail(
-            "no reviews are declared in .gaff/gaff.yml. A gate that read this as \"none \
-             required\" would merge an unreviewed change. Write `reviews: []` there to state \
-             that none are required, or list the reviews a change must pass. A user config \
-             may add a review, and may not state the policy for a repo.",
-        );
+        return fail(NO_POLICY);
     };
     for name in names {
         println!("{name}");
