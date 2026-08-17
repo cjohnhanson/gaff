@@ -2196,6 +2196,23 @@ fn run_reviews_check(args: &[String]) -> ExitCode {
     }
     let refs = crate::reviewnote::parse_refs(&stdin);
 
+    // No refs means nothing was checked, and reporting that as a pass
+    // would let a caller who lost the stream past the gate. git sends
+    // at least one line to a pre-push hook, so empty stdin here is a
+    // wiring fault, not a push with nothing in it. A deletion-only
+    // push parses to no refs and is a real case, so it is named.
+    if refs.is_empty() && head_override.is_none() {
+        if stdin.split_whitespace().next().is_none() {
+            return fail(
+                "no pushed refs arrived on stdin, so nothing was checked. A pre-push hook \
+                 receives one line per ref. Check that nothing upstream in the pipeline \
+                 consumed the stream.",
+            );
+        }
+        println!("reviews: nothing to check. Every pushed ref is a deletion or a notes ref.");
+        return ExitCode::SUCCESS;
+    }
+
     if let Some(sha) = &head_override {
         println!("reviews: reading the note on {sha}, not the checkout.");
     }
