@@ -2135,10 +2135,19 @@ fn report_review_faults(verdicts: &[crate::reviewnote::Verdict]) -> bool {
                         "reviews: the {review} sign-off on {} names `{named}`, which is not a sha.",
                         v.commit
                     );
-                    eprintln!(
-                        "  A sha carries at least {} hex characters. A shorter prefix matches many commits.",
-                        crate::reviewnote::SHA_FLOOR
-                    );
+                    // Say which way it is wrong. One message calling a
+                    // 41-character sha "shorter" sent a reader looking
+                    // for the wrong mistake.
+                    let floor = crate::reviewnote::SHA_FLOOR;
+                    if named.chars().count() < floor {
+                        eprintln!(
+                            "  A sha carries at least {floor} hex characters. A shorter prefix matches many commits."
+                        );
+                    } else if !named.chars().all(|c| c.is_ascii_hexdigit()) {
+                        eprintln!("  A sha carries hex characters only.");
+                    } else {
+                        eprintln!("  A sha carries at most 64 hex characters.");
+                    }
                 }
             }
         }
@@ -2147,7 +2156,7 @@ fn report_review_faults(verdicts: &[crate::reviewnote::Verdict]) -> bool {
         eprintln!(
             "    git notes --ref=reviews add -f -m \
              'signoff[<review>] PASS {} <what was checked, and how>' {}",
-            &v.commit[..v.commit.len().min(7)],
+            crate::reviewnote::short(&v.commit),
             v.commit
         );
     }
@@ -2196,6 +2205,21 @@ fn run_reviews_check(args: &[String]) -> ExitCode {
         return fail("cannot read the pushed refs from stdin");
     }
     let refs = crate::reviewnote::parse_refs(&stdin);
+
+    // A line git did not write means the stream was cut. git writes
+    // four fields per ref, so anything shorter is a truncation rather
+    // than a push. Dropping such a line silently defeated the guard
+    // below: one line reading `refs/heads/main` left no refs and
+    // non-empty stdin, so the check reported nothing to do and exited
+    // 0.
+    let truncated = crate::reviewnote::truncated_lines(&stdin);
+    if truncated > 0 {
+        return fail(&format!(
+            "{truncated} line(s) on stdin carry fewer than the four fields git writes \
+             for a pushed ref, so the stream is truncated. Check that nothing upstream \
+             in the pipeline consumed part of it."
+        ));
+    }
 
     // No refs means nothing was checked, and reporting that as a pass
     // would let a caller who lost the stream past the gate. git sends

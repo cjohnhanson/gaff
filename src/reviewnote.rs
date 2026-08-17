@@ -45,6 +45,25 @@ pub fn parse_refs(stdin: &str) -> Vec<PushedRef> {
         .collect()
 }
 
+/// Count the lines that carry text but do not carry a ref.
+///
+/// git writes four fields to a pre-push hook. A line with fewer is a
+/// truncated stream, not a push.
+///
+/// This exists because dropping such a line silently defeated the
+/// guard that reads an empty ref list as a wiring fault. One line
+/// reading `refs/heads/main` parsed to no refs and to non-empty
+/// stdin, so the check reported "nothing to check" and exited 0. A
+/// caller that lost most of the stream then passed the gate.
+#[must_use]
+pub fn truncated_lines(stdin: &str) -> usize {
+    stdin
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| line.split_whitespace().count() < 4)
+        .count()
+}
+
 /// Why a tip failed the check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Missing {
@@ -185,7 +204,14 @@ pub fn shortfall(note: Option<&str>, required: &[String], commit: &str) -> Vec<M
             });
             continue;
         }
-        if !commit.starts_with(&s.commit) {
+        // git accepts an uppercase abbreviation, so a reviewer who
+        // pasted one names the right commit. A case-sensitive compare
+        // reported it as a different commit and sent the reader
+        // hunting for a commit that does not exist.
+        if !commit
+            .to_ascii_lowercase()
+            .starts_with(&s.commit.to_ascii_lowercase())
+        {
             faults.push(Missing::WrongCommit {
                 review: name.clone(),
                 named: s.commit.clone(),
@@ -309,10 +335,26 @@ fn note_paths(sha: &str) -> Vec<String> {
 /// True for a hex string long enough to name a commit.
 ///
 /// git's own abbreviation floor is four characters. This one takes
-/// seven, which is what git prints and what a reviewer copies.
+/// seven, which is what git prints and what a reviewer copies. The
+/// ceiling covers a sha256 repository, whose object names run to 64.
 #[must_use]
 pub fn is_hex_sha(s: &str) -> bool {
-    s.len() >= SHA_FLOOR && s.len() <= 40 && s.chars().all(|c| c.is_ascii_hexdigit())
+    s.len() >= SHA_FLOOR && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The first `SHA_FLOOR` characters, for a message.
+///
+/// Truncates on a character boundary, not a byte index. A sha reaching
+/// a message is not always hex: it arrives on stdin, and a message
+/// naming a bad value is exactly when a reader needs it. Slicing by
+/// byte panicked the gate when a multi-byte character sat across the
+/// cut.
+#[must_use]
+pub fn short(sha: &str) -> &str {
+    match sha.char_indices().nth(SHA_FLOOR) {
+        Some((byte, _)) => &sha[..byte],
+        None => sha,
+    }
 }
 
 /// The fewest characters a sign-off's commit may carry.
@@ -729,6 +771,65 @@ mod tests {
             vec![Missing::WrongCommit {
                 review: "fresh-eyes".to_string(),
                 named: "9999999".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn short_truncates_on_a_character_boundary() {
+        // Slicing by byte panicked the gate when a multi-byte
+        // character sat across the cut at byte 7.
+        assert_eq!(short("abcdef\u{e9}"), "abcdef\u{e9}");
+        assert_eq!(short("abcdef\u{e9}ghij"), "abcdef\u{e9}");
+        assert_eq!(short("\u{20ac}abc"), "\u{20ac}abc");
+        assert_eq!(short("abcdef0123456789"), "abcdef0");
+        assert_eq!(short("abc"), "abc");
+        assert_eq!(short(""), "");
+    }
+
+    #[test]
+    fn a_truncated_stdin_line_is_counted() {
+        // One line reading `refs/heads/main` left no refs and
+        // non-empty stdin, so the check reported nothing to do and
+        // exited 0. A caller that lost the stream passed the gate.
+        assert_eq!(truncated_lines("refs/heads/main\n"), 1);
+        assert_eq!(truncated_lines("refs/heads/main abc\n"), 1);
+        assert_eq!(truncated_lines("a b c\n"), 1);
+        assert_eq!(truncated_lines("a b c d\n"), 0);
+        assert_eq!(truncated_lines(""), 0);
+        assert_eq!(truncated_lines("\n  \n"), 0);
+        assert_eq!(truncated_lines("a b c d\nrefs/heads/x\n"), 1);
+    }
+
+    #[test]
+    fn an_uppercase_abbreviation_names_the_same_commit() {
+        // git accepts an uppercase abbreviation, so a reviewer who
+        // pasted one named the right commit and was told otherwise.
+        let commit = "5abcdef0123456789abcdef0123456789abcdef0";
+        let required = vec!["fresh-eyes".to_string()];
+        let note = "signoff[fresh-eyes] PASS 5ABCDEF read every guard closely";
+        assert!(shortfall(Some(note), &required, commit).is_empty());
+    }
+
+    #[test]
+    fn a_sha256_length_signoff_is_accepted() {
+        let commit = "a".repeat(64);
+        let required = vec!["fresh-eyes".to_string()];
+        let note = format!("signoff[fresh-eyes] PASS {commit} read every guard closely");
+        assert!(shortfall(Some(&note), &required, &commit).is_empty());
+    }
+
+    #[test]
+    fn a_signoff_sha_over_the_ceiling_is_refused() {
+        let commit = "5abcdef0123456789abcdef0123456789abcdef0";
+        let required = vec!["fresh-eyes".to_string()];
+        let named = "a".repeat(65);
+        let note = format!("signoff[fresh-eyes] PASS {named} read every guard closely");
+        assert_eq!(
+            shortfall(Some(&note), &required, commit),
+            vec![Missing::ShortCommit {
+                review: "fresh-eyes".to_string(),
+                named,
             }]
         );
     }
