@@ -1,6 +1,7 @@
 /target
 /tests/missouri/.missouri/bin/
 /result
+/result-*
 
 # Coding-agent and editor local state. Machine-specific, and one of
 # these reached public history before.
