@@ -134,9 +134,16 @@ A requested hook with no entry fails the run.
 .It Cm reviews
 Print the reviews a change must pass, one to a line, in declaration
 order.
-A merge gate reads the list from here rather than by parsing the config
-file, so a format change cannot break the gate silently.
-A repository that declares none prints nothing and succeeds.
+A merge gate reads the list from here rather than from the config file,
+so a format change cannot break the gate silently.
+A repository with no
+.Cm reviews
+key exits 1 and names the fix, because an absent policy must not read
+as "no review is required".
+A repository that writes
+.Ql reviews: []
+exits 0 and prints nothing.
+The two config layers union, and neither drops the other's names.
 .It Cm docs Op Ar page
 Print the bundled documentation.
 Without

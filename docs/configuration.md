@@ -59,6 +59,52 @@ from `handlers.yml`.
 | `profiles` | `{}` | The named overlays (see below) |
 | `default_profile` | none | The profile that applies when nothing else selects one |
 | `transitions` | `{}` | Which profiles an agent may select for itself |
+| `git` | `[]` | The git-hook entries (see below) |
+| `github` | `[]` | The workflows to generate (see below) |
+| `guards` | `[]` | The tool calls to refuse (user config only) |
+| `reviews` | none | The reviews a change must pass (see below) |
+
+## Reviews
+
+A repo names the independent reviews a change must pass:
+
+```yaml
+reviews:
+  - review-tests
+  - review-docs
+```
+
+Each name is a review skill the repo carries. gaff records the policy
+and enforces nothing: a gate script reads the list and decides.
+
+`gaff reviews` prints one name to a line, in declaration order. A gate
+reads that command. A gate that read the config file itself would break
+when the format changes, and it would then require nothing.
+
+An absent `reviews:` key and `reviews: []` differ:
+
+| The config | `gaff reviews` | What it means |
+|------------|----------------|---------------|
+| no `reviews:` key | exits 1, names the fix | Nobody stated a policy |
+| `reviews: []` | exits 0, prints nothing | An author stated that none is required |
+| one or more names | exits 0, prints them | Those reviews are required |
+
+The error is the point. A deleted block must not read as "no review is
+required", because a gate would then merge an unreviewed change. An
+author who wants no review writes `reviews: []` and says so.
+
+A missing config, an empty file, and a config gaff cannot parse each
+exit 1 for the same reason. Read the exit code. A pipeline reports the
+last command's status, not gaff's.
+
+The two layers union, and neither drops the other's names. A user names
+a review for every repo they work in; a repo adds its own. Neither can
+remove what the other requires, so a repo cannot switch off a review
+its author never sanctioned.
+
+`gaff check` refuses a name that holds whitespace, an empty name, and a
+name declared twice in one layer. A name with a newline would become
+two requirements when a gate reads one name to a line.
 
 ## Sections
 
@@ -546,30 +592,6 @@ gaff renders `push`, `pull_request`, `merge_group`,
 the workflow. A check then runs in the git hook and in CI from a single
 declaration. Change the command in one place, run `gaff init --github`,
 and the workflow follows.
-
-### The required reviews: `reviews:`
-
-A change merges when every independent review passes. The `reviews:`
-block names them:
-
-```yaml
-reviews:
-  - review-tests
-  - review-docs
-```
-
-Each name is a review skill that the repository vendors. gaff holds the
-list because gaff holds gate policy.
-
-`gaff reviews` prints the list, one name to a line, in declaration
-order. A merge gate reads it from that command. A gate that parsed the
-config file by hand would break when the format moved, and it would
-fail open: an unmatched line yields an empty list, and an empty list
-demands nothing.
-
-gaff does not check that a review happened. A gate script compares the
-list against the recorded sign-offs, and against the vendored library,
-so a commit cannot drop a check with one edit.
 
 ### The gates in CI: `gaff ci`
 

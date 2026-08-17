@@ -45,7 +45,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("log") => run_log(&args[1..]),
         Some("docs") => run_docs(&args[1..]),
         Some("ci") => run_ci(&args[1..]),
-        Some("reviews") => run_reviews(),
+        Some("reviews") => run_reviews(&args[1..]),
         Some("prime") => {
             print!("{}", prime());
             ExitCode::SUCCESS
@@ -812,6 +812,7 @@ fn run_check(args: &[String]) -> ExitCode {
     for entry in &cfg.git {
         problems.extend(entry.problems());
     }
+    problems.extend(review_problems(cfg.reviews.as_deref()));
 
     for w in &warnings {
         eprintln!("gaff: {w}");
@@ -2015,13 +2016,53 @@ fn run_ci(args: &[String]) -> ExitCode {
     ci_phases(&cwd, &cfg, &hooks)
 }
 
+/// Faults in the declared review names.
+///
+/// A gate prints one name to a line and reads the result back, so a
+/// name that holds a newline becomes two requirements and a name that
+/// is empty becomes a blank line. A repeat inside one layer hides a
+/// typo: the author sees two entries and the gate requires one.
+fn review_problems(reviews: Option<&[String]>) -> Vec<String> {
+    let Some(names) = reviews else {
+        return Vec::new();
+    };
+    let mut problems = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for name in names {
+        if name.trim().is_empty() {
+            problems
+                .push("a review name is empty. Name the review a change must pass.".to_string());
+            continue;
+        }
+        if name.chars().any(char::is_whitespace) {
+            problems.push(format!(
+                "the review name `{name}` holds whitespace. A gate reads one name to a line, so a name with a newline becomes two requirements."
+            ));
+        }
+        if seen.contains(&name.as_str()) {
+            problems.push(format!(
+                "the review `{name}` is declared twice. Remove one, or name the second review."
+            ));
+        }
+        seen.push(name);
+    }
+    problems
+}
+
 /// `gaff reviews`: print the required reviews, one to a line.
 ///
-/// A merge gate needs the list, and a shell that parses the config by
-/// hand breaks when the format moves. This prints it instead. A repo
-/// that declares none prints nothing and succeeds: no policy is not an
-/// error, and the caller decides what an empty list means.
-fn run_reviews() -> ExitCode {
+/// A merge gate reads the list from here. A gate that parsed the
+/// config file itself would break when the format changes, and it
+/// would then require nothing.
+///
+/// An absent declaration and an empty one differ. A repo that states
+/// no `reviews:` key gets an error, because no policy must not read as
+/// "no review is required". A repo that writes `reviews: []` succeeds
+/// and prints nothing, because an author chose that.
+fn run_reviews(args: &[String]) -> ExitCode {
+    if let Some(arg) = args.first() {
+        return fail(&format!("unexpected argument `{arg}` (reviews takes none)"));
+    }
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
@@ -2029,7 +2070,14 @@ fn run_reviews() -> ExitCode {
         Ok(c) => c,
         Err(code) => return code,
     };
-    for name in &cfg.reviews {
+    let Some(names) = &cfg.reviews else {
+        return fail(
+            "the repo declares no reviews. A gate that read this as \"none required\" would \
+             merge an unreviewed change. Write `reviews: []` in .gaff/gaff.yml to state that \
+             none are required, or list the reviews a change must pass.",
+        );
+    };
+    for name in names {
         println!("{name}");
     }
     ExitCode::SUCCESS

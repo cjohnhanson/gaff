@@ -53,11 +53,14 @@ pub struct Config {
     #[serde(default)]
     pub guards: Vec<crate::guard::Guard>,
     /// The independent reviews a change must pass before it merges.
-    /// Each name is a review skill that the repo vendors. gaff holds
-    /// the list because gaff holds gate policy, and a gate script that
-    /// parses this file by hand breaks when the format moves.
+    /// Each name is a review skill the repo carries.
+    ///
+    /// `None` and `Some([])` differ, and the difference is the point.
+    /// `None` means nobody stated a policy, and a gate must refuse
+    /// rather than require nothing. `Some([])` means an author wrote
+    /// `reviews: []` and chose that no review is required.
     #[serde(default)]
-    pub reviews: Vec<String>,
+    pub reviews: Option<Vec<String>>,
 }
 
 /// A profile: a named overlay on reminders and sections.
@@ -149,6 +152,29 @@ impl Config {
             out.max_inject_bytes = cap;
         }
         out
+    }
+}
+
+/// Merge the reviews of the two layers.
+///
+/// The union holds, and neither layer drops the other's requirement. A
+/// merge gate reads this list, so a layer that replaced it could
+/// require nothing and pass a change that nobody reviewed.
+///
+/// A layer that states nothing contributes nothing. It does not turn a
+/// stated policy back into an absent one, and it does not invent one.
+fn merge_reviews(user: Option<Vec<String>>, repo: Option<Vec<String>>) -> Option<Vec<String>> {
+    match (user, repo) {
+        (None, None) => None,
+        (Some(list), None) | (None, Some(list)) => Some(list),
+        (Some(mut user), Some(repo)) => {
+            for name in repo {
+                if !user.contains(&name) {
+                    user.push(name);
+                }
+            }
+            Some(user)
+        }
     }
 }
 
@@ -274,7 +300,7 @@ impl Default for Config {
             git: Vec::new(),
             github: Vec::new(),
             guards: Vec::new(),
-            reviews: Vec::new(),
+            reviews: None,
         }
     }
 }
@@ -720,15 +746,7 @@ impl Config {
             }
             self.profiles.insert(name, profile);
         }
-        // Reviews take the union of both layers, and neither layer can
-        // drop the other's requirement. A merge gate reads this list,
-        // so a layer that replaced it could demand nothing and pass a
-        // change that no one reviewed.
-        for name in repo.reviews {
-            if !self.reviews.contains(&name) {
-                self.reviews.push(name);
-            }
-        }
+        self.reviews = merge_reviews(self.reviews.take(), repo.reviews);
 
         // A repo may add a git entry or a workflow, and it may not
         // replace one the user declared. Both run commands, and the
@@ -1068,25 +1086,47 @@ mod layer_tests {
         // demand nothing, and a change would land unreviewed. The bug
         // this test holds shut: the repo's reviews were dropped when a
         // user config existed, and every hermetic test still passed.
+        let names = |c: Config| c.reviews.map(|v| v.join(","));
+
         let user = cfg("reviews:\n  - review-code\n");
         let repo = cfg("reviews:\n  - review-tests\n  - review-code\n");
-        let merged = user.overlaid_with(repo);
         assert_eq!(
-            merged.reviews,
-            vec!["review-code".to_string(), "review-tests".to_string()],
+            names(user.overlaid_with(repo)).as_deref(),
+            Some("review-code,review-tests"),
             "the union holds, and a name repeats once"
         );
 
         // A repo with no user config keeps its own list, in order.
         let merged = cfg("").overlaid_with(cfg("reviews:\n  - review-docs\n  - review-deps\n"));
-        assert_eq!(
-            merged.reviews,
-            vec!["review-docs".to_string(), "review-deps".to_string()]
-        );
+        assert_eq!(names(merged).as_deref(), Some("review-docs,review-deps"));
 
         // A user list survives a repo that declares none.
         let merged = cfg("reviews:\n  - review-usability\n").overlaid_with(cfg(""));
-        assert_eq!(merged.reviews, vec!["review-usability".to_string()]);
+        assert_eq!(names(merged).as_deref(), Some("review-usability"));
+
+        // Absent and empty differ, and the merge keeps them apart. A
+        // layer that states nothing must not turn a stated policy back
+        // into an absent one, and it must not invent a policy either.
+        assert_eq!(
+            names(cfg("").overlaid_with(cfg(""))),
+            None,
+            "neither states one"
+        );
+        assert_eq!(
+            names(cfg("reviews: []\n").overlaid_with(cfg(""))).as_deref(),
+            Some(""),
+            "an author wrote `reviews: []`, and that survives a silent layer"
+        );
+        assert_eq!(
+            names(cfg("").overlaid_with(cfg("reviews: []\n"))).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            names(cfg("reviews:\n  - review-code\n").overlaid_with(cfg("reviews: []\n")))
+                .as_deref(),
+            Some("review-code"),
+            "an empty repo list never drops a user requirement"
+        );
     }
 
     #[test]
