@@ -68,3 +68,11 @@ libc = "0.2"
 # A safe wrapper for kill(2) on a process group. `unsafe` is forbidden
 # here, and spawning /bin/kill is not single-binary.
 nix = { version = "0.31", default-features = false, features = ["signal"] }
+
+# A released binary carries no debug symbols, and a user installing a
+# CLI never reads them. Thin LTO with one codegen unit trades build
+# time for size and speed. A release builds once and installs often.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

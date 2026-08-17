@@ -62,6 +62,10 @@ pub enum Missing {
     /// Evidence under the floor. A script cannot grade evidence. It can
     /// refuse a keystroke.
     ThinEvidence { review: String, words: usize },
+    /// A sign-off names too short a sha, or one that is not hex. A
+    /// prefix match with no floor accepts a single character, and that
+    /// matches one commit in sixteen.
+    ShortCommit { review: String, named: String },
 }
 
 /// The fewest words of evidence a sign-off may carry.
@@ -69,9 +73,9 @@ pub enum Missing {
 /// A floor, not a judgment. A script cannot tell a real reason from a
 /// plausible one, so it refuses only the case where nobody tried.
 ///
-/// Public so the man page's number can be bound to it by a test. The
-/// page stated a floor that no test read, so an edit could contradict
-/// the code with every test green.
+/// A test reads this constant and the man page together, so the two
+/// cannot disagree. The page once stated a floor that no test read,
+/// and an edit could contradict the code with every test green.
 pub const EVIDENCE_FLOOR: usize = 3;
 
 /// One parsed sign-off line.
@@ -170,8 +174,18 @@ pub fn shortfall(note: Option<&str>, required: &[String], commit: &str) -> Vec<M
             faults.push(Missing::Failed(vec![name.clone()]));
             continue;
         }
-        // A short sha is what a person writes, so match either way.
-        if !commit.starts_with(&s.commit) && !s.commit.starts_with(commit) {
+        // A reviewer writes the short sha git prints, so a prefix
+        // matches. The floor is what makes a prefix mean anything: one
+        // hex character matches one commit in sixteen, so a sign-off
+        // reading `PASS 5` signed off any commit starting with `5`.
+        if !is_hex_sha(&s.commit) {
+            faults.push(Missing::ShortCommit {
+                review: name.clone(),
+                named: s.commit.clone(),
+            });
+            continue;
+        }
+        if !commit.starts_with(&s.commit) {
             faults.push(Missing::WrongCommit {
                 review: name.clone(),
                 named: s.commit.clone(),
@@ -263,11 +277,19 @@ pub fn head_sha_from_event(body: &str) -> Option<String> {
 /// git splits the notes tree into fanout directories once it grows,
 /// and it rewrites the layout as the tree changes. A note written flat
 /// today sits under `ab/cdef...` tomorrow, with no change to the
-/// commit it annotates. So every depth is tried, shallowest first.
+/// commit it annotates. The lookup tries every depth, shallowest first.
 ///
 /// Two hex characters make each level, which is git's own split.
+///
+/// A sha that is not hex gets the flat candidate and no fanout. Every
+/// candidate is then absent from the tree, so the tip is refused. An
+/// earlier version sliced by byte index without checking, and a
+/// multi-byte character on stdin panicked the gate.
 fn note_paths(sha: &str) -> Vec<String> {
     let mut out = vec![sha.to_string()];
+    if !is_hex_sha(sha) {
+        return out;
+    }
     for depth in 1..=3 {
         let cut = depth * 2;
         if sha.len() <= cut {
@@ -283,6 +305,23 @@ fn note_paths(sha: &str) -> Vec<String> {
     }
     out
 }
+
+/// True for a hex string long enough to name a commit.
+///
+/// git's own abbreviation floor is four characters. This one takes
+/// seven, which is what git prints and what a reviewer copies.
+#[must_use]
+pub fn is_hex_sha(s: &str) -> bool {
+    s.len() >= SHA_FLOOR && s.len() <= 40 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The fewest characters a sign-off's commit may carry.
+///
+/// A one-character sha passed every check, because a prefix match with
+/// no floor accepts it. `signoff[fresh-eyes] PASS 5 ...` then signed
+/// off every commit whose sha starts with `5`, which is the
+/// carry-forward the commit binding exists to stop.
+pub const SHA_FLOOR: usize = 7;
 
 /// Read the review note on a commit. `None` when the commit has none.
 ///
@@ -619,5 +658,78 @@ mod tests {
             _ => None,
         };
         assert!(matches!(pull_request_head(&env), Some(Err(_))));
+    }
+
+    #[test]
+    fn note_paths_covers_the_flat_form_and_every_fanout_depth() {
+        let sha = "abcdef0123456789abcdef0123456789abcdef01";
+        let paths = note_paths(sha);
+        assert_eq!(paths[0], sha, "the flat form comes first");
+        assert_eq!(paths[1], format!("ab/{}", &sha[2..]));
+        assert_eq!(paths[2], format!("ab/cd/{}", &sha[4..]));
+        assert_eq!(paths[3], format!("ab/cd/ef/{}", &sha[6..]));
+        assert_eq!(paths.len(), 4);
+    }
+
+    #[test]
+    fn every_note_path_rejoins_to_the_sha_it_names() {
+        // The guarantee against reading another commit's note: a
+        // candidate path's components concatenate back to this sha.
+        let sha = "abcdef0123456789abcdef0123456789abcdef01";
+        for path in note_paths(sha) {
+            assert_eq!(path.replace('/', ""), sha, "`{path}` names another commit");
+        }
+    }
+
+    #[test]
+    fn a_sha_that_is_not_hex_gets_no_fanout_and_does_not_panic() {
+        // A multi-byte character on stdin panicked the gate, because
+        // the fanout sliced by byte index without checking.
+        for bad in ["\u{20ac}abc", "not-a-sha", "", "zz"] {
+            let paths = note_paths(bad);
+            assert_eq!(paths, vec![bad.to_string()], "`{bad}` gained a fanout");
+        }
+    }
+
+    #[test]
+    fn a_short_sha_in_a_signoff_is_refused() {
+        // `PASS 5` matched one commit in sixteen, which is the
+        // carry-forward the commit binding exists to stop.
+        let commit = "5abcdef0123456789abcdef0123456789abcdef0";
+        let required = vec!["fresh-eyes".to_string()];
+        for named in ["5", "5a", "5abcde"] {
+            let note = format!("signoff[fresh-eyes] PASS {named} read every guard closely");
+            assert_eq!(
+                shortfall(Some(&note), &required, commit),
+                vec![Missing::ShortCommit {
+                    review: "fresh-eyes".to_string(),
+                    named: named.to_string(),
+                }],
+                "`{named}` was accepted as a sha"
+            );
+        }
+    }
+
+    #[test]
+    fn a_seven_character_sha_in_a_signoff_is_accepted() {
+        let commit = "5abcdef0123456789abcdef0123456789abcdef0";
+        let required = vec!["fresh-eyes".to_string()];
+        let note = "signoff[fresh-eyes] PASS 5abcdef read every guard closely";
+        assert!(shortfall(Some(note), &required, commit).is_empty());
+    }
+
+    #[test]
+    fn a_signoff_naming_another_commit_is_still_refused() {
+        // The floor must not swallow the wrong-commit case.
+        let commit = "5abcdef0123456789abcdef0123456789abcdef0";
+        let required = vec!["fresh-eyes".to_string()];
+        let note = "signoff[fresh-eyes] PASS 9999999 read every guard closely";
+        assert_eq!(
+            shortfall(Some(note), &required, commit),
+            vec![Missing::WrongCommit {
+                review: "fresh-eyes".to_string(),
+                named: "9999999".to_string(),
+            }]
+        );
     }
 }

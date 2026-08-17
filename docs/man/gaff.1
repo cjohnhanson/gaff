@@ -151,7 +151,7 @@ A user config cannot state the policy for a repository that omits one.
 .Cm reviews check
 reads git's pre-push ref lines on standard input.
 Every declared review needs one sign-off on every pushed tip.
-A tip that lacks one refuses the push.
+The check refuses a push whose tip lacks one.
 The command takes no argument.
 .Pp
 A sign-off is one line of the tip's
@@ -162,11 +162,12 @@ The verdict is
 .Ql PASS
 or
 .Ql FAIL .
-Prose around the lines is ignored, so a note can carry a narrative too.
+The check ignores prose around the lines, so a note can carry a
+narrative.
 The sha names the commit the reviewer read.
 A sign-off therefore cannot carry forward onto a commit nobody read.
 .Pp
-These faults refuse a push:
+The check refuses a push on any of these faults:
 .Bl -bullet -compact
 .It
 a declared review with no sign-off
@@ -180,8 +181,16 @@ two sign-offs for one review
 .It
 evidence of fewer than 3 words
 .It
+a sha of fewer than 7 characters
+.It
 no note at all
 .El
+.Pp
+The floor on the sha is what makes a prefix mean anything.
+One hex character matches one commit in sixteen, so a sign-off reading
+.Ql PASS 5
+signed off every commit whose sha starts with
+.Ql 5 .
 .Pp
 The command also refuses a push where stdin carried no ref line.
 That is a wiring fault rather than a review fault.
