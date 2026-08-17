@@ -27,13 +27,15 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.gaff-tools
-        key: gaff-bin-${{ runner.os }}-${{ steps.resolve.outputs.sha }}
+        key: gaff-bin-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.sha }}
     - name: 'install gaff'
       shell: bash
+      env:
+        SHA: ${{ steps.resolve.outputs.sha }}
       run: |
         if [ ! -x "$HOME/.gaff-tools/bin/gaff" ]; then
           cargo install --git https://github.com/cjohnhanson/gaff \
-            --rev "${{ steps.resolve.outputs.sha }}" --locked \
+            --rev "$SHA" --locked \
             --root "$HOME/.gaff-tools" gaff
         fi
     - name: 'gaff on PATH'
