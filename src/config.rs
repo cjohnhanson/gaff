@@ -720,6 +720,16 @@ impl Config {
             }
             self.profiles.insert(name, profile);
         }
+        // Reviews take the union of both layers, and neither layer can
+        // drop the other's requirement. A merge gate reads this list,
+        // so a layer that replaced it could demand nothing and pass a
+        // change that no one reviewed.
+        for name in repo.reviews {
+            if !self.reviews.contains(&name) {
+                self.reviews.push(name);
+            }
+        }
+
         // A repo may add a git entry or a workflow, and it may not
         // replace one the user declared. Both run commands, and the
         // consent a user gave was to their own entry, not to whatever
@@ -1050,6 +1060,33 @@ mod layer_tests {
         let merged = user.overlaid_with(repo);
         assert_eq!(merged.reminders.len(), 1);
         assert_eq!(merged.reminders[0].name, "global");
+    }
+
+    #[test]
+    fn the_layers_take_the_union_of_the_required_reviews() {
+        // A merge gate reads this list. A layer that replaced it could
+        // demand nothing, and a change would land unreviewed. The bug
+        // this test holds shut: the repo's reviews were dropped when a
+        // user config existed, and every hermetic test still passed.
+        let user = cfg("reviews:\n  - review-code\n");
+        let repo = cfg("reviews:\n  - review-tests\n  - review-code\n");
+        let merged = user.overlaid_with(repo);
+        assert_eq!(
+            merged.reviews,
+            vec!["review-code".to_string(), "review-tests".to_string()],
+            "the union holds, and a name repeats once"
+        );
+
+        // A repo with no user config keeps its own list, in order.
+        let merged = cfg("").overlaid_with(cfg("reviews:\n  - review-docs\n  - review-deps\n"));
+        assert_eq!(
+            merged.reviews,
+            vec!["review-docs".to_string(), "review-deps".to_string()]
+        );
+
+        // A user list survives a repo that declares none.
+        let merged = cfg("reviews:\n  - review-usability\n").overlaid_with(cfg(""));
+        assert_eq!(merged.reviews, vec!["review-usability".to_string()]);
     }
 
     #[test]
