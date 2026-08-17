@@ -52,6 +52,15 @@ pub struct Config {
     /// The tool calls to refuse. This is the only feature that blocks.
     #[serde(default)]
     pub guards: Vec<crate::guard::Guard>,
+    /// The independent reviews a change must pass before it merges.
+    /// Each name is a review skill the repo carries.
+    ///
+    /// `None` and `Some([])` differ, and the difference is the point.
+    /// `None` means nobody stated a policy, and a gate must refuse
+    /// rather than require nothing. `Some([])` means an author wrote
+    /// `reviews: []` and chose that no review is required.
+    #[serde(default)]
+    pub reviews: Option<Vec<String>>,
 }
 
 /// A profile: a named bundle of entries, guards, and a stop rule.
@@ -222,6 +231,27 @@ impl Config {
     }
 }
 
+/// Merge the reviews of the two layers.
+///
+/// The repo states the policy, and the user adds to it. A repo that
+/// states nothing yields nothing, whatever the user declares: gate
+/// policy belongs to the repo, and a truncated repo config beside a
+/// user config would otherwise read as a policy the repo never wrote.
+///
+/// Where the repo states one, the union holds and neither layer drops
+/// the other's name. A gate reads this list, so a layer that replaced
+/// it could require nothing and pass a change that nobody reviewed.
+fn merge_reviews(user: Option<Vec<String>>, repo: Option<Vec<String>>) -> Option<Vec<String>> {
+    let repo = repo?;
+    let mut names = user.unwrap_or_default();
+    for name in repo {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Some(names)
+}
+
 /// Strip a repo profile of everything that would reach a user entry or
 /// carry a blocking rule.
 ///
@@ -371,6 +401,7 @@ impl Default for Config {
             git: Vec::new(),
             github: Vec::new(),
             guards: Vec::new(),
+            reviews: None,
         }
     }
 }
@@ -743,16 +774,24 @@ pub fn load_layered(cwd: &Path) -> Loaded {
     };
     match (user, load(cwd)) {
         (None, repo) => repo,
-        (Some(user), Loaded::Absent) => Loaded::Ok(user),
+        // No repo config states no review policy, and the user's list
+        // must not stand in for one. Every other user field survives:
+        // a repo that is absent cannot revoke what the user declared.
+        (Some(mut user), Loaded::Absent) => {
+            user.reviews = None;
+            Loaded::Ok(user)
+        }
         (Some(user), Loaded::Ok(repo) | Loaded::Degraded(repo)) => {
             Loaded::Ok(user.overlaid_with(repo))
         }
         // A repo that cannot be parsed contributes nothing. It must
         // not delete what the user declared, because the user's guards
         // are refusals and a repo could otherwise switch them all off
-        // with one bad line.
-        (Some(user), Loaded::Broken(err)) => {
+        // with one bad line. Its review policy is unreadable, though,
+        // so no list is stated.
+        (Some(mut user), Loaded::Broken(err)) => {
             eprintln!("gaff: {CONFIG_PATH} is not valid: {err}. Using the user config alone.");
+            user.reviews = None;
             Loaded::Degraded(user)
         }
     }
@@ -831,6 +870,8 @@ impl Config {
             }
             self.profiles.insert(name, profile);
         }
+        self.reviews = merge_reviews(self.reviews.take(), repo.reviews);
+
         // A repo may add a git entry or a workflow, and it may not
         // replace one the user declared. Both run commands, and the
         // consent a user gave was to their own entry, not to whatever
@@ -1343,6 +1384,72 @@ mod layer_tests {
         let merged = user.overlaid_with(repo);
         assert_eq!(merged.reminders.len(), 1);
         assert_eq!(merged.reminders[0].name, "global");
+    }
+
+    #[test]
+    fn the_layers_take_the_union_of_the_required_reviews() {
+        // A merge gate reads this list. A layer that replaced it could
+        // demand nothing, and a change would land unreviewed. The bug
+        // this test holds shut: the repo's reviews were dropped when a
+        // user config existed, and every hermetic test still passed.
+        let names = |c: Config| c.reviews.map(|v| v.join(","));
+
+        let user = cfg("reviews:\n  - review-code\n");
+        let repo = cfg("reviews:\n  - review-tests\n  - review-code\n");
+        assert_eq!(
+            names(user.overlaid_with(repo)).as_deref(),
+            Some("review-code,review-tests"),
+            "the union holds, and a name repeats once"
+        );
+
+        // A repo with no user config keeps its own list, in order.
+        let merged = cfg("").overlaid_with(cfg("reviews:\n  - review-docs\n  - review-deps\n"));
+        assert_eq!(names(merged).as_deref(), Some("review-docs,review-deps"));
+
+        // Absent and empty differ, and the merge keeps them apart.
+        assert_eq!(
+            names(cfg("").overlaid_with(cfg(""))),
+            None,
+            "neither states one"
+        );
+        assert_eq!(
+            names(cfg("").overlaid_with(cfg("reviews: []\n"))).as_deref(),
+            Some(""),
+            "a repo wrote `reviews: []`, and that is a policy"
+        );
+        assert_eq!(
+            names(cfg("reviews:\n  - review-code\n").overlaid_with(cfg("reviews: []\n")))
+                .as_deref(),
+            Some("review-code"),
+            "an empty repo list never drops a user requirement"
+        );
+    }
+
+    #[test]
+    fn a_user_config_cannot_state_the_policy_a_repo_omits() {
+        // Gate policy belongs to the repo. A truncated repo config
+        // beside a user config would otherwise read as a policy the
+        // repo never wrote, and a gate would then require the user's
+        // list where the repo stated nothing.
+        let names = |c: Config| c.reviews.map(|v| v.join(","));
+
+        for repo in ["", "reminders: []\n"] {
+            let merged = cfg("reviews:\n  - review-code\n").overlaid_with(cfg(repo));
+            assert_eq!(
+                names(merged),
+                None,
+                "a user list must not survive a repo that states no policy"
+            );
+        }
+
+        // A repo that states one takes the user's names with it.
+        let merged =
+            cfg("reviews:\n  - review-code\n").overlaid_with(cfg("reviews:\n  - review-tests\n"));
+        assert_eq!(
+            names(merged).as_deref(),
+            Some("review-code,review-tests"),
+            "the user's name comes first, and the repo's follows"
+        );
     }
 
     #[test]

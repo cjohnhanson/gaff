@@ -45,6 +45,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("log") => run_log(&args[1..]),
         Some("docs") => run_docs(&args[1..]),
         Some("ci") => run_ci(&args[1..]),
+        Some("reviews") => run_reviews(&args[1..]),
         Some("prime") => {
             print!("{}", prime());
             ExitCode::SUCCESS
@@ -94,6 +95,7 @@ Commands:
   log              Show the injection audit trail for a session
   docs [page]      Print the bundled documentation
   ci [--hook H]    Run the declared git gates against HEAD, as CI does
+  reviews          Print the reviews a change must pass, one to a line
   prime            Print what gaff is and how to use it, for an agent's context
 
 Options:
@@ -108,9 +110,9 @@ command's own code.";
 /// Every command `run` dispatches. The usage test and the prime test
 /// both walk it, so a command that dispatches but is undocumented, or
 /// documented but does not dispatch, fails a test.
-const COMMANDS: [&str; 14] = [
+const COMMANDS: [&str; 15] = [
     "hook", "githook", "remind", "allow", "status", "init", "check", "doctor", "trust", "profile",
-    "log", "docs", "prime", "ci",
+    "log", "docs", "prime", "ci", "reviews",
 ];
 
 /// The prime: what gaff is, for an agent's context.
@@ -857,6 +859,7 @@ fn run_check(args: &[String]) -> ExitCode {
     for entry in &cfg.git {
         problems.extend(entry.problems());
     }
+    problems.extend(review_problems(cfg.reviews.as_deref()));
 
     for w in &warnings {
         eprintln!("gaff: {w}");
@@ -2135,6 +2138,77 @@ fn run_ci(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     ci_phases(&cwd, &cfg, &hooks)
+}
+
+/// Faults in the declared review names.
+///
+/// A gate prints one name to a line and reads the result back, so a
+/// name that holds a newline becomes two requirements and a name that
+/// is empty becomes a blank line. A repeat inside one layer hides a
+/// typo: the author sees two entries and the gate requires one.
+fn review_problems(reviews: Option<&[String]>) -> Vec<String> {
+    let Some(names) = reviews else {
+        return Vec::new();
+    };
+    let mut problems = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for name in names {
+        if name.trim().is_empty() {
+            problems
+                .push("a review name is empty. Name the review a change must pass.".to_string());
+            continue;
+        }
+        if name.chars().any(char::is_whitespace) {
+            problems.push(format!(
+                "the review name `{name}` holds whitespace. A gate reads one name to a line, so a name with a newline becomes two requirements."
+            ));
+        }
+        if seen.contains(&name.as_str()) {
+            problems.push(format!(
+                "the review `{name}` is declared twice. Remove one, or name the second review."
+            ));
+        }
+        seen.push(name);
+    }
+    problems
+}
+
+/// `gaff reviews`: print the required reviews, one to a line.
+///
+/// A merge gate reads the list from here. A gate that parsed the
+/// config file itself would break when the format changes, and it
+/// would then require nothing.
+///
+/// An absent declaration and an empty one differ. A repo that states
+/// no `reviews:` key gets an error, because no policy must not read as
+/// "no review is required". A repo that writes `reviews: []` succeeds
+/// and prints nothing, because an author chose that.
+fn run_reviews(args: &[String]) -> ExitCode {
+    if let Some(arg) = args.first() {
+        return fail(&format!("unexpected argument `{arg}` (reviews takes none)"));
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    // One read. The merge holds the rule that the repo states the
+    // policy, so reading the repo layer a second time to test it would
+    // open a window where the two reads disagree.
+    let cfg = match ci_config(&cwd) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let Some(names) = cfg.reviews.as_ref() else {
+        return fail(
+            "no reviews are declared in .gaff/gaff.yml. A gate that read this as \"none \
+             required\" would merge an unreviewed change. Write `reviews: []` there to state \
+             that none are required, or list the reviews a change must pass. A user config \
+             may add a review, and may not state the policy for a repo.",
+        );
+    };
+    for name in names {
+        println!("{name}");
+    }
+    ExitCode::SUCCESS
 }
 
 /// The hook set `gaff ci` runs: `--hook` values, else both.

@@ -1,0 +1,155 @@
+doc: |
+  A gate reads the list and can tell every failure apart. Each
+  assertion checks the exit code directly. A shell pipeline reports the
+  last command's status, so gaff's status would never be seen.
+
+  Each command sets HOME to an absolute path of its own. A relative
+  HOME breaks the sandbox, which resolves a cache path under it.
+assertions:
+  - name: "a gate loops the list without a yaml parser"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      gaff reviews | while read -r n; do [ -n "$n" ] || exit 1; done
+
+  - name: "the list holds one name to a line"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      [ "$(gaff reviews | wc -l | tr -d ' ')" = 2 ]
+
+  - name: "an absent declaration is an error, never an empty list"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      cp .gaff/gaff.yml .gaff/keep.yml
+      printf 'reminders: []\n' > .gaff/gaff.yml
+      OUT=$(gaff reviews 2>&1)
+      code=$?
+      mv .gaff/keep.yml .gaff/gaff.yml
+      [ "$code" != 0 ] || { echo "FAIL: no declaration exited 0 with [$OUT]"; exit 1; }
+      printf '%s' "$OUT" | grep -q 'reviews: \[\]' || { echo "FAIL: the error does not name the fix: $OUT"; exit 1; }
+
+  - name: "an empty declaration succeeds and prints nothing"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      cp .gaff/gaff.yml .gaff/keep.yml
+      printf 'reviews: []\n' > .gaff/gaff.yml
+      OUT=$(gaff reviews)
+      code=$?
+      mv .gaff/keep.yml .gaff/gaff.yml
+      [ "$code" = 0 ] || { echo "FAIL: an author's `reviews: []` exited $code"; exit 1; }
+      [ -z "$OUT" ] || { echo "FAIL: printed [$OUT]"; exit 1; }
+
+  - name: "a repo with no config is an error, not an empty list"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      mv .gaff .gaff-away
+      gaff reviews >/dev/null 2>&1
+      code=$?
+      mv .gaff-away .gaff
+      [ "$code" != 0 ] || { echo "FAIL: a repo with no config exited 0"; exit 1; }
+
+  - name: "a truncated config is an error, not an empty list"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      cp .gaff/gaff.yml .gaff/keep.yml
+      : > .gaff/gaff.yml
+      gaff reviews >/dev/null 2>&1
+      code=$?
+      mv .gaff/keep.yml .gaff/gaff.yml
+      [ "$code" != 0 ] || { echo "FAIL: a zero-byte config exited 0"; exit 1; }
+
+  - name: "a broken config is an error, not an empty list"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      cp .gaff/gaff.yml .gaff/keep.yml
+      printf 'reviews: [\n' > .gaff/gaff.yml
+      gaff reviews >/dev/null 2>&1
+      code=$?
+      mv .gaff/keep.yml .gaff/gaff.yml
+      [ "$code" != 0 ] || { echo "FAIL: a broken config exited 0"; exit 1; }
+
+  - name: "a user layer adds its review, and the repo cannot drop it"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      mkdir -p "$HOME/.config/gaff"
+      printf 'reviews:\n  - review-from-user\n' > "$HOME/.config/gaff/gaff.yml"
+      OUT=$(gaff reviews)
+      code=$?
+      rm -rf "$HOME/.config/gaff"
+      [ "$code" = 0 ] || { echo "FAIL: exit $code"; exit 1; }
+      printf '%s' "$OUT" | grep -qx 'review-from-user' || { echo "FAIL: the user review is missing from [$OUT]"; exit 1; }
+      printf '%s' "$OUT" | grep -qx 'review-tests' || { echo "FAIL: the repo review is missing from [$OUT]"; exit 1; }
+
+  - name: "a broken repo config never silently drops the user's reviews"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      mkdir -p "$HOME/.config/gaff"
+      printf 'reviews:\n  - review-from-user\n' > "$HOME/.config/gaff/gaff.yml"
+      cp .gaff/gaff.yml .gaff/keep.yml
+      printf 'reviews: [\n' > .gaff/gaff.yml
+      gaff reviews >/dev/null 2>&1
+      code=$?
+      mv .gaff/keep.yml .gaff/gaff.yml
+      rm -rf "$HOME/.config/gaff"
+      [ "$code" != 0 ] || { echo "FAIL: a broken repo config exited 0"; exit 1; }
+
+  - name: "ci refuses a repo with no config, rather than certifying nothing"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      mv .gaff .gaff-away
+      gaff ci >/dev/null 2>&1
+      code=$?
+      mv .gaff-away .gaff
+      [ "$code" != 0 ] || { echo "FAIL: ci passed a repo with no gates"; exit 1; }
+
+  - name: "a user config cannot state the policy a repo left unstated"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      mkdir -p "$HOME/.config/gaff"
+      printf 'reviews:\n  - review-from-user\n' > "$HOME/.config/gaff/gaff.yml"
+      cp .gaff/gaff.yml .gaff/keep.yml
+      printf 'reminders: []\n' > .gaff/gaff.yml
+      gaff reviews >/dev/null 2>&1
+      keyless=$?
+      : > .gaff/gaff.yml
+      gaff reviews >/dev/null 2>&1
+      truncated=$?
+      mv .gaff/keep.yml .gaff/gaff.yml
+      rm -rf "$HOME/.config/gaff"
+      [ "$keyless" != 0 ] || { echo "FAIL: a user config supplied a policy the repo omitted"; exit 1; }
+      [ "$truncated" != 0 ] || { echo "FAIL: a user config masked a truncated repo config"; exit 1; }
+
+  - name: "an unknown argument refuses"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      ! gaff reviews --json >/dev/null 2>&1
+
+  - name: "check refuses a name that would become two requirements"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      cp .gaff/gaff.yml .gaff/keep.yml
+      printf 'reviews:\n  - "one two"\n' > .gaff/gaff.yml
+      gaff check >/dev/null 2>&1
+      code=$?
+      mv .gaff/keep.yml .gaff/gaff.yml
+      [ "$code" != 0 ] || { echo "FAIL: a name with whitespace passed check"; exit 1; }
+
+  - name: "check refuses a name declared twice"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      cp .gaff/gaff.yml .gaff/keep.yml
+      printf 'reviews:\n  - review-tests\n  - review-tests\n' > .gaff/gaff.yml
+      gaff check >/dev/null 2>&1
+      code=$?
+      mv .gaff/keep.yml .gaff/gaff.yml
+      [ "$code" != 0 ] || { echo "FAIL: a repeated name passed check"; exit 1; }
+
+  - name: "reviews is a known field, and an unknown one still refuses"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      cp .gaff/gaff.yml .gaff/keep.yml
+      printf 'reviews: []\nnosuchfield: 1\n' > .gaff/gaff.yml
+      gaff check >/dev/null 2>&1
+      code=$?
+      mv .gaff/keep.yml .gaff/gaff.yml
+      [ "$code" != 0 ] || { echo "FAIL: an unknown field passed"; exit 1; }
+      gaff check >/dev/null || { echo "FAIL: the good config stopped validating"; exit 1; }
