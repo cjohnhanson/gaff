@@ -11,11 +11,11 @@ created: '2026-08-12T17:01:38Z'
 updated: '2026-08-14T21:57:07Z'
 ---
 
-skills/gaff/SKILL.md ships in-repo. Publish to the skills.sh ecosystem per the codelikecody convention for consumer-facing skills.
+skills/gaff/SKILL.md ships in-repo. Publish to the skills.sh ecosystem per the convention for consumer-facing skills.
 
 ## Scratch Notes
 
-Research (zettel ozvq in codelikecody): skills.sh has no submission flow — public git repos with skills/ dirs are discovered via install telemetry. This repo already qualifies. Remaining action is verification only: npx skills add cjohnhanson/gaff and confirm the skill installs.
+Research (zettel note ozvq): skills.sh has no submission flow — public git repos with skills/ dirs are discovered via install telemetry. This repo already qualifies. Remaining action is verification only: npx skills add cjohnhanson/gaff and confirm the skill installs.
 
 CLOSED as invalid 2026-08-14. Cody asked who requested this; nobody did. It was self-seeded in commit 849b76e ('seed follow-up issues'), not requested.
 
