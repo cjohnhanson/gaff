@@ -2083,46 +2083,15 @@ fn run_reviews(args: &[String]) -> ExitCode {
 /// The check is a claim check. It cannot verify that a review happened,
 /// only that someone wrote that it did. What it changes is what a
 /// reviewer acting in good faith thinks to do before writing the note.
-fn run_reviews_check(args: &[String]) -> ExitCode {
-    if let Some(arg) = args.first() {
-        return fail(&format!(
-            "unexpected argument `{arg}` (reviews check takes none)"
-        ));
-    }
-    let Ok(cwd) = std::env::current_dir() else {
-        return fail("cannot resolve the working directory");
-    };
-    let cfg = match ci_config(&cwd) {
-        Ok(c) => c,
-        Err(code) => return code,
-    };
-    let Some(required) = cfg.reviews.as_ref() else {
-        return fail(
-            "no reviews are declared in .gaff/gaff.yml. A gate that read this as \"none \
-             required\" would merge an unreviewed change. Write `reviews: []` there to state \
-             that none are required, or list the reviews a change must pass.",
-        );
-    };
+/// True for a hex string long enough to name a commit.
+fn is_hex_sha(s: &str) -> bool {
+    s.len() >= 7 && s.len() <= 40 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
 
-    let mut stdin = String::new();
-    if std::io::stdin().read_to_string(&mut stdin).is_err() {
-        return fail("cannot read the pushed refs from stdin");
-    }
-    let refs = crate::reviewnote::parse_refs(&stdin);
-
-    let env = |k: &str| std::env::var(k).ok();
-    let head_override = match crate::reviewnote::pull_request_head(&env) {
-        Some(Ok(sha)) => {
-            println!("reviews: pull request. Reading the note on {sha}.");
-            Some(sha)
-        }
-        Some(Err(why)) => return fail(&format!("this is a pull request event and {why}")),
-        None => None,
-    };
-
-    let verdicts = crate::reviewnote::check(&cwd, &refs, required, head_override.as_deref());
+/// Print why each tip was refused. Returns true when any was.
+fn report_review_faults(verdicts: &[crate::reviewnote::Verdict]) -> bool {
     let mut refused = false;
-    for v in &verdicts {
+    for v in verdicts {
         if v.faults.is_empty() {
             continue;
         }
@@ -2179,6 +2148,60 @@ fn run_reviews_check(args: &[String]) -> ExitCode {
             v.commit
         );
     }
+    refused
+}
+
+fn run_reviews_check(args: &[String]) -> ExitCode {
+    // `--head` names the commit a reviewer read, for a pull request
+    // event whose checkout is a merge commit nobody saw. Only `gaff ci`
+    // passes it, from the event payload. It is an argument rather than
+    // an environment variable because a pre-push hook takes its argv
+    // from the committed config, and a shell cannot add to that. The
+    // earlier environment form let three variables and a payload file
+    // push an unreviewed commit past the gate.
+    let mut head_override: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--head" => match it.next() {
+                Some(sha) if is_hex_sha(sha) => head_override = Some(sha.clone()),
+                Some(sha) => return fail(&format!("`{sha}` is not a commit sha")),
+                None => return fail("--head requires a sha"),
+            },
+            other => {
+                return fail(&format!(
+                    "unexpected argument `{other}` (reviews check takes --head <sha>)"
+                ));
+            }
+        }
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    let cfg = match ci_config(&cwd) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let Some(required) = cfg.reviews.as_ref() else {
+        return fail(
+            "no reviews are declared in .gaff/gaff.yml. A gate that read this as \"none \
+             required\" would merge an unreviewed change. Write `reviews: []` there to state \
+             that none are required, or list the reviews a change must pass.",
+        );
+    };
+
+    let mut stdin = String::new();
+    if std::io::stdin().read_to_string(&mut stdin).is_err() {
+        return fail("cannot read the pushed refs from stdin");
+    }
+    let refs = crate::reviewnote::parse_refs(&stdin);
+
+    if let Some(sha) = &head_override {
+        println!("reviews: reading the note on {sha}, not the checkout.");
+    }
+
+    let verdicts = crate::reviewnote::check(&cwd, &refs, required, head_override.as_deref());
+    let refused = report_review_faults(&verdicts);
     if refused {
         return ExitCode::from(1);
     }
@@ -2328,6 +2351,23 @@ fn ci_phases(cwd: &std::path::Path, cfg: &config::Config, hooks: &[String]) -> E
             head.sha
         );
     }
+    // A pull request event checks out a merge commit the forge builds.
+    // No reviewer saw it, so a review check reading the checkout would
+    // refuse every pull request. The branch head is what a reviewer
+    // read, and this is the only place that reads it: a gate takes its
+    // argv from the committed config, so a shell cannot introduce the
+    // override there.
+    let env = |k: &str| std::env::var(k).ok();
+    let pr_head = match crate::reviewnote::pull_request_head(&env) {
+        Some(Ok(sha)) => Some(sha),
+        Some(Err(why)) => return fail(&format!("this is a pull request event and {why}")),
+        None => None,
+    };
+    let push_sha = pr_head.clone().unwrap_or_else(|| head.sha.clone());
+    if let Some(sha) = &pr_head {
+        println!("gaff: ci: pull request. The gates see {sha}, the branch head.");
+    }
+
     for hook in hooks {
         let (args, stdin): (Vec<String>, Option<Vec<u8>>) = if hook == "pre-push" {
             // git's pre-push contract: the remote name and URL as
@@ -2335,9 +2375,8 @@ fn ci_phases(cwd: &std::path::Path, cfg: &config::Config, hooks: &[String]) -> E
             // synthesized local ref is never refs/notes/*, so a
             // notes exemption in a gate cannot fire here.
             let line = format!(
-                "{branch} {sha} {branch} 0000000000000000000000000000000000000000\n",
+                "{branch} {push_sha} {branch} 0000000000000000000000000000000000000000\n",
                 branch = head.branch,
-                sha = head.sha
             );
             (
                 vec![
