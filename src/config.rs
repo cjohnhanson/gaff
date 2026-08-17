@@ -157,25 +157,23 @@ impl Config {
 
 /// Merge the reviews of the two layers.
 ///
-/// The union holds, and neither layer drops the other's requirement. A
-/// merge gate reads this list, so a layer that replaced it could
-/// require nothing and pass a change that nobody reviewed.
+/// The repo states the policy, and the user adds to it. A repo that
+/// states nothing yields nothing, whatever the user declares: gate
+/// policy belongs to the repo, and a truncated repo config beside a
+/// user config would otherwise read as a policy the repo never wrote.
 ///
-/// A layer that states nothing contributes nothing. It does not turn a
-/// stated policy back into an absent one, and it does not invent one.
+/// Where the repo states one, the union holds and neither layer drops
+/// the other's name. A gate reads this list, so a layer that replaced
+/// it could require nothing and pass a change that nobody reviewed.
 fn merge_reviews(user: Option<Vec<String>>, repo: Option<Vec<String>>) -> Option<Vec<String>> {
-    match (user, repo) {
-        (None, None) => None,
-        (Some(list), None) | (None, Some(list)) => Some(list),
-        (Some(mut user), Some(repo)) => {
-            for name in repo {
-                if !user.contains(&name) {
-                    user.push(name);
-                }
-            }
-            Some(user)
+    let repo = repo?;
+    let mut names = user.unwrap_or_default();
+    for name in repo {
+        if !names.contains(&name) {
+            names.push(name);
         }
     }
+    Some(names)
 }
 
 /// Strip a repo profile of everything that would reach a user entry.
@@ -658,16 +656,24 @@ pub fn load_layered(cwd: &Path) -> Loaded {
     };
     match (user, load(cwd)) {
         (None, repo) => repo,
-        (Some(user), Loaded::Absent) => Loaded::Ok(user),
+        // No repo config states no review policy, and the user's list
+        // must not stand in for one. Every other user field survives:
+        // a repo that is absent cannot revoke what the user declared.
+        (Some(mut user), Loaded::Absent) => {
+            user.reviews = None;
+            Loaded::Ok(user)
+        }
         (Some(user), Loaded::Ok(repo) | Loaded::Degraded(repo)) => {
             Loaded::Ok(user.overlaid_with(repo))
         }
         // A repo that cannot be parsed contributes nothing. It must
         // not delete what the user declared, because the user's guards
         // are refusals and a repo could otherwise switch them all off
-        // with one bad line.
-        (Some(user), Loaded::Broken(err)) => {
+        // with one bad line. Its review policy is unreadable, though,
+        // so no list is stated.
+        (Some(mut user), Loaded::Broken(err)) => {
             eprintln!("gaff: {CONFIG_PATH} is not valid: {err}. Using the user config alone.");
+            user.reviews = None;
             Loaded::Degraded(user)
         }
     }
@@ -1100,32 +1106,49 @@ mod layer_tests {
         let merged = cfg("").overlaid_with(cfg("reviews:\n  - review-docs\n  - review-deps\n"));
         assert_eq!(names(merged).as_deref(), Some("review-docs,review-deps"));
 
-        // A user list survives a repo that declares none.
-        let merged = cfg("reviews:\n  - review-usability\n").overlaid_with(cfg(""));
-        assert_eq!(names(merged).as_deref(), Some("review-usability"));
-
-        // Absent and empty differ, and the merge keeps them apart. A
-        // layer that states nothing must not turn a stated policy back
-        // into an absent one, and it must not invent a policy either.
+        // Absent and empty differ, and the merge keeps them apart.
         assert_eq!(
             names(cfg("").overlaid_with(cfg(""))),
             None,
             "neither states one"
         );
         assert_eq!(
-            names(cfg("reviews: []\n").overlaid_with(cfg(""))).as_deref(),
-            Some(""),
-            "an author wrote `reviews: []`, and that survives a silent layer"
-        );
-        assert_eq!(
             names(cfg("").overlaid_with(cfg("reviews: []\n"))).as_deref(),
-            Some("")
+            Some(""),
+            "a repo wrote `reviews: []`, and that is a policy"
         );
         assert_eq!(
             names(cfg("reviews:\n  - review-code\n").overlaid_with(cfg("reviews: []\n")))
                 .as_deref(),
             Some("review-code"),
             "an empty repo list never drops a user requirement"
+        );
+    }
+
+    #[test]
+    fn a_user_config_cannot_state_the_policy_a_repo_omits() {
+        // Gate policy belongs to the repo. A truncated repo config
+        // beside a user config would otherwise read as a policy the
+        // repo never wrote, and a gate would then require the user's
+        // list where the repo stated nothing.
+        let names = |c: Config| c.reviews.map(|v| v.join(","));
+
+        for repo in ["", "reminders: []\n"] {
+            let merged = cfg("reviews:\n  - review-code\n").overlaid_with(cfg(repo));
+            assert_eq!(
+                names(merged),
+                None,
+                "a user list must not survive a repo that states no policy"
+            );
+        }
+
+        // A repo that states one takes the user's names with it.
+        let merged =
+            cfg("reviews:\n  - review-code\n").overlaid_with(cfg("reviews:\n  - review-tests\n"));
+        assert_eq!(
+            names(merged).as_deref(),
+            Some("review-code,review-tests"),
+            "the user's name comes first, and the repo's follows"
         );
     }
 
