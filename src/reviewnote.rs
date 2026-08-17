@@ -1,16 +1,14 @@
 //! The review-note check a merge gate runs.
 //!
 //! A push carries a note under `refs/notes/reviews` on each pushed
-//! tip. That note records the reviews the change passed. The reviews a
-//! change must pass are declared in `.gaff/gaff.yml`, so this module
-//! never hard-codes a review name: it asks the config, then reads the
-//! note for each declared name.
+//! tip. That note records the reviews a change passed.
 //!
-//! This lived as a shell script in each consuming repository. Six
-//! copies of branching security logic in a language with no test
-//! framework is the wrong home for it, and testing it from the
-//! consuming crate's own test suite was worse. It is Rust here, tested
-//! next to the code.
+//! `.gaff/gaff.yml` declares the reviews a change must pass. This
+//! module reads that list. It then reads the note on each pushed tip
+//! and looks for a sign-off naming every declared review.
+//!
+//! This check ran as a shell script in six repositories before gaff
+//! took it. See commit efbfdc4.
 
 use std::process::Command;
 
@@ -26,10 +24,11 @@ const ZERO: &str = "0000000000000000000000000000000000000000";
 
 /// Parse git's pre-push lines: `<local-ref> <local-sha> <remote-ref> <remote-sha>`.
 ///
-/// A deletion merges nothing, so it is dropped. A push of the notes ref
-/// shares review records rather than proposing a change, so it is
-/// dropped too. The exemption keys on the remote ref: a notes object
-/// pushed at a branch lands on that branch and is checked.
+/// Two kinds of line are dropped. A deletion merges nothing. A push of
+/// the notes ref shares review records and proposes no change.
+///
+/// The decision reads the remote ref, not the local one. A notes
+/// object pushed at a branch lands on that branch, so it is checked.
 #[must_use]
 pub fn parse_refs(stdin: &str) -> Vec<PushedRef> {
     stdin
@@ -206,9 +205,9 @@ pub fn shortfall(note: Option<&str>, required: &[String], commit: &str) -> Vec<M
 
 /// The commit a pull request proposes, read from the event payload.
 ///
-/// A pull request event checks out a merge commit the forge creates.
-/// No reviewer saw that commit, so checking it would refuse every pull
-/// request. The branch head is what a reviewer read.
+/// On a pull request, GitHub creates a merge commit and the runner
+/// checks that commit out. No reviewer read it, so a check against it
+/// would refuse every pull request. A reviewer reads the branch head.
 ///
 /// THE ENVIRONMENT DOES NOT REACH THIS. An earlier version keyed the
 /// override on `GITHUB_ACTIONS`, `GITHUB_EVENT_NAME` and
