@@ -1,2 +1,2 @@
-signoff[fresh-eyes] FAIL b174e25 the guard has no test
-signoff[mutation] PASS b174e25 removed the guard and it went red
+signoff[fresh-eyes] PASS b174e25 read the parser and every guard
+signoff[mutation] PASS b174e25 removed the FAIL branch and a_failed_signoff_refuses_the_push went red
