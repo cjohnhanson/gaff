@@ -92,7 +92,7 @@ An absent `reviews:` key and `reviews: []` mean different things:
 | The repository config | `gaff reviews` | The meaning |
 |-----------------------|----------------|-------------|
 | no `reviews:` key | exits 1, names the fix | Nobody stated a policy |
-| `reviews: []` | exits 0, prints nothing | An author requires no review |
+| `reviews: []` | exits 0, prints the user's names if any | An author requires none of its own |
 | one or more names | exits 0, prints them | Those reviews are required |
 
 The error matters. A deleted `reviews:` key must not mean "no review is
@@ -102,19 +102,23 @@ author who wants no review writes `reviews: []`.
 A missing config file, an empty file, and a file gaff cannot parse each
 exit 1.
 
-The repository states the policy, and a user config adds to it. Both
-lists join, and neither drops a name from the other. A user requires a
-review in every repository they work in; a repository adds its own.
-Neither can disable a review the other requires.
+The repository states the policy, and a user config adds to it. Where
+the repository states one, both lists join and neither drops a name
+from the other. The user's names come first, then the repository's.
 
-A user config cannot state a policy for a repository that omits one.
-Gate policy belongs to the repository, and a truncated repository
-config beside a user config would otherwise read as a policy the
-repository never wrote.
+Where the repository states none, the command exits 1 and the user's
+list does not stand in. That holds for a repository config that is
+missing, empty, unparseable, or without the key. Gate policy belongs
+to the repository. A truncated config beside a user config would
+otherwise read as a policy the repository never wrote.
 
 `gaff check` refuses an empty name, a name holding whitespace, and a
-repeated name. A name holding a newline would become two requirements,
-because a caller reads one name to a line.
+name repeated within one config. A name holding a newline would become
+two requirements, because a caller reads one name to a line. A name in
+both configs is not a repeat; the merge keeps one copy.
+
+`gaff reviews` does not run these checks. A caller that needs them runs
+`gaff check` too.
 
 ## Sections
 

@@ -142,7 +142,8 @@ key, the command exits 1 and names the fix.
 An absent policy must not read as "no review is required".
 Where that config holds
 .Ql reviews: [] ,
-the command exits 0 and prints nothing.
+the command exits 0 and prints the user config's names, if it declares
+any.
 The user config and the repository config both contribute names, and
 neither drops a name from the other.
 A user config cannot state the policy for a repository that omits one.
