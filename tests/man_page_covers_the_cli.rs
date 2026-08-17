@@ -128,12 +128,13 @@ fn every_fault_that_refuses_a_push_is_documented() {
     // One phrase for each `reviewnote::Missing` variant, in the order
     // the page lists them. A variant added with no phrase here is not
     // caught. A phrase deleted from the page is.
-    const FAULTS: [&str; 6] = [
+    const FAULTS: [&str; 7] = [
         "a declared review with no sign-off",
         "a verdict of",
         "a sign-off naming another commit",
         "two sign-offs for one review",
         "evidence of fewer than",
+        "a sha of fewer than",
         "no note at all",
     ];
     let prose = reviews_check_prose();
@@ -153,5 +154,17 @@ fn the_man_page_documents_no_flag_on_reviews_check() {
     assert!(
         !reviews_check_prose().contains("-head"),
         "docs/man/gaff.1 documents a --head flag that `reviews check` does not take"
+    );
+}
+
+#[test]
+fn the_sha_floor_in_the_man_page_matches_the_code() {
+    let want = format!(
+        "a sha of fewer than {} characters",
+        gaff::reviewnote::SHA_FLOOR
+    );
+    assert!(
+        reviews_check_prose().contains(&want),
+        "docs/man/gaff.1 states a sha floor that is not `{want}`"
     );
 }

@@ -7,7 +7,7 @@
 //! `gix` was missing its `sha1` feature, so opening the repository
 //! failed and the check reported "no review note" for a commit that
 //! carried one. Fail-closed, so no unreviewed change could land, and
-//! no push could land either.
+//! no push could complete either.
 //!
 //! Spawning git is allowed here. The rule covers `src/`, where gaff
 //! decides things. A test may use git to build the repository it reads.
@@ -26,6 +26,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
         .env("GIT_COMMITTER_NAME", "test")
         .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        // The machine's own git config must not reach the fixture. A
+        // contributor with `commit.gpgsign = true` turned every test
+        // here red, because the fixture commit asked for a signature.
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .output()
         .unwrap_or_else(|e| panic!("cannot run git {args:?}: {e}"));
     assert!(
@@ -133,6 +138,8 @@ fn git_mktree(dir: &Path, entry: &str) -> String {
     let mut child = Command::new("git")
         .args(["mktree"])
         .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -166,4 +173,47 @@ fn a_tag_pushed_at_a_commit_peels_to_it() {
         verdicts[0].faults
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_notes_ref_that_holds_no_entry_for_this_commit_is_refused() {
+    // Distinct from a repository with no notes ref at all. That case
+    // stops at `find_reference`; this one walks the tree and finds
+    // nothing, which is the path a real repository takes.
+    let (dir, sha) = repo_with_one_commit("miss");
+    let body = format!("signoff[fresh-eyes] PASS {sha} read the parser and every guard");
+    git(&dir, &["notes", "--ref=reviews", "add", "-m", &body]);
+
+    // A second commit, annotated by nothing.
+    std::fs::write(dir.join("f.txt"), "two").expect("write a file");
+    git(&dir, &["add", "f.txt"]);
+    git(&dir, &["commit", "-qm", "two"]);
+    let second = git(&dir, &["rev-parse", "HEAD"]);
+    assert_ne!(second, sha);
+
+    let verdicts = check(&dir, &pushed(&second), &required());
+    assert_eq!(
+        verdicts[0].faults,
+        vec![Missing::Note],
+        "a note belonging to another commit was read for this one"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reviews_check_takes_no_argument() {
+    // The man page says the command takes none, and a test binds that
+    // claim to the page. Nothing bound it to the code, so the flag
+    // could return without failing anything.
+    let out = Command::new(env!("CARGO_BIN_EXE_gaff"))
+        .args(["reviews", "check", "--head", "abcdef0"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run gaff");
+    assert!(!out.status.success(), "`reviews check --head` was accepted");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("unexpected argument"),
+        "the refusal does not name the argument: {said}"
+    );
 }

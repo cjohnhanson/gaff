@@ -2130,6 +2130,16 @@ fn report_review_faults(verdicts: &[crate::reviewnote::Verdict]) -> bool {
                         v.commit
                     );
                 }
+                crate::reviewnote::Missing::ShortCommit { review, named } => {
+                    eprintln!(
+                        "reviews: the {review} sign-off on {} names `{named}`, which is not a sha.",
+                        v.commit
+                    );
+                    eprintln!(
+                        "  A sha carries at least {} hex characters. A shorter prefix matches many commits.",
+                        crate::reviewnote::SHA_FLOOR
+                    );
+                }
             }
         }
         eprintln!("  `gaff reviews` lists what a change must pass here.");
@@ -2145,7 +2155,7 @@ fn report_review_faults(verdicts: &[crate::reviewnote::Verdict]) -> bool {
 }
 
 /// `gaff reviews check`: every declared review needs a sign-off on
-/// every pushed tip. A tip that lacks one refuses the push.
+/// every pushed tip. The check refuses a push whose tip lacks one.
 ///
 /// Reads git's pre-push ref lines on stdin, so a pre-push hook pipes
 /// its own stdin straight through.
