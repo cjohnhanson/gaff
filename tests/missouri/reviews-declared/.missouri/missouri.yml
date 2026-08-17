@@ -4,17 +4,19 @@ doc: |
   declaration and an empty one differ: nobody stated a policy, against
   an author who stated that none is required.
 
-  HOME is hermetic. The layers union, so a real user config would add
-  its own names and the assertions below would drift with the machine.
-env:
-  HOME: "."
+  Each command sets HOME to an absolute path of its own. A real user
+  config would add its names to the union, and the assertions would
+  then drift with the machine. A relative HOME breaks the sandbox,
+  which resolves a cache path under it.
 transitions:
   - name: "reviews prints the declared list, one to a line, in order"
     command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
       OUT=$(gaff reviews)
       code=$?
       [ "$code" = 0 ] || { echo "FAIL: exit $code"; exit 1; }
       [ "$(printf '%s' "$OUT" | tr '\n' ',')" = "review-tests,review-docs" ] || { echo "FAIL: got [$OUT]"; exit 1; }
+      rm -rf "$HOME"
       echo LISTED_OK
     target: ../reviews-listed
     stdout: "LISTED_OK\n"

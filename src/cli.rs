@@ -2066,15 +2066,25 @@ fn run_reviews(args: &[String]) -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
+    // The repo must state the policy. A user config may add a review
+    // to it, and may not supply one the repo left unstated: gate policy
+    // belongs to the repo, and a truncated repo config beside a user
+    // config would otherwise read as a policy the repo never wrote.
+    let repo_states_policy = match config::load(&cwd) {
+        config::Loaded::Ok(c) | config::Loaded::Degraded(c) => c.reviews.is_some(),
+        config::Loaded::Absent => false,
+        config::Loaded::Broken(err) => return fail(&err),
+    };
     let cfg = match ci_config(&cwd) {
         Ok(c) => c,
         Err(code) => return code,
     };
-    let Some(names) = &cfg.reviews else {
+    let Some(names) = cfg.reviews.as_ref().filter(|_| repo_states_policy) else {
         return fail(
-            "the repo declares no reviews. A gate that read this as \"none required\" would \
-             merge an unreviewed change. Write `reviews: []` in .gaff/gaff.yml to state that \
-             none are required, or list the reviews a change must pass.",
+            "no reviews are declared in .gaff/gaff.yml. A gate that read this as \"none \
+             required\" would merge an unreviewed change. Write `reviews: []` there to state \
+             that none are required, or list the reviews a change must pass. A user config \
+             may add a review, and may not state the policy for a repo.",
         );
     };
     for name in names {

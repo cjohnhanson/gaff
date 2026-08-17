@@ -44,6 +44,11 @@ keeping the user's label on it.
 - `transitions`: the user value wins whenever the user sets one. That
   field says which profiles an agent may grant itself, and a repo must
   never widen it.
+- `reviews`: both lists join, and neither drops a name from the other.
+  A script reads this list to decide whether a change may merge, so a
+  layer that replaced it could require nothing. The repo must state the
+  policy: a user config adds a name and never supplies a list the repo
+  omitted.
 
 Only the user config may hold handlers, and they live in their own file.
 That keeps the security boundary easy to check: a command can only come
@@ -66,7 +71,7 @@ from `handlers.yml`.
 
 ## Reviews
 
-A repo names the independent reviews a change must pass:
+A repository names the independent reviews a change must pass:
 
 ```yaml
 reviews:
@@ -74,37 +79,42 @@ reviews:
   - review-docs
 ```
 
-Each name is a review skill the repo carries. gaff records the policy
-and enforces nothing: a gate script reads the list and decides.
+Each name is a review skill the repository carries. gaff records the
+policy and enforces nothing. A separate script reads the list and
+decides whether a change may merge.
 
-`gaff reviews` prints one name to a line, in declaration order. A gate
-reads that command. A gate that read the config file itself would break
-when the format changes, and it would then require nothing.
+`gaff reviews` prints one name to a line, in declaration order. A
+script that read this file itself would break when the format changes,
+and it would then require nothing.
 
-An absent `reviews:` key and `reviews: []` differ:
+An absent `reviews:` key and `reviews: []` mean different things:
 
-| The config | `gaff reviews` | What it means |
-|------------|----------------|---------------|
+| The repository config | `gaff reviews` | The meaning |
+|-----------------------|----------------|-------------|
 | no `reviews:` key | exits 1, names the fix | Nobody stated a policy |
-| `reviews: []` | exits 0, prints nothing | An author stated that none is required |
+| `reviews: []` | exits 0, prints nothing | An author requires no review |
 | one or more names | exits 0, prints them | Those reviews are required |
 
-The error is the point. A deleted block must not read as "no review is
-required", because a gate would then merge an unreviewed change. An
-author who wants no review writes `reviews: []` and says so.
+The error matters. A deleted `reviews:` key must not mean "no review is
+required", because a script would then merge an unreviewed change. An
+author who wants no review writes `reviews: []`.
 
-A missing config, an empty file, and a config gaff cannot parse each
-exit 1 for the same reason. Read the exit code. A pipeline reports the
-last command's status, not gaff's.
+A missing config file, an empty file, and a file gaff cannot parse each
+exit 1.
 
-The two layers union, and neither drops the other's names. A user names
-a review for every repo they work in; a repo adds its own. Neither can
-remove what the other requires, so a repo cannot switch off a review
-its author never sanctioned.
+The repository states the policy, and a user config adds to it. Both
+lists join, and neither drops a name from the other. A user requires a
+review in every repository they work in; a repository adds its own.
+Neither can disable a review the other requires.
 
-`gaff check` refuses a name that holds whitespace, an empty name, and a
-name declared twice in one layer. A name with a newline would become
-two requirements when a gate reads one name to a line.
+A user config cannot state a policy for a repository that omits one.
+Gate policy belongs to the repository, and a truncated repository
+config beside a user config would otherwise read as a policy the
+repository never wrote.
+
+`gaff check` refuses an empty name, a name holding whitespace, and a
+repeated name. A name holding a newline would become two requirements,
+because a caller reads one name to a line.
 
 ## Sections
 
