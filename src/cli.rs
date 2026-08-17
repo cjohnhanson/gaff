@@ -2081,19 +2081,6 @@ fn run_reviews(args: &[String]) -> ExitCode {
     }
 }
 
-/// `gaff reviews check`: refuse a push whose tips carry no review note.
-///
-/// Reads git's pre-push ref lines on stdin, so a pre-push hook pipes
-/// its own stdin straight through. Each declared review must be named
-/// in the note on every pushed tip.
-///
-/// The check reads a claim. It shows that someone recorded a review.
-/// It cannot show that the review happened.
-/// True for a hex string long enough to name a commit.
-fn is_hex_sha(s: &str) -> bool {
-    s.len() >= 7 && s.len() <= 40 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
 /// Print why each tip was refused. Returns true when any was.
 fn report_review_faults(verdicts: &[crate::reviewnote::Verdict]) -> bool {
     let mut refused = false;
@@ -2157,29 +2144,31 @@ fn report_review_faults(verdicts: &[crate::reviewnote::Verdict]) -> bool {
     refused
 }
 
+/// `gaff reviews check`: every declared review needs a sign-off on
+/// every pushed tip. A tip that lacks one refuses the push.
+///
+/// Reads git's pre-push ref lines on stdin, so a pre-push hook pipes
+/// its own stdin straight through.
+///
+/// The check reads a claim. It shows that someone recorded a review.
+/// It cannot show that the review happened.
 fn run_reviews_check(args: &[String]) -> ExitCode {
-    // `--head` names the commit a reviewer read, for a pull request
-    // event whose checkout is a merge commit nobody saw. Only `gaff ci`
-    // passes it, from the event payload. It is an argument rather than
-    // an environment variable because a pre-push hook takes its argv
-    // from the committed config, and a shell cannot add to that. The
-    // earlier environment form let three variables and a payload file
-    // push an unreviewed commit past the gate.
-    let mut head_override: Option<String> = None;
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--head" => match it.next() {
-                Some(sha) if is_hex_sha(sha) => head_override = Some(sha.clone()),
-                Some(sha) => return fail(&format!("`{sha}` is not a commit sha")),
-                None => return fail("--head requires a sha"),
-            },
-            other => {
-                return fail(&format!(
-                    "unexpected argument `{other}` (reviews check takes --head <sha>)"
-                ));
-            }
-        }
+    // The command takes no argument. Every commit it checks arrives on
+    // stdin, as one line per ref, the way git sends them to a pre-push
+    // hook. A pull request needs the branch head rather than the merge
+    // commit CI checks out, and `gaff ci` supplies it by substituting
+    // that sha into the ref line it synthesizes. So one mechanism
+    // carries the head.
+    //
+    // An earlier version took `--head <sha>` as well. It replaced every
+    // pushed ref with one synthetic entry and suppressed the
+    // empty-stdin guard below, and nothing ever passed it. A second
+    // mechanism that weakens the first, with no caller, is worse than
+    // no mechanism.
+    if let Some(arg) = args.first() {
+        return fail(&format!(
+            "unexpected argument `{arg}` (reviews check takes none, and reads refs on stdin)"
+        ));
     }
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
@@ -2203,7 +2192,7 @@ fn run_reviews_check(args: &[String]) -> ExitCode {
     // at least one line to a pre-push hook, so empty stdin here is a
     // wiring fault, not a push with nothing in it. A deletion-only
     // push parses to no refs and is a real case, so it is named.
-    if refs.is_empty() && head_override.is_none() {
+    if refs.is_empty() {
         if stdin.split_whitespace().next().is_none() {
             return fail(
                 "no pushed refs arrived on stdin, so nothing was checked. A pre-push hook \
@@ -2215,11 +2204,7 @@ fn run_reviews_check(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if let Some(sha) = &head_override {
-        println!("reviews: reading the note on {sha}, not the checkout.");
-    }
-
-    let verdicts = crate::reviewnote::check(&cwd, &refs, required, head_override.as_deref());
+    let verdicts = crate::reviewnote::check(&cwd, &refs, required);
     let refused = report_review_faults(&verdicts);
     if refused {
         return ExitCode::from(1);

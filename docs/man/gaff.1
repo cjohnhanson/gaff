@@ -131,7 +131,7 @@ load, no declared workflow may drift, then each hook's entries run,
 pre-commit then pre-push, with a synthesized push on stdin for the
 latter.
 A requested hook with no entry fails the run.
-.It Cm reviews Op Cm check Op Fl -head Ar sha
+.It Cm reviews Op Cm check
 With no argument, print the reviews a change must pass, one to a line,
 in declaration order.
 A merge gate reads the list from here rather than from the config file,
@@ -149,30 +149,50 @@ neither drops a name from the other.
 A user config cannot state the policy for a repository that omits one.
 .Pp
 .Cm reviews check
-reads git's pre-push ref lines on standard input and refuses a push
-whose tips carry no sign-off for every declared review.
+reads git's pre-push ref lines on standard input.
+Every declared review needs one sign-off on every pushed tip.
+A tip that lacks one refuses the push.
+The command takes no argument.
+.Pp
 A sign-off is one line of the tip's
 .Ql reviews
 git note, reading
-.Ql signoff[NAME] PASS SHA EVIDENCE .
-Prose around the lines is ignored.
-The sha names the commit the reviewer read, so a sign-off cannot carry
-forward onto a commit nobody read.
-Six faults refuse a push: a declared review with no sign-off, a verdict
-of
-.Ql FAIL ,
-a sign-off naming another commit, two sign-offs for one review,
-evidence under three words, and no note at all.
+.Ql signoff[NAME] VERDICT SHA EVIDENCE .
+The verdict is
+.Ql PASS
+or
+.Ql FAIL .
+Prose around the lines is ignored, so a note can carry a narrative too.
+The sha names the commit the reviewer read.
+A sign-off therefore cannot carry forward onto a commit nobody read.
 .Pp
-.Fl -head Ar sha
-names the reviewed commit for a pull-request event, whose checkout is a
-merge commit no reviewer saw.
-Only
+These faults refuse a push:
+.Bl -bullet -compact
+.It
+a declared review with no sign-off
+.It
+a verdict of
+.Ql FAIL
+.It
+a sign-off naming another commit
+.It
+two sign-offs for one review
+.It
+evidence of fewer than 3 words
+.It
+no note at all
+.El
+.Pp
+The command also refuses a push where stdin carried no ref line.
+That is a wiring fault rather than a review fault.
+.Pp
+A pull request needs the branch head, because the commit CI checks out
+is a merge commit no reviewer saw.
 .Cm ci
-passes it.
-It is an argument rather than an environment variable because a
-pre-push hook takes its argv from the committed config, which a shell
-cannot add to.
+substitutes that sha into the ref line it synthesizes on the hook's
+standard input.
+So one mechanism carries the head, and this command takes no flag that
+names a commit.
 .It Cm docs Op Ar page
 Print the bundled documentation.
 Without

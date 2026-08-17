@@ -10,8 +10,6 @@
 //! This check ran as a shell script in six repositories before gaff
 //! took it. See commit efbfdc4.
 
-use std::process::Command;
-
 /// One pushed ref, as git writes it to a pre-push hook's stdin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushedRef {
@@ -70,7 +68,11 @@ pub enum Missing {
 ///
 /// A floor, not a judgment. A script cannot tell a real reason from a
 /// plausible one, so it refuses only the case where nobody tried.
-const EVIDENCE_FLOOR: usize = 3;
+///
+/// Public so the man page's number can be bound to it by a test. The
+/// page stated a floor that no test read, so an edit could contradict
+/// the code with every test green.
+pub const EVIDENCE_FLOOR: usize = 3;
 
 /// One parsed sign-off line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,9 +218,12 @@ pub fn shortfall(note: Option<&str>, required: &[String], commit: &str) -> Vec<M
 /// payload file pushed an unreviewed commit past the gate. A reviewer
 /// reproduced it against a bare remote.
 ///
-/// Only `gaff ci` calls this, and it passes what it read to
-/// `reviews check --head`. A pre-push hook takes its argv from the
-/// committed config, so no shell variable can introduce the override.
+/// Only `gaff ci` calls this. It substitutes the sha into the ref line
+/// it synthesizes on the pre-push hook's stdin, so the check reads the
+/// same one line per ref that git sends. One mechanism carries the
+/// head, and `reviews check` takes no flag that names a commit. A flag
+/// would be a second mechanism, and it also had to suppress the
+/// empty-stdin guard to work.
 #[must_use]
 pub fn pull_request_head(env: &dyn Fn(&str) -> Option<String>) -> Option<Result<String, String>> {
     if env("GITHUB_ACTIONS").as_deref() != Some("true")
@@ -253,36 +258,81 @@ pub fn head_sha_from_event(body: &str) -> Option<String> {
     }
 }
 
-/// Read the review note on a commit. `None` when the commit has none.
-fn note_body(cwd: &std::path::Path, sha: &str) -> Option<String> {
-    let out = Command::new("git")
-        .args(["notes", "--ref=reviews", "show", sha])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if out.status.success() {
-        Some(String::from_utf8_lossy(&out.stdout).to_string())
-    } else {
-        None
+/// Where a note for `sha` can sit in the notes tree.
+///
+/// git splits the notes tree into fanout directories once it grows,
+/// and it rewrites the layout as the tree changes. A note written flat
+/// today sits under `ab/cdef...` tomorrow, with no change to the
+/// commit it annotates. So every depth is tried, shallowest first.
+///
+/// Two hex characters make each level, which is git's own split.
+fn note_paths(sha: &str) -> Vec<String> {
+    let mut out = vec![sha.to_string()];
+    for depth in 1..=3 {
+        let cut = depth * 2;
+        if sha.len() <= cut {
+            break;
+        }
+        let mut path = String::with_capacity(sha.len() + depth);
+        for level in 0..depth {
+            path.push_str(&sha[level * 2..level * 2 + 2]);
+            path.push('/');
+        }
+        path.push_str(&sha[cut..]);
+        out.push(path);
     }
+    out
 }
 
+/// Read the review note on a commit. `None` when the commit has none.
+///
+/// Reads the object database rather than spawning git. `refs/notes/
+/// reviews` peels to a commit, whose tree holds one blob per annotated
+/// commit, named by that commit's sha under a fanout.
+fn note_body(cwd: &std::path::Path, sha: &str) -> Option<String> {
+    let repo = gix::discover(cwd).ok()?;
+    let mut reference = repo.find_reference(NOTES_REF).ok()?;
+    let tree = reference
+        .peel_to_id()
+        .ok()?
+        .object()
+        .ok()?
+        .try_into_commit()
+        .ok()?
+        .tree()
+        .ok()?;
+    for path in note_paths(sha) {
+        if let Ok(Some(entry)) = tree.clone().lookup_entry_by_path(&path)
+            && let Ok(blob) = entry.object()
+        {
+            return String::from_utf8(blob.data.clone()).ok();
+        }
+    }
+    None
+}
+
+/// The ref holding review notes. One name, used by the check and by
+/// the message that tells a contributor how to write one.
+pub const NOTES_REF: &str = "refs/notes/reviews";
+
 /// Resolve a pushed sha to the commit it names. A tag peels to one.
+///
+/// Returns the input unchanged where the object is missing or names no
+/// commit. A caller then reports "no note" for it, which is correct:
+/// an unreadable object carries no review.
 fn peel(cwd: &std::path::Path, sha: &str) -> String {
-    Command::new("git")
-        .args([
-            "rev-parse",
-            "--quiet",
-            "--verify",
-            &format!("{sha}^{{commit}}"),
-        ])
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| sha.to_string())
+    let peeled = || -> Option<String> {
+        let repo = gix::discover(cwd).ok()?;
+        let object = repo.rev_parse_single(sha).ok()?.object().ok()?;
+        Some(
+            object
+                .peel_to_kind(gix::object::Kind::Commit)
+                .ok()?
+                .id
+                .to_string(),
+        )
+    };
+    peeled().unwrap_or_else(|| sha.to_string())
 }
 
 /// What the check decided about one tip.
@@ -299,23 +349,8 @@ pub struct Verdict {
 /// supplies one, because the checked-out merge commit is not what a
 /// reviewer read.
 #[must_use]
-pub fn check(
-    cwd: &std::path::Path,
-    refs: &[PushedRef],
-    required: &[String],
-    head_override: Option<&str>,
-) -> Vec<Verdict> {
-    let targets: Vec<PushedRef> = head_override.map_or_else(
-        || refs.to_vec(),
-        |sha| {
-            vec![PushedRef {
-                local_sha: sha.to_string(),
-                remote_ref: "refs/heads/pull-request".to_string(),
-            }]
-        },
-    );
-    targets
-        .iter()
+pub fn check(cwd: &std::path::Path, refs: &[PushedRef], required: &[String]) -> Vec<Verdict> {
+    refs.iter()
         .map(|r| {
             let commit = peel(cwd, &r.local_sha);
             let note = note_body(cwd, &commit);
