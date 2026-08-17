@@ -547,6 +547,30 @@ the workflow. A check then runs in the git hook and in CI from a single
 declaration. Change the command in one place, run `gaff init --github`,
 and the workflow follows.
 
+### The required reviews: `reviews:`
+
+A change merges when every independent review passes. The `reviews:`
+block names them:
+
+```yaml
+reviews:
+  - review-tests
+  - review-docs
+```
+
+Each name is a review skill that the repository vendors. gaff holds the
+list because gaff holds gate policy.
+
+`gaff reviews` prints the list, one name to a line, in declaration
+order. A merge gate reads it from that command. A gate that parsed the
+config file by hand would break when the format moved, and it would
+fail open: an unmatched line yields an empty list, and an empty list
+demands nothing.
+
+gaff does not check that a review happened. A gate script compares the
+list against the recorded sign-offs, and against the vendored library,
+so a commit cannot drop a check with one edit.
+
 ### The gates in CI: `gaff ci`
 
 `gaff ci` runs the repo's declared git gates against HEAD, the way CI

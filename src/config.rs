@@ -52,6 +52,12 @@ pub struct Config {
     /// The tool calls to refuse. This is the only feature that blocks.
     #[serde(default)]
     pub guards: Vec<crate::guard::Guard>,
+    /// The independent reviews a change must pass before it merges.
+    /// Each name is a review skill that the repo vendors. gaff holds
+    /// the list because gaff holds gate policy, and a gate script that
+    /// parses this file by hand breaks when the format moves.
+    #[serde(default)]
+    pub reviews: Vec<String>,
 }
 
 /// A profile: a named overlay on reminders and sections.
@@ -268,6 +274,7 @@ impl Default for Config {
             git: Vec::new(),
             github: Vec::new(),
             guards: Vec::new(),
+            reviews: Vec::new(),
         }
     }
 }

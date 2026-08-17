@@ -1,0 +1,14 @@
+doc: |
+  The declared reviews are readable by a shell gate.
+assertions:
+  - name: "a gate loops the list without a yaml parser"
+    command: "gaff reviews | while read -r n; do [ -n \"$n\" ] || exit 1; done"
+  - name: "the list holds one name to a line"
+    command: "[ \"$(gaff reviews | wc -l | tr -d ' ')\" = 2 ]"
+  - name: "reviews is a known field, and an unknown one still refuses"
+    command: |
+      cp .gaff/gaff.yml .gaff/keep.yml
+      printf 'reviews: []\nnosuchfield: 1\n' > .gaff/gaff.yml
+      gaff check >/dev/null 2>&1 && { mv .gaff/keep.yml .gaff/gaff.yml; echo "FAIL: an unknown field passed"; exit 1; }
+      mv .gaff/keep.yml .gaff/gaff.yml
+      gaff check >/dev/null || { echo "FAIL: the good config stopped validating"; exit 1; }

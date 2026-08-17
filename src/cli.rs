@@ -45,6 +45,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("log") => run_log(&args[1..]),
         Some("docs") => run_docs(&args[1..]),
         Some("ci") => run_ci(&args[1..]),
+        Some("reviews") => run_reviews(),
         Some("prime") => {
             print!("{}", prime());
             ExitCode::SUCCESS
@@ -94,6 +95,7 @@ Commands:
   log              Show the injection audit trail for a session
   docs [page]      Print the bundled documentation
   ci [--hook H]    Run the declared git gates against HEAD, as CI does
+  reviews          Print the reviews a change must pass, one to a line
   prime            Print what gaff is and how to use it, for an agent's context
 
 Options:
@@ -108,9 +110,9 @@ command's own code.";
 /// Every command `run` dispatches. The usage test and the prime test
 /// both walk it, so a command that dispatches but is undocumented, or
 /// documented but does not dispatch, fails a test.
-const COMMANDS: [&str; 14] = [
+const COMMANDS: [&str; 15] = [
     "hook", "githook", "remind", "allow", "status", "init", "check", "doctor", "trust", "profile",
-    "log", "docs", "prime", "ci",
+    "log", "docs", "prime", "ci", "reviews",
 ];
 
 /// The prime: what gaff is, for an agent's context.
@@ -2011,6 +2013,26 @@ fn run_ci(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     ci_phases(&cwd, &cfg, &hooks)
+}
+
+/// `gaff reviews`: print the required reviews, one to a line.
+///
+/// A merge gate needs the list, and a shell that parses the config by
+/// hand breaks when the format moves. This prints it instead. A repo
+/// that declares none prints nothing and succeeds: no policy is not an
+/// error, and the caller decides what an empty list means.
+fn run_reviews() -> ExitCode {
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    let cfg = match ci_config(&cwd) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    for name in &cfg.reviews {
+        println!("{name}");
+    }
+    ExitCode::SUCCESS
 }
 
 /// The hook set `gaff ci` runs: `--hook` values, else both.

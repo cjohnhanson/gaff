@@ -1,0 +1,11 @@
+doc: |
+  The repo declares the reviews a change must pass. A merge gate reads
+  the list from gaff, never by parsing the config file by hand.
+transitions:
+  - name: "reviews prints the declared list, one to a line, in order"
+    command: |
+      OUT=$(gaff reviews | tr '\n' ',') || { echo "FAIL: reviews exited nonzero"; exit 1; }
+      [ "$OUT" = "review-tests,review-docs," ] || { echo "FAIL: got [$OUT]"; exit 1; }
+      echo LISTED_OK
+    target: ../reviews-listed
+    stdout: "LISTED_OK\n"
