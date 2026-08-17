@@ -209,14 +209,18 @@ fn run_hook(args: &[String]) -> ExitCode {
         }
     };
 
-    // A guard is the one thing that may exit 2, and it runs first.
+    // A guard is the one thing that may exit 2, and the base guards run
+    // first.
     //
-    // It needs only the envelope and the config. Resolving the state
-    // directory or the profile before it would make a refusal depend
-    // on state gaff might fail to reach, and neither can select a
-    // guard anyway.
+    // The base guards need only the envelope and the config. The built-ins
+    // come first and no config drops them, then the user's base guards.
+    // A bundle's guards need the profile, which needs the session state,
+    // so they run after the store and the profile resolve, below. Base
+    // guards never depend on state gaff might fail to reach.
+    let mut base_guards = crate::guard::builtin();
+    base_guards.extend(cfg.guards.iter().cloned());
     if envelope.kind == crate::event::Kind::PreToolCall
-        && let Some((guard, refusal)) = guard_refusal(&cfg, &envelope, adapter)
+        && let Some((guard, refusal)) = guard_refusal(&base_guards, &envelope, adapter)
     {
         // A one-shot allowance from the human lets this call through.
         // It needs the store, so it is the one guard-path step that
@@ -256,18 +260,34 @@ fn run_hook(args: &[String]) -> ExitCode {
         &gaff_dir,
         &cfg,
     );
+    // The active bundle's own guards run now, after the profile is known.
+    // They compose on top of the base guards, which already ran; nothing
+    // here can remove a base guard.
+    if let Some(code) = bundle_guard_refusal(
+        &envelope,
+        adapter,
+        &cfg,
+        profile.as_deref(),
+        session.as_deref(),
+        &store,
+    ) {
+        return code;
+    }
+
     let cfg = cfg.with_profile(profile.as_deref());
 
-    let handlers = crate::handler::load().handlers;
+    let handlers = crate::handler::load(profile.as_deref()).handlers;
 
     // Stop is the last moment before the model walks away, so it is the
     // one flush point that is a decision rather than a moment, and the
     // one that can still be refused.
     if envelope.kind == crate::event::Kind::Stop
         && let Some(sid) = session.as_deref()
-        && let Some(code) = refuse_stop(&handlers, &store, sid, &cwd)
     {
-        return code;
+        materialize_profile_hold(&cfg, profile.as_deref(), &store, sid);
+        if let Some(code) = refuse_stop(&handlers, &store, sid, &cwd) {
+            return code;
+        }
     }
 
     if let Some(context) =
@@ -299,6 +319,26 @@ fn run_hook(args: &[String]) -> ExitCode {
 /// user config, which is why it may run at all. The second runs nothing,
 /// which is why an agent may set one — `gaff trust` exists so an agent
 /// cannot schedule command execution for itself.
+/// Materialize the active bundle's stop rule as a hold, once per
+/// session. Materializing at stop time, not at session start, keeps a
+/// compaction or a resume from re-arming a hold the model released, and
+/// lets a mid-session profile switch set the hold without a fresh start.
+fn materialize_profile_hold(
+    cfg: &config::Config,
+    profile: Option<&str>,
+    store: &Store,
+    session: &str,
+) {
+    let Some(stop) = cfg.profile_stop(profile) else {
+        return;
+    };
+    let id = format!("profile-{}", profile.unwrap_or(""));
+    let present = store.holds(session).iter().any(|h| h.id == id);
+    if !present && !store.is_released(session, &id) {
+        let _ = store.write_hold(session, &id, &stop.hold, stop.times);
+    }
+}
+
 fn refuse_stop(
     handlers: &[crate::handler::Handler],
     store: &Store,
@@ -761,6 +801,11 @@ fn run_check(args: &[String]) -> ExitCode {
     };
 
     let mut problems = entry_problems(&cfg, &cwd);
+    // `load_layered` drops a profile carrying a removed key with a
+    // warning, so `cfg` no longer shows it. `check` reads the raw files
+    // to report the removed key as an error, since a stale key is a
+    // config the operator must fix, not a runtime that degrades.
+    problems.extend(config::legacy_key_problems(&cwd));
 
     // Git hooks never travel with a clone, so a fresh checkout of a
     // repo that declares them has none installed. Nothing said so, and
@@ -913,18 +958,44 @@ fn cross_reference_problems(cfg: &config::Config) -> Vec<String> {
         .chain(cfg.sections.iter().map(|s| &s.name))
         .collect();
     for (pname, profile) in &cfg.profiles {
-        let referenced = profile
-            .only
-            .iter()
-            .flatten()
-            .chain(profile.disable.iter())
-            .chain(profile.cadence.keys());
-        for name in referenced {
+        // A `disable` name must name a base entry to drop; a name that
+        // matches nothing is a rule that never fires.
+        for name in &profile.disable {
             if !entry_names.contains(&name) {
                 problems.push(format!(
-                    "profile `{pname}`: `{name}` names no reminder or section"
+                    "profile `{pname}`: disable `{name}` names no base reminder or section"
                 ));
             }
+        }
+        // A bundle entry shares the pending-marker keyspace with base
+        // entries and with the bundle's own entries across kinds. A
+        // section and a reminder of one name collide. A bundle entry
+        // may shadow a base entry of the same kind by name, which is
+        // the retime, so only cross-kind and within-kind duplicates are
+        // problems.
+        let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+        for (name, kind) in profile
+            .reminders
+            .iter()
+            .map(|r| (r.name.as_str(), "reminder"))
+            .chain(
+                profile
+                    .sections
+                    .iter()
+                    .map(|s| (s.name.as_str(), "section")),
+            )
+        {
+            if let Some(prev) = seen.insert(name, kind)
+                && prev != kind
+            {
+                problems.push(format!(
+                    "profile `{pname}`: `{name}` is both a {prev} and a {kind}; names are one keyspace"
+                ));
+            }
+        }
+        // A bundle's own guards are validated like base guards.
+        for guard in &profile.guards {
+            problems.extend(guard.problems());
         }
     }
     if let Some(d) = &cfg.default_profile
@@ -1722,8 +1793,38 @@ fn run_githook(args: &[String]) -> ExitCode {
 /// This is the only path in gaff that leads to exit 2. Every failure
 /// path, including a broken guard, still degrades, because a gaff
 /// fault must never block a session.
-fn guard_refusal(
+/// Refuse a pre-tool call against the active bundle's own guards.
+///
+/// Returns exit 2 on a refusal the human did not allow once. The base
+/// guards ran earlier; this composes on top and removes none of them.
+fn bundle_guard_refusal(
+    envelope: &crate::event::Envelope,
+    adapter: &crate::adapter::Adapter,
     cfg: &config::Config,
+    profile: Option<&str>,
+    session: Option<&str>,
+    store: &Store,
+) -> Option<ExitCode> {
+    if envelope.kind != crate::event::Kind::PreToolCall {
+        return None;
+    }
+    let bundle = cfg.profiles.get(profile?)?;
+    if bundle.guards.is_empty() {
+        return None;
+    }
+    let (guard, refusal) = guard_refusal(&bundle.guards, envelope, adapter)?;
+    if session.is_some_and(|sid| store.take_allowance(sid, &guard)) {
+        eprintln!(
+            "gaff: the guard `{guard}` would have refused this call. Allowed once by the user."
+        );
+        return None;
+    }
+    eprintln!("{refusal}");
+    Some(ExitCode::from(2))
+}
+
+fn guard_refusal(
+    guards: &[crate::guard::Guard],
     envelope: &crate::event::Envelope,
     adapter: &crate::adapter::Adapter,
 ) -> Option<(String, String)> {
@@ -1753,10 +1854,7 @@ fn guard_refusal(
         }
         found
     };
-    // The built-ins come first and no config can drop them.
-    let mut guards = crate::guard::builtin();
-    guards.extend(cfg.guards.iter().cloned());
-    let hit = crate::guard::first_refusal(&guards, tool, &value)?;
+    let hit = crate::guard::first_refusal(guards, tool, &value)?;
     Some((
         hit.name.clone(),
         format!(
