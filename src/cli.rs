@@ -300,15 +300,10 @@ fn run_hook(args: &[String]) -> ExitCode {
             // vocabulary a config is written in.
             store.record_injection(sid, envelope.kind.as_str(), &context);
         }
-        println!(
-            "{}",
-            json!({
-                "hookSpecificOutput": {
-                    "hookEventName": envelope.event,
-                    "additionalContext": context,
-                }
-            })
-        );
+        // The output shape is the host's, so it lives behind the adapter.
+        // Claude Code gets its hook JSON; a generic host gets gaff's own
+        // normalized shape. The trailing newline stays, as before.
+        println!("{}", (adapter.context_output)(&envelope.event, &context));
     }
     ExitCode::SUCCESS
 }
@@ -642,6 +637,12 @@ fn run_init(args: &[String]) -> ExitCode {
             }
         },
     };
+    if !adapter.self_registers {
+        return fail(&format!(
+            "the `{}` host does not register hooks. A host that calls `gaff hook` itself needs no settings file.",
+            adapter.name
+        ));
+    }
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
@@ -1915,6 +1916,8 @@ mod tests {
             vec!["init", "--command"],
             vec!["init", "--host"],
             vec!["init", "--host", "nosuchhost"],
+            // A host that does not self-register is refused, not blocked.
+            vec!["init", "--host", "generic"],
             vec!["profile", "nonsense"],
             vec!["profile", "set"],
             vec!["log", "--session"],

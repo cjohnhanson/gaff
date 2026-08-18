@@ -1,0 +1,57 @@
+doc: |
+  A second host speaks gaff's normalized vocabulary. It sets
+  GAFF_HOST=generic and sends the event under `gaff_event`. gaff renders
+  injected context in its own shape, not Claude Code's, and a guard still
+  refuses with exit 2 and the reason on stderr, the universal contract.
+transitions:
+  - name: "the generic host gets gaff's own output shape and the same refusal"
+    command: |
+      export HOME="$PWD/home"
+      mkdir -p "$HOME/.config/gaff"
+      cat > "$HOME/.config/gaff/gaff.yml" <<'EOF'
+      sections:
+        - name: conventions
+          file: conv.md
+      guards:
+        - name: no-secrets
+          tool: Read
+          field: file_path
+          matches: '\.env$'
+          message: That path holds secrets.
+      EOF
+      printf 'HOUSE RULES\n' > "$HOME/.config/gaff/conv.md"
+
+      hook() { GAFF_HOST=generic gaff hook; }
+
+      # A SessionStart flush emits gaff's normalized shape, not Claude
+      # Code's hookSpecificOutput wrapper.
+      OUT=$(printf '{"gaff_event":"session_start","session_id":"s-g1"}' | hook)
+      EVENT=$(printf '%s' "$OUT" | jq -r '.event')
+      CTX=$(printf '%s' "$OUT" | jq -r '.context')
+      [ "$EVENT" = "session_start" ] || { echo "FAIL: the output must name the normalized event: $OUT"; exit 1; }
+      case "$CTX" in
+        *"HOUSE RULES"*) ;;
+        *) echo "FAIL: the context must carry the section body: $OUT"; exit 1 ;;
+      esac
+      case "$OUT" in
+        *hookSpecificOutput*) echo "FAIL: a generic host must not get Claude Code's wrapper: $OUT"; exit 1 ;;
+      esac
+
+      # A guard refuses a pre-tool call with exit 2 and the reason on stderr.
+      pre() { printf '{"gaff_event":"pre_tool_call","session_id":"s-g2","tool_name":"Read","tool_input":{"file_path":"/x/.env"}}' | hook > /dev/null 2>"$HOME/err"; echo $?; }
+      [ "$(pre)" = "2" ] || { echo "FAIL: the guard must refuse with exit 2"; exit 1; }
+      grep -q "secrets" "$HOME/err" || { echo "FAIL: the reason must reach stderr"; exit 1; }
+
+      # A bad payload still never exits 2.
+      printf 'not json' | hook > /dev/null 2>&1
+      [ "$?" != "2" ] || { echo "FAIL: bad input must never exit 2"; exit 1; }
+
+      # gaff init refuses the generic host: it does not self-register.
+      if GAFF_HOST=generic gaff init --host generic > /dev/null 2>&1; then
+        echo "FAIL: init must refuse a host that does not self-register"; exit 1
+      fi
+
+      rm -rf home .gaff-state
+      echo GENERIC_OK
+    target: ../generic-primed
+    stdout: "GENERIC_OK\n"
