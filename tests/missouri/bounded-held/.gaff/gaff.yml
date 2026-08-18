@@ -10,9 +10,7 @@ reminders:
     text: REPO_HINT
 profiles:
   slow:
-    cadence:
-      safety:
-        tool_calls: 999999
+    base: false
   tiny:
     max_inject_bytes: 1
 default_profile: quiet

@@ -9,8 +9,8 @@ reminders:
     text: dropped under focus
 profiles:
   focus:
-    only:
-      - keep
+    disable:
+      - drop
   quiet:
     disable:
       - keep
