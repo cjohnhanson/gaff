@@ -217,3 +217,79 @@ fn reviews_check_takes_no_argument() {
         "the refusal does not name the argument: {said}"
     );
 }
+
+/// Run `gaff reviews check` in `dir` with `stdin`, and return the exit
+/// code and stderr.
+///
+/// These cases drive the binary rather than a function. A reviewer
+/// mutated both stdin guards at their call sites, left the functions
+/// correct, and the whole suite stayed green while the original bugs
+/// came back. A unit test on a function does not bind the line that
+/// calls it.
+fn reviews_check(dir: &Path, stdin: &str) -> (Option<i32>, String) {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gaff"))
+        .args(["reviews", "check"])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run gaff reviews check");
+    child
+        .stdin
+        .as_mut()
+        .expect("gaff stdin")
+        .write_all(stdin.as_bytes())
+        .expect("write the ref lines");
+    let out = child.wait_with_output().expect("wait for gaff");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+/// A repository the check will read: one commit and a review policy.
+fn repo_with_a_policy(name: &str) -> (PathBuf, String) {
+    let (dir, sha) = repo_with_one_commit(name);
+    std::fs::create_dir_all(dir.join(".gaff")).expect("create .gaff");
+    std::fs::write(dir.join(".gaff/gaff.yml"), "reviews:\n  - fresh-eyes\n")
+        .expect("write the policy");
+    (dir, sha)
+}
+
+#[test]
+fn a_sha_that_is_not_ascii_refuses_rather_than_panicking() {
+    // Exit 101 is a panic. The gate must refuse, not crash.
+    let (dir, _sha) = repo_with_a_policy("nonascii");
+    let line =
+        "refs/heads/main abcdef\u{e9} refs/heads/main 0000000000000000000000000000000000000000\n";
+    let (code, said) = reviews_check(&dir, line);
+    assert_eq!(code, Some(1), "gaff panicked or passed: {said}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_truncated_ref_line_refuses_the_push() {
+    // git writes four fields. Fewer means the stream was cut, and
+    // reading that as "nothing to check" let a caller who lost the
+    // stream past the gate.
+    let (dir, _sha) = repo_with_a_policy("cutstream");
+    let (code, said) = reviews_check(&dir, "refs/heads/main\n");
+    assert_eq!(code, Some(1), "a truncated stream passed: {said}");
+    assert!(
+        said.contains("truncated"),
+        "the refusal does not name the truncation: {said}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_up_to_date_push_sends_no_ref_and_is_allowed() {
+    // git runs a pre-push hook with no lines when the remote already
+    // holds everything. Refusing that blocked every no-op push.
+    let (dir, _sha) = repo_with_a_policy("uptodate");
+    let (code, said) = reviews_check(&dir, "");
+    assert_eq!(code, Some(0), "an up-to-date push was refused: {said}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

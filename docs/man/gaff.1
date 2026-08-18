@@ -181,19 +181,24 @@ two sign-offs for one review
 .It
 evidence of fewer than 3 words
 .It
-a sha of fewer than 7 characters
+a sha of fewer than 7 characters, or one that is not hex, or one
+longer than 64
 .It
 no note at all
 .El
+.Pp
+The command also refuses a push where a line on standard input carries
+fewer than the four fields git writes for a ref.
+That is a truncated stream rather than a review fault.
+Standard input carrying no line at all is neither: git runs the hook
+that way when the remote already holds everything, and a push that
+moves no ref lands no commit.
 .Pp
 The floor on the sha is what makes a prefix mean anything.
 One hex character matches one commit in sixteen, so a sign-off reading
 .Ql PASS 5
 signed off every commit whose sha starts with
 .Ql 5 .
-.Pp
-The command also refuses a push where stdin carried no ref line.
-That is a wiring fault rather than a review fault.
 .Pp
 A pull request needs the branch head, because the commit CI checks out
 is a merge commit no reviewer saw.
