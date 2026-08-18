@@ -1,0 +1,12 @@
+Two cold reviews read this branch. One attacked the gate's design and returned unsound. One read the new commits and returned SHIP with no blocker.
+
+The design attack is the important one, and its finding is not a code defect. A gate that runs inside a pull request cannot constrain that pull request: the change supplies the config that declares the policy and the command, the workflow that runs it, the script it calls, and the binary itself. Keeping the policy intact and replacing the hook command with `echo ok` passes. Recorded as issue 7cap and as zettel note hvrm.
+
+Two fail-opens were real and are fixed here. A HEAD naming `refs/notes/reviews` made `gaff ci` synthesize an exempt ref line, so the run certified nothing and reported success. And the doc comment claiming the environment cannot reach `pull_request_head` was false for the `gaff ci` caller, which a reviewer reproduced.
+
+The detached HEAD arm is the path every CI run takes and nothing pinned it. Tightening the new guard to cover it would have broken the gate in six repositories with a green suite.
+
+signoff[fresh-eyes] PASS bffbb90 two reviewers read this cold, one attacking the design and one the commits; the notes-ref fail-open and the forged-payload claim were both reproduced before either fix, and gaff ci was re-run under a detached HEAD with a pull request payload to confirm the new guard leaves that path alone
+signoff[mutation] PASS bffbb90 four guards mutated one at a time, each turning one named test red: the branch requirement on HEAD, the detached HEAD arm, and both stdin call sites, which were bound only at their functions until three end-to-end tests were added
+
+One more defect landed after that review, found by a peer session and reproduced here. The fixture helper cleared git's config variables and not the ones git exports to a hook, so a suite run from pre-push aimed every fixture at the repository being pushed. A fixture commit reached a real branch tip, and `core.bare` turning true on this clone has the same cause. Nine variables are cleared now. The first regression test iterated the constant it guarded, so dropping an entry left the suite green; it names the nine independently now and the mutation turns it red.
