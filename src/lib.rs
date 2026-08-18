@@ -19,4 +19,5 @@ pub mod githook;
 pub mod guard;
 pub mod handler;
 pub mod init;
+pub mod reviewnote;
 pub mod state;
