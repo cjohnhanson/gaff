@@ -13,6 +13,9 @@
 //! <root>/<session>/fired-<id>        one-shot consumed (O_EXCL claim)
 //! <root>/<session>/profile           the active profile name
 //! <root>/<session>/reprime           marker: re-deliver every section
+//! <root>/<session>/holds/<id>        an armed stop hold (multiple)
+//! <root>/<session>/released/<id>     a profile hold the model released
+//! <root>/<session>/allow/<guard>     a one-shot guard allowance
 //! <root>/<session>/injections.jsonl  one line per injected flush
 //! ```
 //!
@@ -495,16 +498,56 @@ impl Store {
     }
 
     /// Release a stop hold by id. `None` releases every one.
+    ///
+    /// A hold whose id names a profile (`profile-<name>`) is also marked
+    /// released, so a config-declared hold that `refuse_stop` would
+    /// otherwise re-materialize at the next stop stays gone.
     pub fn clear_hold(&self, session: &str, id: Option<&str>) {
         let dir = self.session_dir(session).join("holds");
-        match id {
-            Some(id) => {
-                let _ = std::fs::remove_file(dir.join(sanitize(id)));
+        if let Some(id) = id {
+            let _ = std::fs::remove_file(dir.join(sanitize(id)));
+            if id.starts_with("profile-") {
+                self.mark_released(session, id);
             }
-            None => {
-                let _ = std::fs::remove_dir_all(dir);
+        } else {
+            // Mark every profile hold released before the directory
+            // goes, since a clear-all cannot name them afterward.
+            for hold in self.holds(session) {
+                if hold.id.starts_with("profile-") {
+                    self.mark_released(session, &hold.id);
+                }
             }
+            let _ = std::fs::remove_dir_all(dir);
         }
+    }
+
+    /// Mark a profile hold released for this session, so it is not
+    /// re-materialized from config.
+    fn mark_released(&self, session: &str, id: &str) {
+        let dir = self.session_dir(session).join("released");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let _ = std::fs::write(dir.join(sanitize(id)), "");
+        }
+    }
+
+    /// Whether a hold with this id is currently armed. The id is
+    /// sanitized, so a caller compares against the same on-disk name
+    /// `write_hold` and `holds` use.
+    #[must_use]
+    pub fn has_hold(&self, session: &str, id: &str) -> bool {
+        self.session_dir(session)
+            .join("holds")
+            .join(sanitize(id))
+            .exists()
+    }
+
+    /// Whether a profile hold has been released this session.
+    #[must_use]
+    pub fn is_released(&self, session: &str, id: &str) -> bool {
+        self.session_dir(session)
+            .join("released")
+            .join(sanitize(id))
+            .exists()
     }
 
     /// Let the next call a named guard would refuse through instead.
