@@ -82,9 +82,14 @@
                 mkdir -p $out/share/man/man1
                 cp docs/man/gaff.1 $out/share/man/man1/
               '';
-              # The nix check runs the unit tests only. The missouri suite
-              # runs in development, because it needs the missouri binary,
-              # which lives in its own derivation.
+              # The integration tests drive a real git to build their
+              # fixtures, so the sandbox needs the binary. strictDeps
+              # keeps it out of the runtime closure.
+              nativeCheckInputs = [ pkgs.git ];
+              # The nix check runs cargo test, so the unit tests and the
+              # integration tests both run here. The missouri suite runs in
+              # development, because it needs the missouri binary, which
+              # lives in its own derivation.
               checkPhase = ''
                 tmpHome="$(mktemp -d)"
                 export HOME="$tmpHome"
