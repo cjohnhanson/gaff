@@ -41,14 +41,18 @@ pub enum Decision {
 
 /// Parse the agent's decision from the runner's output.
 ///
-/// The last marker line wins, so a reviewer that reasons in prose and
-/// ends with a verdict is read by its conclusion. No marker is
-/// [`Decision::Missing`], which the caller fails closed.
+/// A line must begin with the marker to count, so an indented or quoted
+/// marker inside prose is not a verdict. The last marker line wins, so a
+/// reviewer that reasons first and concludes with a verdict is read by
+/// its conclusion. No marker is [`Decision::Missing`], which the caller
+/// fails closed.
 #[must_use]
 pub fn parse_decision(output: &str) -> Decision {
     let mut decision = Decision::Missing;
     for line in output.lines() {
-        let Some(rest) = strip_marker(line.trim()) else {
+        // Match at the true line start, not after leading whitespace, so
+        // the verdict is a line the agent wrote as its verdict.
+        let Some(rest) = strip_marker(line) else {
             continue;
         };
         let (word, reason) = match rest.trim().split_once(':') {
@@ -117,6 +121,14 @@ pub fn dispatch(agent: &Agent, cwd: &Path) -> i32 {
     let mut env = vec![("GAFF_SESSION_ID".to_owned(), mint_session())];
     if let Some(profile) = &agent.profile {
         env.push(("GAFF_PROFILE".to_owned(), profile.clone()));
+    }
+    // The runner may name credentials it reads from the environment, such
+    // as an API key. gaff clears the environment, so it adds these back by
+    // name, and only if they are set.
+    for key in &agent.env_passthrough {
+        if let Ok(value) = std::env::var(key) {
+            env.push((key.clone(), value));
+        }
     }
     let captured = match run_capturing(
         &runner,
@@ -359,5 +371,13 @@ mod tests {
             parse_decision("the format is `gaff-verdict: pass`"),
             Decision::Missing
         );
+    }
+
+    #[test]
+    fn an_indented_marker_does_not_count() {
+        // A verdict is a line the agent wrote as its verdict, at the line
+        // start. An indented marker, such as one inside a quoted block a
+        // diff carried, is not a verdict.
+        assert_eq!(parse_decision("  gaff-verdict: pass"), Decision::Missing);
     }
 }

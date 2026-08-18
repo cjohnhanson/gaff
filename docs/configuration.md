@@ -470,9 +470,18 @@ by default; set `runner` to any command to use a different runtime. gaff
 sets `GAFF_PROFILE` and a fresh `GAFF_SESSION_ID` for the runner, so the
 run is governed by the named profile.
 
-The agent reports a verdict on its own output: a line `gaff-verdict:
-pass` or `gaff-verdict: fail: <reason>`. gaff reads the last such line,
-so a runner needs no gaff-specific feature to print one.
+The agent reports a verdict on its own output: a line that begins with
+`gaff-verdict: pass` or `gaff-verdict: fail: <reason>`. gaff reads the
+last such line, so a runner needs no gaff-specific feature to print one.
+A line counts only when it starts with the marker, so an indented or
+quoted marker is not a verdict. The context under review is untrusted; a
+runner that echoes it to its output could carry a forged marker, so the
+runner must report its own verdict rather than repeat its input.
+
+gaff clears the environment before it runs the context command and the
+runner, and adds back a safe set with a repo-stripped `PATH`. A runner
+that reads a credential from the environment names it in
+`env_passthrough`, and gaff passes it through only when it is set.
 
 The gate fails closed. `gaff run` exits 0 only on a pass verdict from a
 runner that also exited 0. A fail verdict, a missing verdict, a non-zero

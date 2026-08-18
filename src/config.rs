@@ -83,6 +83,11 @@ pub struct Agent {
     /// for the runner.
     #[serde(default)]
     pub profile: Option<String>,
+    /// Environment variables the runner inherits by name. gaff clears the
+    /// environment and adds back a safe set, so a runner that reads a
+    /// credential from the environment, such as an API key, names it here.
+    #[serde(default)]
+    pub env_passthrough: Vec<String>,
     /// The dispatch deadline in milliseconds. The runner has its own
     /// bound; this is gaff's backstop against a hung runner.
     #[serde(default = "default_agent_timeout_ms")]
