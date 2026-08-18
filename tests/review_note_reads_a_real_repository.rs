@@ -345,3 +345,38 @@ fn an_up_to_date_push_sends_no_ref_and_is_allowed() {
     assert_eq!(code, Some(0), "an up-to-date push was refused: {said}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn ci_refuses_a_head_that_does_not_name_a_branch() {
+    // The gate exempts a notes ref, because pushing review records
+    // proposes no change. `gaff ci` builds its ref line from HEAD, so
+    // a HEAD pointing at `refs/notes/reviews` synthesized an exempt
+    // line and the run certified nothing while reporting success. One
+    // `git symbolic-ref` was the whole attack.
+    let (dir, sha) = repo_with_a_policy("headnotes");
+    // A declared pre-push entry, so the run reaches HEAD resolution
+    // rather than stopping at "no git entry runs on pre-push".
+    std::fs::write(
+        dir.join(".gaff/gaff.yml"),
+        "reviews:\n  - fresh-eyes\ngit:\n  - name: gate\n    on: [pre-push]\n    command: [true]\n",
+    )
+    .expect("write the policy and a hook entry");
+    git(&dir, &["update-ref", "refs/notes/reviews", &sha]);
+    git(&dir, &["symbolic-ref", "HEAD", "refs/notes/reviews"]);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_gaff"))
+        .args(["ci"])
+        .current_dir(&dir)
+        .output()
+        .expect("run gaff ci");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "gaff ci certified a run whose HEAD names a notes ref: {said}"
+    );
+    assert!(
+        said.contains("not a branch"),
+        "the refusal does not name the cause: {said}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
