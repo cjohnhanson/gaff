@@ -83,11 +83,13 @@
                 cp docs/man/gaff.1 $out/share/man/man1/
               '';
               # The integration tests drive a real git to build their
-              # fixtures, so the sandbox needs the binary. It has to be a
-              # native check input: strictDeps keeps host-platform inputs
-              # off PATH, so checkInputs is found by nothing and the same
-              # eight tests fail. gitMinimal carries every builtin the
-              # fixtures use, at a tenth of the closure.
+              # fixtures, and stdenv builds PATH from the declared inputs
+              # alone. Sandboxing is not the mechanism: the build fails
+              # the same way with sandbox = false. It has to be a native
+              # check input, because strictDeps keeps host-platform
+              # inputs off PATH, so checkInputs reaches nothing and the
+              # same eight tests fail. gitMinimal carries every builtin
+              # the fixtures use, at a tenth of the closure.
               nativeCheckInputs = [ pkgs.gitMinimal ];
               # The nix check runs cargo test, so the unit tests and the
               # integration tests both run here. The missouri suite is not
