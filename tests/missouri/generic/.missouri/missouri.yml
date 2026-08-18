@@ -51,6 +51,11 @@ transitions:
         echo "FAIL: init must refuse a host that does not self-register"; exit 1
       fi
 
+      # doctor reports hooks only for a self-registering host, so the
+      # generic adapter adds no second, self-contradictory line.
+      LINES=$(gaff doctor 2>/dev/null | grep -c 'hooks:')
+      [ "$LINES" = "1" ] || { echo "FAIL: doctor must report hooks once, not once per adapter: $LINES"; exit 1; }
+
       rm -rf home .gaff-state
       echo GENERIC_OK
     target: ../generic-primed

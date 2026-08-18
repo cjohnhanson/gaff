@@ -304,8 +304,12 @@ pub fn session_from_env(flag: Option<&str>) -> Option<String> {
 /// The one-line hint for a missing session, naming every host's variable.
 #[must_use]
 pub fn session_hint() -> String {
+    // Name only a self-registering host's variable. A generic host uses
+    // GAFF_SESSION_ID, which the sentence already names, so listing it
+    // again reads as a duplicate.
     let hosts: Vec<String> = ADAPTERS
         .iter()
+        .filter(|a| a.self_registers)
         .map(|a| format!("{} for {}", a.session_env, a.name))
         .collect();
     format!(

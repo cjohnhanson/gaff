@@ -1068,8 +1068,13 @@ fn cross_reference_problems(cfg: &config::Config) -> Vec<String> {
 /// read a file that merely mentioned the command, including one that
 /// banned it, as a registration.
 fn doctor_hooks(cwd: &std::path::Path) {
+    // Only a self-registering host has hooks to report. A generic host
+    // calls gaff directly and has no settings file, so reporting it as
+    // "NOT registered" would tell the user to run a command gaff refuses.
     for adapter in crate::adapter::ADAPTERS {
-        doctor_hooks_for(adapter, cwd);
+        if adapter.self_registers {
+            doctor_hooks_for(adapter, cwd);
+        }
     }
 }
 
