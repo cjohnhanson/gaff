@@ -1,0 +1,8 @@
+Two independent reviews read this branch cold and were told to refute it. Both returned FIX FIRST, and every finding was reproduced before a fix was written.
+
+The first found a one-character sha passing the commit binding, a git process in a crate whose own test bans one, a false claim that `ci` passes `--head`, and a man page section that could be deleted with every test green.
+
+The second found the panic fix had closed one of two byte slices, a truncated stdin stream passing the gate, and then the blocker: git runs a pre-push hook with empty stdin when the remote is up to date, and the guard refused it. It also found both stdin guards bound only at their functions, so reverting either call site left the suite green while the original bug returned.
+
+signoff[fresh-eyes] PASS c94866a read reviewnote and cli cold across two rounds, measured git's real pre-push stdin across thirteen push shapes and 240 fuzz cases with zero exits above one, and verified every signoff note in all six repositories still passes
+signoff[mutation] PASS c94866a five guards mutated one at a time, each turning one named test red: the sha floor, the hex check in the fanout, the argument refusal, and both stdin call sites, which were unbound until three end-to-end tests were added

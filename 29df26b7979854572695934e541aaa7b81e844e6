@@ -1,0 +1,1 @@
+fresh-eyes: cold subagent review of the profile-bundle change. Security boundary and exit-2 invariant verified sound on every selection path; one medium bug (sanitized-hold budget) and a check gap (cross-kind collision) found and fixed in 29df26b.
