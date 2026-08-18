@@ -63,31 +63,91 @@ pub struct Config {
     pub reviews: Option<Vec<String>>,
 }
 
-/// A profile: a named overlay on reminders and sections.
+/// A profile: a named bundle of entries, guards, and a stop rule.
 ///
-/// A profile never adds an entry. It selects from the entries the base
-/// config already declares, and it may override their cadences. That
-/// keeps one namespace and one place to read what a repo can inject.
+/// A profile declares its own sections, reminders, guards, and stop
+/// rule. The effective config for a session is the base entries plus
+/// the active profile's bundle. Guards always compose, base plus
+/// bundle, so no profile can remove a base guard. Sections and reminders
+/// compose base plus bundle unless the bundle sets `base: false`, which
+/// delivers only the bundle's own. A profile's handlers live in
+/// `handlers.yml` under its own `profiles` map, because a command may
+/// come only from that one owner-only file.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
-    /// Keep only these entries. `None` keeps every entry.
+    /// When false, the base sections and reminders are not delivered
+    /// under this profile; only the bundle's own are. Guards always
+    /// compose regardless of this flag.
+    #[serde(default = "default_true")]
+    pub base: bool,
+    /// The bundle's own sections.
     #[serde(default)]
-    pub only: Option<Vec<String>>,
-    /// Drop these entries. `disable` applies after `only`.
+    pub sections: Vec<Section>,
+    /// The bundle's own reminders.
+    #[serde(default)]
+    pub reminders: Vec<Reminder>,
+    /// The bundle's own guards. User layer only; a repo bundle's guards
+    /// are cleared at load, as a repo's top-level guards are.
+    #[serde(default)]
+    pub guards: Vec<crate::guard::Guard>,
+    /// The bundle's stop rule. User layer only.
+    #[serde(default)]
+    pub stop: Option<Stop>,
+    /// Drop these base entries under this profile. Applied only when
+    /// `base` is true; with `base: false` there is nothing to drop.
     #[serde(default)]
     pub disable: Vec<String>,
-    /// Cadence overrides, keyed by the entry name.
-    #[serde(default)]
-    pub cadence: std::collections::BTreeMap<String, Every>,
     /// The byte cap under this profile. `None` keeps the base cap.
     #[serde(default)]
     pub max_inject_bytes: Option<usize>,
+    /// Removed. Kept deserializable so a config that still carries one
+    /// degrades this one profile with a migration line rather than
+    /// failing to parse, which would disarm every guard. `check` fails
+    /// on either.
+    #[serde(default)]
+    pub only: Option<Vec<String>>,
+    /// Removed; see `only`.
+    #[serde(default)]
+    pub cadence: std::collections::BTreeMap<String, Every>,
     /// True when the user config declared this profile. Set at load
     /// time, never read from YAML. A repo may not select a profile the
     /// user wrote for their own use.
     #[serde(skip)]
     pub user: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+impl Profile {
+    /// The removed keys this profile still carries, if any. A non-empty
+    /// result degrades the profile at load and fails `check`.
+    #[must_use]
+    pub fn legacy_keys(&self) -> Vec<&'static str> {
+        let mut keys = Vec::new();
+        if self.only.is_some() {
+            keys.push("only");
+        }
+        if !self.cadence.is_empty() {
+            keys.push("cadence");
+        }
+        keys
+    }
+}
+
+/// A profile's stop rule. Sets a hold at stop time under the id
+/// `profile-<name>`. `times` bounds the refusals; `None` holds until
+/// the model clears it or the safety valve lets it through.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stop {
+    /// The text the model reads when the stop is refused.
+    pub hold: String,
+    /// How many stops to refuse before letting one through.
+    #[serde(default)]
+    pub times: Option<u32>,
 }
 
 /// The transition policy for profile switches.
@@ -119,6 +179,15 @@ impl Config {
     /// An unknown name applies nothing and warns. A typo must never
     /// silently empty the config, because a silent empty config looks
     /// exactly like a working one.
+    ///
+    /// The result is the effective config: base entries plus the active
+    /// bundle. A bundle entry comes before the base entries of its kind,
+    /// so the reason the profile exists spends the byte cap and the
+    /// session-start budget first. Guards always compose. Sections and
+    /// reminders drop the base ones when `base` is false, and drop any
+    /// named in `disable` when `base` is true. A bundle entry that
+    /// shadows a base entry of the same kind by name replaces it, which
+    /// is how a bundle retimes a base reminder.
     #[must_use]
     pub fn with_profile(&self, name: Option<&str>) -> Self {
         let mut out = self.clone();
@@ -129,29 +198,36 @@ impl Config {
             eprintln!("gaff: unknown profile `{name}`. Using the base config.");
             return out;
         };
-        let keep = |n: &str| {
-            profile
-                .only
-                .as_ref()
-                .is_none_or(|only| only.iter().any(|k| k == n))
-                && !profile.disable.iter().any(|d| d == n)
-        };
-        out.reminders.retain(|r| keep(&r.name));
-        out.sections.retain(|s| keep(&s.name));
-        for r in &mut out.reminders {
-            if let Some(c) = profile.cadence.get(&r.name) {
-                r.every = c.clone();
-            }
-        }
-        for s in &mut out.sections {
-            if let Some(c) = profile.cadence.get(&s.name) {
-                s.refresh = c.clone();
-            }
-        }
+
+        let shadowed_r: Vec<String> = profile.reminders.iter().map(|r| r.name.clone()).collect();
+        let shadowed_s: Vec<String> = profile.sections.iter().map(|s| s.name.clone()).collect();
+
+        let keep_base = |n: &str| profile.base && !profile.disable.iter().any(|d| d == n);
+        out.reminders
+            .retain(|r| keep_base(&r.name) && !shadowed_r.contains(&r.name));
+        out.sections
+            .retain(|s| keep_base(&s.name) && !shadowed_s.contains(&s.name));
+
+        // Bundle entries first, then the surviving base entries.
+        let mut reminders = profile.reminders.clone();
+        reminders.append(&mut out.reminders);
+        out.reminders = reminders;
+        let mut sections = profile.sections.clone();
+        sections.append(&mut out.sections);
+        out.sections = sections;
+
+        out.guards.extend(profile.guards.iter().cloned());
+
         if let Some(cap) = profile.max_inject_bytes {
             out.max_inject_bytes = cap;
         }
         out
+    }
+
+    /// The active profile's stop rule, if it declares one.
+    #[must_use]
+    pub fn profile_stop(&self, name: Option<&str>) -> Option<&Stop> {
+        self.profiles.get(name?)?.stop.as_ref()
     }
 }
 
@@ -176,22 +252,30 @@ fn merge_reviews(user: Option<Vec<String>>, repo: Option<Vec<String>>) -> Option
     Some(names)
 }
 
-/// Strip a repo profile of everything that would reach a user entry.
+/// Strip a repo profile of everything that would reach a user entry or
+/// carry a blocking rule.
 ///
-/// A profile filters, retimes, and caps. Each of those silences an
-/// entry as completely as the others, so all four fields are held to
-/// one rule: a repo profile governs the repo's own entries and nothing
-/// the user declared.
+/// A repo bundle governs the repo's own entries and nothing the user
+/// declared. It may not silence a base user entry (so `base` is forced
+/// true and `disable` drops only its own names), it may not carry a
+/// guard or a stop rule (those are the only things that block, and they
+/// are user-only, as a repo's top-level guards are), and its cap may
+/// not fall below the user's.
 fn sanitize_repo_profile(
     mut profile: Profile,
     user_entries: &[String],
     user_cap: usize,
 ) -> Profile {
-    if let Some(only) = &mut profile.only {
-        only.extend(user_entries.iter().cloned());
-    }
+    profile.base = true;
     profile.disable.retain(|d| !user_entries.contains(d));
-    profile.cadence.retain(|k, _| !user_entries.contains(k));
+    if !profile.guards.is_empty() {
+        eprintln!("gaff: a repo profile declares guards, which are user-only. Dropping them.");
+        profile.guards.clear();
+    }
+    if profile.stop.is_some() {
+        eprintln!("gaff: a repo profile declares a stop rule, which is user-only. Dropping it.");
+        profile.stop = None;
+    }
     if let Some(cap) = profile.max_inject_bytes
         && !user_entries.is_empty()
     {
@@ -264,6 +348,25 @@ pub fn resolve_profile(
     // `agent_may_set` is human-only and the variable cannot select it.
     let from_env = || {
         let name = env.map(ToString::to_string)?;
+        let allowed = config
+            .transitions
+            .as_ref()
+            .is_some_and(|t| t.agent_may_set(&name));
+        // A bundle that carries a guard or a stop rule is law, not just
+        // context. The environment must not select it unless the user
+        // named it in `agent_may_set`, whether or not a transition policy
+        // is declared at all. A repo reaches `GAFF_PROFILE` through
+        // direnv, and an agent exports it in one call.
+        let carries_law = config
+            .profiles
+            .get(&name)
+            .is_some_and(|p| p.user && (!p.guards.is_empty() || p.stop.is_some()));
+        if carries_law && !allowed {
+            eprintln!(
+                "gaff: GAFF_PROFILE names `{name}`, which carries guards or a stop rule and is human-only. Add it to transitions.agent_may_set to allow it, or use `gaff profile set` from a terminal."
+            );
+            return None;
+        }
         if let Some(t) = &config.transitions
             && config.profiles.contains_key(&name)
             && !t.agent_may_set(&name)
@@ -639,6 +742,17 @@ pub fn load_layered(cwd: &Path) -> Loaded {
                     }
                     for p in cfg.profiles.values_mut() {
                         p.user = true;
+                        // A bundle section names a file next to the user
+                        // config; stamp its entries so `section_path`
+                        // resolves against the user directory and not the
+                        // repo's `.gaff/`, the same bug fixed for the top
+                        // level one level up.
+                        for s in &mut p.sections {
+                            s.user = true;
+                        }
+                        for r in &mut p.reminders {
+                            r.user = true;
+                        }
                     }
                     for g in &mut cfg.git {
                         g.user = true;
@@ -646,6 +760,10 @@ pub fn load_layered(cwd: &Path) -> Loaded {
                     for w in &mut cfg.github {
                         w.user = true;
                     }
+                    // A user profile that still carries a removed key is
+                    // dropped with a migration line, so a stale key never
+                    // reaches the merge and never disarms a guard.
+                    drop_legacy_profiles(&mut cfg);
                     Some(cfg)
                 }
                 Err(e) => return Loaded::Broken(format!("{}: {e}", p.display())),
@@ -910,6 +1028,58 @@ fn check_and_read(path: &Path, meta: &std::fs::Metadata) -> Result<Option<String
     }
 }
 
+/// Drop every profile that still carries a removed key, with a migration
+/// line. Returns whether any was dropped, so the caller can mark the
+/// config degraded. Keeping the profile would honor a key the merge no
+/// longer reads, so the safe reading is to drop the profile and say why.
+fn drop_legacy_profiles(cfg: &mut Config) -> bool {
+    let stale: Vec<(String, Vec<&'static str>)> = cfg
+        .profiles
+        .iter()
+        .filter_map(|(name, p)| {
+            let keys = p.legacy_keys();
+            (!keys.is_empty()).then(|| (name.clone(), keys))
+        })
+        .collect();
+    for (name, keys) in &stale {
+        eprintln!(
+            "gaff: profile `{name}` uses the removed key(s) {}. Declare the entries inside the profile instead. Ignoring this profile.",
+            keys.join(", ")
+        );
+        cfg.profiles.remove(name);
+    }
+    !stale.is_empty()
+}
+
+/// Problems `check` reports for a removed profile key.
+///
+/// The raw user and repo config files are parsed, because `load` drops a
+/// profile carrying a removed key before `check` sees it. A parse
+/// failure is reported by the normal load path, so it is ignored here.
+#[must_use]
+pub fn legacy_key_problems(cwd: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let files = [user_config_path(), Some(cwd.join(CONFIG_PATH))];
+    for path in files.into_iter().flatten() {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(cfg) = serde_yaml_ng::from_str::<Config>(&text) else {
+            continue;
+        };
+        for (name, profile) in &cfg.profiles {
+            let keys = profile.legacy_keys();
+            if !keys.is_empty() {
+                out.push(format!(
+                    "profile `{name}` uses the removed key(s) {}. Declare the entries inside the profile instead.",
+                    keys.join(", ")
+                ));
+            }
+        }
+    }
+    out
+}
+
 #[must_use]
 pub fn load(cwd: &Path) -> Loaded {
     let path = cwd.join(CONFIG_PATH);
@@ -931,6 +1101,29 @@ pub fn load(cwd: &Path) -> Loaded {
                     cfg.guards.len()
                 );
                 cfg.guards.clear();
+            }
+            // A repo profile may not carry a guard or a stop rule, for
+            // the same reason a repo top level may not: both block, and a
+            // repo is untrusted content. Cleared here so the no-user-config
+            // path (`load_layered` returning this config unmerged) is
+            // covered too, not only the merge path in `sanitize_repo_profile`.
+            for (name, profile) in &mut cfg.profiles {
+                if !profile.guards.is_empty() {
+                    eprintln!(
+                        "gaff: {CONFIG_PATH} profile `{name}` declares guards. A repo may not, so they are ignored."
+                    );
+                    profile.guards.clear();
+                }
+                if profile.stop.is_some() {
+                    eprintln!(
+                        "gaff: {CONFIG_PATH} profile `{name}` declares a stop rule. A repo may not, so it is ignored."
+                    );
+                    profile.stop = None;
+                }
+                profile.base = true;
+            }
+            if drop_legacy_profiles(&mut cfg) {
+                return Loaded::Degraded(cfg);
             }
             Loaded::Ok(cfg)
         }
@@ -988,22 +1181,129 @@ mod profile_tests {
 
     fn base() -> Config {
         serde_yaml_ng::from_str(
-            "reminders:\n  - name: a\n    every: {tool_calls: 5}\n    text: A\n  - name: b\n    every: {tool_calls: 7}\n    text: B\nsections:\n  - name: s\n    file: s.md\n    refresh: {prompts: 3}\nprofiles:\n  focus:\n    only: [a]\n    cadence:\n      a: {tool_calls: 2}\n  quiet:\n    disable: [a, b, s]\n    max_inject_bytes: 100\ndefault_profile: focus\ntransitions:\n  agent_may_set: [focus]\n",
+            "reminders:\n  - name: a\n    every: {tool_calls: 5}\n    text: A\n  - name: b\n    every: {tool_calls: 7}\n    text: B\nsections:\n  - name: s\n    file: s.md\n    refresh: {prompts: 3}\nprofiles:\n  focus:\n    base: false\n    reminders:\n      - name: a\n        every: {tool_calls: 2}\n        text: A2\n  quiet:\n    disable: [a, b, s]\n    max_inject_bytes: 100\ndefault_profile: focus\ntransitions:\n  agent_may_set: [focus]\n",
         )
         .expect("the fixture config must parse")
     }
 
     #[test]
-    fn only_selects_and_cadence_overrides() {
+    fn a_solo_bundle_delivers_only_its_own_and_shadows_by_name() {
         let cfg = base().with_profile(Some("focus"));
-        assert_eq!(cfg.reminders.len(), 1, "only: [a] keeps one reminder");
+        assert_eq!(cfg.reminders.len(), 1, "base: false drops the base entries");
         assert_eq!(cfg.reminders[0].name, "a");
         assert_eq!(
             cfg.reminders[0].every.tool_calls,
             Some(2),
-            "the profile overrides the cadence"
+            "the bundle's own `a` replaces the base `a`, which retimes it"
         );
-        assert!(cfg.sections.is_empty(), "only: [a] drops the section");
+        assert_eq!(cfg.reminders[0].text, "A2");
+        assert!(
+            cfg.sections.is_empty(),
+            "base: false drops the base section"
+        );
+    }
+
+    #[test]
+    fn a_bundle_composes_over_the_base_when_base_is_true() {
+        let cfg: Config = serde_yaml_ng::from_str(
+            "reminders:\n  - name: a\n    every: {tool_calls: 5}\n    text: A\nprofiles:\n  add:\n    reminders:\n      - name: c\n        every: {tool_calls: 3}\n        text: C\n",
+        )
+        .unwrap();
+        let out = cfg.with_profile(Some("add"));
+        let names: Vec<&str> = out.reminders.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["c", "a"], "the bundle entry comes before the base");
+    }
+
+    #[test]
+    fn guards_always_compose_base_plus_bundle() {
+        let cfg: Config = serde_yaml_ng::from_str(
+            "guards:\n  - name: base-g\n    tool: Bash\n    message: no\nprofiles:\n  strict:\n    base: false\n    guards:\n      - name: bundle-g\n        tool: Read\n        message: no\n",
+        )
+        .unwrap();
+        let out = cfg.with_profile(Some("strict"));
+        let names: Vec<&str> = out.guards.iter().map(|g| g.name.as_str()).collect();
+        assert!(names.contains(&"base-g"), "base: false never drops a guard");
+        assert!(names.contains(&"bundle-g"));
+    }
+
+    #[test]
+    fn a_repo_bundle_loses_guards_and_stop_and_cannot_silence_the_base() {
+        let repo: Config = serde_yaml_ng::from_str(
+            "profiles:\n  ci:\n    base: false\n    disable: [user-r]\n    guards:\n      - name: repo-g\n        tool: Bash\n        message: no\n    stop:\n      hold: block\n",
+        )
+        .unwrap();
+        let ci = repo.profiles.get("ci").unwrap().clone();
+        let sanitized = sanitize_repo_profile(ci, &["user-r".to_string()], 4096);
+        assert!(
+            sanitized.base,
+            "a repo bundle may not run solo over user entries"
+        );
+        assert!(
+            sanitized.guards.is_empty(),
+            "a repo bundle carries no guards"
+        );
+        assert!(
+            sanitized.stop.is_none(),
+            "a repo bundle carries no stop rule"
+        );
+        assert!(
+            !sanitized.disable.contains(&"user-r".to_string()),
+            "a repo bundle may not disable a user entry"
+        );
+    }
+
+    #[test]
+    fn a_profile_with_a_removed_key_is_dropped_at_load() {
+        let mut cfg: Config = serde_yaml_ng::from_str(
+            "profiles:\n  legacy:\n    only: [a]\n  good:\n    base: false\n",
+        )
+        .unwrap();
+        assert!(
+            drop_legacy_profiles(&mut cfg),
+            "the legacy profile is dropped"
+        );
+        assert!(!cfg.profiles.contains_key("legacy"));
+        assert!(
+            cfg.profiles.contains_key("good"),
+            "the good profile survives"
+        );
+    }
+
+    #[test]
+    fn a_dotted_profile_hold_is_found_by_the_store() {
+        // A profile name with a `.` sanitizes to a different on-disk id.
+        // The store must find the hold under the sanitized name, or the
+        // times budget resets on every stop.
+        let dir = std::env::temp_dir().join(format!("gaff-hold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::state::Store::new(dir.clone());
+        store
+            .write_hold("s", "profile-code.review", "hold", Some(2))
+            .unwrap();
+        assert!(
+            store.has_hold("s", "profile-code.review"),
+            "the hold is found under the sanitized id"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_env_gate_refuses_a_bundle_that_carries_law() {
+        // A bundle with a guard is law, human-only, even with no
+        // transitions declared.
+        let mut cfg: Config = serde_yaml_ng::from_str(
+            "profiles:\n  reviewer:\n    guards:\n      - name: g\n        tool: Bash\n        message: no\n",
+        )
+        .unwrap();
+        for p in cfg.profiles.values_mut() {
+            p.user = true;
+        }
+        let dir = std::env::temp_dir();
+        assert_eq!(
+            resolve_profile(None, Some("reviewer"), None, &dir, &cfg),
+            None,
+            "GAFF_PROFILE cannot select a law-carrying bundle"
+        );
     }
 
     #[test]
