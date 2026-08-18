@@ -18,10 +18,9 @@ use std::process::Command;
 
 /// Run git in `dir` and return its stdout, trimmed. Panics on failure,
 /// because a broken fixture must not read as a failing assertion.
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
+fn git_command(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir)
         .env("GIT_AUTHOR_NAME", "test")
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
         .env("GIT_COMMITTER_NAME", "test")
@@ -30,7 +29,32 @@ fn git(dir: &Path, args: &[&str]) -> String {
         // contributor with `commit.gpgsign = true` turned every test
         // here red, because the fixture commit asked for a signature.
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    // Git exports these to every hook it runs, and the merge gate runs
+    // this suite from pre-push. An inherited GIT_DIR sends every
+    // fixture at the real repository: `git init` reinitialises it,
+    // `git commit` fires its pre-commit hooks, and the fixture commit
+    // lands on the branch under test. Measured on 2026-08-18, when a
+    // fixture commit named "one" became the tip of a branch.
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = git_command(dir)
+        .args(args)
         .output()
         .unwrap_or_else(|e| panic!("cannot run git {args:?}: {e}"));
     assert!(
@@ -135,11 +159,8 @@ fn a_note_under_a_fanout_directory_is_read_back() {
 /// than an argument.
 fn git_mktree(dir: &Path, entry: &str) -> String {
     use std::io::Write;
-    let mut child = Command::new("git")
+    let mut child = git_command(dir)
         .args(["mktree"])
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -153,6 +174,37 @@ fn git_mktree(dir: &Path, entry: &str) -> String {
     let out = child.wait_with_output().expect("wait for git mktree");
     assert!(out.status.success(), "git mktree failed");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn the_fixture_command_drops_the_environment_git_gives_a_hook() {
+    // The merge gate runs this suite from pre-push, where git exports
+    // GIT_DIR and its siblings. Inherited, they aim every fixture at
+    // the real repository. This asserts the removals rather than the
+    // symptom, because the symptom is a commit on the branch under
+    // test and a test must not produce one to prove a point.
+    let cmd = git_command(Path::new("."));
+    let removed: Vec<&str> = cmd
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .filter_map(|(key, _)| key.to_str())
+        .collect();
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        assert!(
+            removed.contains(&var),
+            "{var} reaches the fixture, so a hook run writes to the real repository"
+        );
+    }
 }
 
 #[test]
