@@ -134,7 +134,7 @@ fn every_fault_that_refuses_a_push_is_documented() {
         "a sign-off naming another commit",
         "two sign-offs for one review",
         "evidence of fewer than",
-        "a sha of fewer than",
+        "a sha of fewer than 7 characters, or one that is not hex",
         "no note at all",
     ];
     let prose = reviews_check_prose();
