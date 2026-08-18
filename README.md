@@ -67,6 +67,25 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
   there. Handlers are therefore deny-by-default, and they need
   `gaff trust` per repo.
 
+## Install
+
+From the first published release onward:
+
+```sh
+cargo install gaff
+```
+
+A tagged release also carries a prebuilt binary and the man page, for
+macOS and Linux on x86-64 and arm64. Take the archive for your
+platform from the [releases page](https://github.com/cjohnhanson/gaff/releases),
+put `gaff` on your `PATH`, and put `man/gaff.1` where `man` looks.
+
+To build from a checkout:
+
+```sh
+cargo install --git https://github.com/cjohnhanson/gaff
+```
+
 ## Using it
 
 ```
