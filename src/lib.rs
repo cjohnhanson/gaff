@@ -18,5 +18,6 @@ pub mod ghworkflow;
 pub mod githook;
 pub mod guard;
 pub mod handler;
+pub mod hookagent;
 pub mod init;
 pub mod state;

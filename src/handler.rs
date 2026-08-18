@@ -56,7 +56,8 @@ const BUDGET_FLUSH_MS: u64 = 500;
 /// and every runtime adds another loader variable. A handler that needs
 /// a secret names it in `env_passthrough`, so the grant is explicit and
 /// visible in the config.
-const ENV_ALLOWLIST: [&str; 7] = ["HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "USER"];
+pub(crate) const ENV_ALLOWLIST: [&str; 7] =
+    ["HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "USER"];
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -602,7 +603,7 @@ fn run_one(
 /// `recv_timeout` bounds the read, not the child. A child that closes
 /// its stdout and keeps running would hold an unbounded `wait()` open,
 /// and with it the hook and the whole session.
-fn wait_bounded(
+pub(crate) fn wait_bounded(
     child: &mut std::process::Child,
     pid: u32,
     deadline: Instant,
@@ -627,7 +628,7 @@ fn wait_bounded(
 ///
 /// A relative entry, and an empty entry (which means the working
 /// directory), both resolve inside the repo.
-fn safe_path(cwd: &Path) -> String {
+pub(crate) fn safe_path(cwd: &Path) -> String {
     let raw = std::env::var("PATH").unwrap_or_default();
     let kept: Vec<&str> = raw
         .split(':')
@@ -643,7 +644,7 @@ fn safe_path(cwd: &Path) -> String {
 /// A grandchild inherits the stdout write end. Killing only the direct
 /// child can leave that pipe open. `unsafe` is forbidden in this crate,
 /// so the call goes through nix's safe wrapper for `killpg(2)`.
-fn kill_group(pid: u32) {
+pub(crate) fn kill_group(pid: u32) {
     #[cfg(unix)]
     {
         use nix::sys::signal::{Signal, killpg};
