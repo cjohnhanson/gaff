@@ -131,9 +131,9 @@ load, no declared workflow may drift, then each hook's entries run,
 pre-commit then pre-push, with a synthesized push on stdin for the
 latter.
 A requested hook with no entry fails the run.
-.It Cm reviews
-Print the reviews a change must pass, one to a line, in declaration
-order.
+.It Cm reviews Op Cm check
+With no argument, print the reviews a change must pass, one to a line,
+in declaration order.
 A merge gate reads the list from here rather than from the config file,
 so a format change cannot break the gate silently.
 Where the repository config holds no
@@ -147,6 +147,66 @@ any.
 The user config and the repository config both contribute names, and
 neither drops a name from the other.
 A user config cannot state the policy for a repository that omits one.
+.Pp
+.Cm reviews check
+reads git's pre-push ref lines on standard input.
+Every declared review needs one sign-off on every pushed tip.
+The check refuses a push whose tip lacks one.
+The command takes no argument.
+.Pp
+A sign-off is one line of the tip's
+.Ql reviews
+git note, reading
+.Ql signoff[NAME] VERDICT SHA EVIDENCE .
+The verdict is
+.Ql PASS
+or
+.Ql FAIL .
+The check ignores prose around the lines, so a note can carry a
+narrative.
+The sha names the commit the reviewer read.
+A sign-off therefore cannot carry forward onto a commit nobody read.
+.Pp
+The check refuses a push on any of these faults:
+.Bl -bullet -compact
+.It
+a declared review with no sign-off
+.It
+a verdict of
+.Ql FAIL
+.It
+a sign-off naming another commit
+.It
+two sign-offs for one review
+.It
+evidence of fewer than 3 words
+.It
+a sha of fewer than 7 characters, or one that is not hex, or one
+longer than 64
+.It
+no note at all
+.El
+.Pp
+The command also refuses a push where a line on standard input carries
+fewer than the four fields git writes for a ref.
+That is a truncated stream rather than a review fault.
+Standard input carrying no line at all is neither: git runs the hook
+that way when the remote already holds everything, and a push that
+moves no ref lands no commit.
+.Pp
+The floor on the sha is what makes a prefix mean anything.
+One hex character matches one commit in sixteen, so a sign-off reading
+.Ql PASS 5
+signed off every commit whose sha starts with
+.Ql 5 .
+.Pp
+A pull request needs the branch head, because the commit CI checks out
+is a merge commit no reviewer saw.
+.Cm ci
+substitutes that sha into the ref line it synthesizes on the hook's
+standard input.
+So one mechanism carries the head, and this command takes no flag that
+names a commit.
 .It Cm docs Op Ar page
 Print the bundled documentation.
 Without
@@ -261,5 +321,5 @@ A git hook exists to block, so
 .Cm githook
 returns the exit code of the command that failed.
 .Sh SEE ALSO
-.Xr tisket 1 ,
-.Xr missouri 1
+.Xr missouri 1 ,
+.Xr tisket 1
