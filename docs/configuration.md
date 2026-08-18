@@ -717,12 +717,26 @@ Write these names in a config, and read them in `gaff log`. A host's own
 name, such as Claude Code's `PostToolBatch`, never appears above the
 adapter.
 
-Claude Code is the only implemented adapter. An adapter owns four
-host-specific facts. It owns the payload mapping, and the map from its
-event names onto the set above. It also owns its own event names for
-registration, and the settings path that `gaff init` writes. `gaff hook` selects the adapter
-from `GAFF_HOST`, or from the payload shape when that variable is
-absent. `gaff init --host <name>` targets a named host.
+An adapter owns its host's facts. It owns the payload mapping and the map
+from its event names onto the set above. It owns how injected context is
+rendered back: Claude Code gets its hook JSON, and a host reads context
+in its own shape, so that rendering is a host fact. It owns its event
+names for registration and the settings path that `gaff init` writes.
+`gaff hook` selects the adapter from `GAFF_HOST`, or from the payload
+shape when that variable is absent. `gaff init --host <name>` targets a
+named host.
+
+A refusal is not a host fact. Every host reads exit 2 as a refusal and
+the child's stderr as the reason, so a guard and a hold need no per-host
+rendering. A host that gaff governs must block on exit 2 and forward the
+child's stderr to its model.
+
+Two adapters ship. Claude Code is the host a person installs against. The
+`generic` host speaks gaff's own normalized vocabulary: it reads the
+event from `gaff_event` and the rest from gaff's own field names, and it
+renders context as `{"event": <name>, "context": <text>}`. It suits a
+host, such as an agent runner, that calls `gaff hook` itself. It does not
+self-register, so `gaff init --host generic` is refused.
 
 gaff ships no guessed schema for an untested host. Adding one means
 adding an `Adapter` constant with that host's real field names, taken
