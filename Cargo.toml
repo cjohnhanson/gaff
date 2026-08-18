@@ -20,8 +20,8 @@ exclude = [
     ".github/",
     ".agents/",
     "scripts/",
-    # Shells out to scripts/merge-gate.sh, which the line above drops.
-    "tests/merge_gate_guard.rs",
+    # Shells out to scripts/review-note-check.sh, dropped above.
+    "tests/review_note_check.rs",
     "tests/missouri/",
     "CONTRIBUTING.md",
     "AGENTS.md",
@@ -54,6 +54,11 @@ thiserror = "2"
 # `.git` file. Pure filesystem; it spawns nothing.
 gix-discover = "0.54"
 gix-hash = { version = "0.26", default-features = false, features = ["sha1"] }
+# Reads the review note and peels a pushed tag, out of the object
+# database. The single-binary rule bans a git process, and note reading
+# needs object decoding, packfile lookup, and the notes fanout, which
+# no file read covers. No network feature is on: every read is local.
+gix = { version = "0.86.0", default-features = false, features = ["revision", "sha1"] }
 
 # For the open flags on a section body: O_NONBLOCK so a FIFO cannot
 # wedge the hook, and O_NOFOLLOW so the final component cannot be
@@ -63,3 +68,11 @@ libc = "0.2"
 # A safe wrapper for kill(2) on a process group. `unsafe` is forbidden
 # here, and spawning /bin/kill is not single-binary.
 nix = { version = "0.31", default-features = false, features = ["signal"] }
+
+# A released binary carries no debug symbols, and a user installing a
+# CLI never reads them. Thin LTO with one codegen unit trades build
+# time for size and speed. A release builds once and installs often.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

@@ -542,13 +542,19 @@ editing the file. That is `gaff allow`:
 The next call that guard would refuse passes instead, once, with a note
 on stderr saying so. The call after that is refused again.
 
-Two things make this safe to offer. `gaff allow` refuses to run without
-a terminal on stdin, the same check `gaff trust` makes. And gaff carries
-a built-in guard, which no config declares and no config removes, that
-refuses `gaff allow` and `gaff trust` from any Bash call an agent makes.
-The boundary is structural: every agent command passes through `gaff
-hook` first, and a human's shell has no hook. `!gaff allow` in the
-harness runs in the human's shell.
+Two things stand between an agent and its own grant. `gaff allow`
+refuses to run without a terminal on stdin, the same check `gaff trust`
+makes. And gaff carries a built-in guard, which no config declares and
+no config removes, that refuses `gaff allow` and `gaff trust` from any
+Bash call an agent makes. The boundary is structural: every agent
+command passes through `gaff hook` first, and a human's shell has no
+hook. `!gaff allow` in the harness runs in the human's shell.
+
+Note the limit, which is the one `gaff trust` carries. `gaff allow`
+records the grant in gaff's state directory. An agent that can write
+that directory can arm the one-shot without running the command, and an
+agent that can allocate a terminal passes the stdin check. The gate
+raises the cost and makes the grant visible. It is not a sandbox.
 
 The `!` prefix runs the command in the harness's own shell. That is what
 puts a terminal on stdin and keeps the call out of the hook.

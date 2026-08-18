@@ -96,6 +96,7 @@ Commands:
   docs [page]      Print the bundled documentation
   ci [--hook H]    Run the declared git gates against HEAD, as CI does
   reviews          Print the reviews a change must pass, one to a line
+  reviews check    Refuse a push whose tips name no review (reads stdin)
   prime            Print what gaff is and how to use it, for an agent's context
 
 Options:
@@ -2181,37 +2182,217 @@ fn review_problems(reviews: Option<&[String]>) -> Vec<String> {
     problems
 }
 
-/// `gaff reviews`: print the required reviews, one to a line.
+/// What a repo sees when `.gaff/gaff.yml` declares no `reviews:` key.
 ///
-/// A merge gate reads the list from here. A gate that parsed the
-/// config file itself would break when the format changes, and it
-/// would then require nothing.
+/// An unknown policy is not an empty one, so the check refuses rather
+/// than requiring nothing.
+const NO_POLICY: &str = "`.gaff/gaff.yml` declares no `reviews:` key. Add one. Write \
+     `reviews: []` if a change needs no review, or list the reviews it must pass.";
+
+/// `gaff reviews [check]`: the review policy, and the gate that holds it.
+///
+/// With no argument it prints the required reviews, one to a line. A
+/// merge gate reads the list from here. A gate that parsed the config
+/// file itself would break when the format changes, and it would then
+/// require nothing.
+///
+/// `check` reads git's pre-push ref lines on stdin and refuses a push
+/// whose tips do not name every declared review.
 ///
 /// An absent declaration and an empty one differ. A repo that states
 /// no `reviews:` key gets an error, because no policy must not read as
 /// "no review is required". A repo that writes `reviews: []` succeeds
 /// and prints nothing, because an author chose that.
 fn run_reviews(args: &[String]) -> ExitCode {
+    match args.first().map(String::as_str) {
+        None => run_reviews_list(),
+        Some("check") => run_reviews_check(&args[1..]),
+        Some(arg) => fail(&format!(
+            "unexpected argument `{arg}` (reviews takes `check` or nothing)"
+        )),
+    }
+}
+
+/// Print why each tip was refused. Returns true when any was.
+fn report_review_faults(verdicts: &[crate::reviewnote::Verdict]) -> bool {
+    let mut refused = false;
+    for v in verdicts {
+        if v.faults.is_empty() {
+            continue;
+        }
+        refused = true;
+        for fault in &v.faults {
+            match fault {
+                crate::reviewnote::Missing::Note => {
+                    eprintln!(
+                        "reviews: no review note on {} (pushing to {}).",
+                        v.commit, v.remote_ref
+                    );
+                }
+                crate::reviewnote::Missing::Reviews(absent) => {
+                    eprintln!(
+                        "reviews: {} carries no sign-off for {}.",
+                        v.commit,
+                        absent.join(", ")
+                    );
+                }
+                crate::reviewnote::Missing::Failed(names) => {
+                    eprintln!(
+                        "reviews: {} is signed off as failed for {}.",
+                        v.commit,
+                        names.join(", ")
+                    );
+                }
+                crate::reviewnote::Missing::WrongCommit { review, named } => {
+                    eprintln!(
+                        "reviews: the {review} sign-off on {} names {named}, a different commit.",
+                        v.commit
+                    );
+                    eprintln!("  A sign-off names the commit its reviewer read.");
+                }
+                crate::reviewnote::Missing::Duplicate(review) => {
+                    eprintln!(
+                        "reviews: {} carries two {review} sign-offs, so neither counts.",
+                        v.commit
+                    );
+                }
+                crate::reviewnote::Missing::ThinEvidence { review, words } => {
+                    eprintln!(
+                        "reviews: the {review} sign-off on {} gives {words} words of evidence.",
+                        v.commit
+                    );
+                }
+                crate::reviewnote::Missing::ShortCommit { review, named } => {
+                    eprintln!(
+                        "reviews: the {review} sign-off on {} names `{named}`, which is not a sha.",
+                        v.commit
+                    );
+                    // Say which way it is wrong. One message calling a
+                    // 41-character sha "shorter" sent a reader looking
+                    // for the wrong mistake.
+                    let floor = crate::reviewnote::SHA_FLOOR;
+                    if named.chars().count() < floor {
+                        eprintln!(
+                            "  A sha carries at least {floor} hex characters. A shorter prefix matches many commits."
+                        );
+                    } else if !named.chars().all(|c| c.is_ascii_hexdigit()) {
+                        eprintln!("  A sha carries hex characters only.");
+                    } else {
+                        eprintln!("  A sha carries at most 64 hex characters.");
+                    }
+                }
+            }
+        }
+        eprintln!("  `gaff reviews` lists what a change must pass here.");
+        eprintln!("  A reviewer who did not write the change reads it, then records one line:");
+        eprintln!(
+            "    git notes --ref=reviews add -f -m \
+             'signoff[<review>] PASS {} <what was checked, and how>' {}",
+            crate::reviewnote::short(&v.commit),
+            v.commit
+        );
+    }
+    refused
+}
+
+/// `gaff reviews check`: every declared review needs a sign-off on
+/// every pushed tip. The check refuses a push whose tip lacks one.
+///
+/// Reads git's pre-push ref lines on stdin, so a pre-push hook pipes
+/// its own stdin straight through.
+///
+/// The check reads a claim. It shows that someone recorded a review.
+/// It cannot show that the review happened.
+fn run_reviews_check(args: &[String]) -> ExitCode {
+    // The command takes no argument. Every commit it checks arrives on
+    // stdin, as one line per ref, the way git sends them to a pre-push
+    // hook. A pull request needs the branch head rather than the merge
+    // commit CI checks out, and `gaff ci` supplies it by substituting
+    // that sha into the ref line it synthesizes. So one mechanism
+    // carries the head.
+    //
+    // An earlier version took `--head <sha>` as well. It replaced every
+    // pushed ref with one synthetic entry and suppressed the
+    // empty-stdin guard below, and nothing ever passed it. A second
+    // mechanism that weakens the first, with no caller, is worse than
+    // no mechanism.
     if let Some(arg) = args.first() {
-        return fail(&format!("unexpected argument `{arg}` (reviews takes none)"));
+        return fail(&format!(
+            "unexpected argument `{arg}` (reviews check takes none, and reads refs on stdin)"
+        ));
     }
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
-    // One read. The merge holds the rule that the repo states the
-    // policy, so reading the repo layer a second time to test it would
-    // open a window where the two reads disagree.
+    let cfg = match ci_config(&cwd) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let Some(required) = cfg.reviews.as_ref() else {
+        return fail(NO_POLICY);
+    };
+
+    let mut stdin = String::new();
+    if std::io::stdin().read_to_string(&mut stdin).is_err() {
+        return fail("cannot read the pushed refs from stdin");
+    }
+    let refs = crate::reviewnote::parse_refs(&stdin);
+
+    // A line git did not write means the stream was cut. git writes
+    // four fields per ref, so anything shorter is a truncation rather
+    // than a push. Dropping such a line silently defeated the guard
+    // below: one line reading `refs/heads/main` left no refs and
+    // non-empty stdin, so the check reported nothing to do and exited
+    // 0.
+    let truncated = crate::reviewnote::truncated_lines(&stdin);
+    if truncated > 0 {
+        return fail(&format!(
+            "{truncated} line(s) on stdin carry fewer than the four fields git writes \
+             for a pushed ref, so the stream is truncated. Check that nothing upstream \
+             in the pipeline consumed part of it."
+        ));
+    }
+
+    // Empty stdin is a real push, not a wiring fault. git runs a
+    // pre-push hook with no lines at all when the remote already holds
+    // everything, and `git push` on an up-to-date branch is a routine
+    // keystroke. An earlier version refused it and told the reader to
+    // hunt a pipeline bug that did not exist.
+    //
+    // Passing is safe because a push that moves no ref lands no
+    // commit. The stream that goes missing while refs still move is
+    // the dangerous case, and a partial read leaves a line with fewer
+    // than four fields, which `truncated_lines` above refuses.
+    if refs.is_empty() {
+        if stdin.split_whitespace().next().is_none() {
+            println!("reviews: nothing to check. git sent no ref, so this push moves nothing.");
+        } else {
+            println!("reviews: nothing to check. Every pushed ref is a deletion or a notes ref.");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let verdicts = crate::reviewnote::check(&cwd, &refs, required);
+    let refused = report_review_faults(&verdicts);
+    if refused {
+        return ExitCode::from(1);
+    }
+    println!("reviews: ok");
+    ExitCode::SUCCESS
+}
+
+/// `gaff reviews`: print the required reviews, one to a line.
+fn run_reviews_list() -> ExitCode {
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    // One config read. Two reads could disagree with each other.
     let cfg = match ci_config(&cwd) {
         Ok(c) => c,
         Err(code) => return code,
     };
     let Some(names) = cfg.reviews.as_ref() else {
-        return fail(
-            "no reviews are declared in .gaff/gaff.yml. A gate that read this as \"none \
-             required\" would merge an unreviewed change. Write `reviews: []` there to state \
-             that none are required, or list the reviews a change must pass. A user config \
-             may add a review, and may not state the policy for a repo.",
-        );
+        return fail(NO_POLICY);
     };
     for name in names {
         println!("{name}");
@@ -2335,6 +2516,23 @@ fn ci_phases(cwd: &std::path::Path, cfg: &config::Config, hooks: &[String]) -> E
             head.sha
         );
     }
+    // A pull request event checks out a merge commit the forge builds.
+    // No reviewer saw it, so a review check reading the checkout would
+    // refuse every pull request. The branch head is what a reviewer
+    // read, and this is the only place that reads it: a gate takes its
+    // argv from the committed config, so a shell cannot introduce the
+    // override there.
+    let env = |k: &str| std::env::var(k).ok();
+    let pr_head = match crate::reviewnote::pull_request_head(&env) {
+        Some(Ok(sha)) => Some(sha),
+        Some(Err(why)) => return fail(&format!("this is a pull request event and {why}")),
+        None => None,
+    };
+    let push_sha = pr_head.clone().unwrap_or_else(|| head.sha.clone());
+    if let Some(sha) = &pr_head {
+        println!("gaff: ci: pull request. The gates see {sha}, the branch head.");
+    }
+
     for hook in hooks {
         let (args, stdin): (Vec<String>, Option<Vec<u8>>) = if hook == "pre-push" {
             // git's pre-push contract: the remote name and URL as
@@ -2342,9 +2540,8 @@ fn ci_phases(cwd: &std::path::Path, cfg: &config::Config, hooks: &[String]) -> E
             // synthesized local ref is never refs/notes/*, so a
             // notes exemption in a gate cannot fire here.
             let line = format!(
-                "{branch} {sha} {branch} 0000000000000000000000000000000000000000\n",
+                "{branch} {push_sha} {branch} 0000000000000000000000000000000000000000\n",
                 branch = head.branch,
-                sha = head.sha
             );
             (
                 vec![
