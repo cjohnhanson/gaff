@@ -64,5 +64,28 @@ command -v gaff >/dev/null || {
 
 # Last in the pipeline, always. A POSIX pipeline exits with its final
 # command, so anything after this would discard the refusal.
+# Every required review needs vendored criteria, and every vendored
+# review needs to be required. A name with no criteria is a review
+# nobody can perform. A criterion nobody requires is a check that one
+# edit dropped. Checking both directions is what stops that edit.
+required=$(gaff reviews)
+for name in $required; do
+  if [ ! -f ".agents/skills/$name/SKILL.md" ]; then
+    echo "merge-gate: $name is required and has no criteria in .agents/skills." >&2
+    echo "  Vendor it: almanac add github:cjohnhanson/skills --path skills/$name --name $name --accept" >&2
+    exit 1
+  fi
+done
+for dir in .agents/skills/review-*/; do
+  [ -d "$dir" ] || continue
+  name=${dir#.agents/skills/}
+  name=${name%/}
+  if ! printf '%s\n' "$required" | grep -qx "$name"; then
+    echo "merge-gate: $name is vendored and required by nothing." >&2
+    echo "  Name it under reviews: in .gaff/gaff.yml, or remove it." >&2
+    exit 1
+  fi
+done
+
 printf '%s\n' "$gate_refs" | gaff reviews check
 echo "merge-gate: ok"
