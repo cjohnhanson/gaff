@@ -576,6 +576,48 @@ A guard names a normalized tool and a field, not a host's payload
 shape. The adapter maps a host's event onto `pre_tool_call`, so the
 same guard works on any host with an adapter.
 
+## Hook agents
+
+Anywhere a deterministic hook runs, an agent can run instead. `gaff run
+<name>` dispatches a declarative agent and maps its verdict to an exit
+code: 0 admits, 2 refuses. The runtime is a config choice, so gaff names
+no vendor.
+
+```yaml
+agents:
+  - name: reviewer
+    context: [git, diff, --no-color, 'main...HEAD']
+    profile: reviewer
+    timeout_ms: 600000
+```
+
+gaff runs the `context` command and feeds its stdout to the runner on
+standard input. The runner is `[kersh, run, <name>, --context-file, -]`
+by default; set `runner` to any command to use a different runtime. gaff
+sets `GAFF_PROFILE` and a fresh `GAFF_SESSION_ID` for the runner, so the
+run is governed by the named profile.
+
+The agent reports a verdict on its own output: a line that begins with
+`gaff-verdict: pass` or `gaff-verdict: fail: <reason>`. gaff reads the
+last such line, so a runner needs no gaff-specific feature to print one.
+A line counts only when it starts with the marker, so an indented or
+quoted marker is not a verdict. The context under review is untrusted; a
+runner that echoes it to its output could carry a forged marker, so the
+runner must report its own verdict rather than repeat its input.
+
+gaff clears the environment before it runs the context command and the
+runner, and adds back a safe set with a repo-stripped `PATH`. A runner
+that reads a credential from the environment names it in
+`env_passthrough`, and gaff passes it through only when it is set.
+
+The gate fails closed. `gaff run` exits 0 only on a pass verdict from a
+runner that also exited 0. A fail verdict, a missing verdict, a non-zero
+runner, a timeout, a failed or over-cap context, an unknown agent, and an
+untrusted repo all exit 2. The context command and the runner execute in
+the repo, so the repo must be trusted first, as a handler's is. A repo
+config may not declare an agent; agents are user-scoped, because `gaff
+run` executes their commands.
+
 ## Git hooks
 
 gaff writes the hook scripts and dispatches them. Declare entries,

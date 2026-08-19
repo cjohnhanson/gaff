@@ -1,0 +1,2 @@
+doc: |
+  gaff run mapped every verdict and every failure to an exit code

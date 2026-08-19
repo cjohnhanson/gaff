@@ -1,0 +1,83 @@
+doc: |
+  `gaff run` dispatches a hook agent through an agnostic runner and maps
+  the agent's verdict to an exit code. A pass admits with 0. A fail, a
+  missing verdict, a runner that exits non-zero, an untrusted repo, and an
+  unknown agent all refuse with 2, so the gate fails closed. The runner is
+  a fake script driven by files, so no model and no network. The runtime
+  is never named: the runner comes from config.
+transitions:
+  - name: "a verdict maps to an exit code, and every failure refuses"
+    command: |
+      T=$(mktemp -d)
+      export HOME="$T/home"
+      mkdir -p "$HOME/.config/gaff"
+
+      # A fake runner: record the context on stdin, then print the verdict
+      # and exit the code the case wrote to files. Files, not env, because
+      # gaff clears the environment before it runs the runner.
+      cat > "$T/runner" <<SH
+      #!/bin/sh
+      cat > "$T/recv"
+      cat "$T/verdict"
+      exit \$(cat "$T/exit")
+      SH
+      chmod +x "$T/runner"
+
+      cat > "$HOME/.config/gaff/gaff.yml" <<EOF
+      agents:
+        - name: reviewer
+          context: [printf, 'a fake diff']
+          runner: ['$T/runner']
+          profile: reviewer
+        - name: badcontext
+          context: [false]
+          runner: ['$T/runner']
+      EOF
+
+      # Consent, as a handler's child needs. From a plain shell this works;
+      # from an agent the built-in guard refuses it.
+      gaff trust >/dev/null 2>&1
+
+      verdict() { printf '%s\n' "$1" > "$T/verdict"; printf '%s' "${2:-0}" > "$T/exit"; }
+
+      # Pass: 0, and the context reached the runner on stdin.
+      verdict "gaff-verdict: pass"
+      gaff run reviewer
+      [ "$?" = 0 ] || { echo "FAIL: a pass verdict must admit with 0"; rm -rf "$T"; exit 1; }
+      grep -q "a fake diff" "$T/recv" || { echo "FAIL: the context must reach the runner"; rm -rf "$T"; exit 1; }
+
+      # Fail: 2, with the reason on stderr.
+      verdict "gaff-verdict: fail: the retry loop never backs off"
+      ERR=$(gaff run reviewer 2>&1)
+      [ "$?" = 2 ] || { echo "FAIL: a fail verdict must refuse with 2: $ERR"; rm -rf "$T"; exit 1; }
+      case "$ERR" in *"never backs off"*) ;; *) echo "FAIL: the reason must reach stderr: $ERR"; rm -rf "$T"; exit 1 ;; esac
+
+      # No verdict: 2, fail-closed.
+      verdict "looks fine to me"
+      gaff run reviewer >/dev/null 2>&1
+      [ "$?" = 2 ] || { echo "FAIL: a missing verdict must refuse with 2"; rm -rf "$T"; exit 1; }
+
+      # A runner that exits non-zero refuses, even with a pass marker.
+      verdict "gaff-verdict: pass" 1
+      gaff run reviewer >/dev/null 2>&1
+      [ "$?" = 2 ] || { echo "FAIL: a runner error must refuse with 2"; rm -rf "$T"; exit 1; }
+
+      # A context command that fails refuses before the runner sees it.
+      verdict "gaff-verdict: pass"
+      gaff run badcontext >/dev/null 2>&1
+      [ "$?" = 2 ] || { echo "FAIL: a failed context command must refuse with 2"; rm -rf "$T"; exit 1; }
+
+      # An unknown agent refuses.
+      gaff run nobody >/dev/null 2>&1
+      [ "$?" = 2 ] || { echo "FAIL: an unknown agent must refuse with 2"; rm -rf "$T"; exit 1; }
+
+      # An untrusted repo refuses before any dispatch.
+      verdict "gaff-verdict: pass"
+      mkdir -p "$T/untrusted"
+      ( cd "$T/untrusted" && gaff run reviewer >/dev/null 2>&1; [ "$?" = 2 ] ) \
+        || { echo "FAIL: an untrusted repo must refuse with 2"; rm -rf "$T"; exit 1; }
+
+      rm -rf "$T"
+      echo AGENT_RUN_OK
+    target: ../agent-run-checked
+    stdout: "AGENT_RUN_OK\n"

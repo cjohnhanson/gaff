@@ -39,6 +39,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("check") => run_check(&args[1..]),
         Some("doctor") => run_doctor(),
         Some("profile") => run_profile(&args[1..]),
+        Some("run") => run_run(&args[1..]),
         Some("trust") => run_trust(),
         Some("allow") => run_allow(&args[1..]),
         Some("githook") => run_githook(&args[1..]),
@@ -92,6 +93,8 @@ Commands:
                    once (the hook refuses it from an agent)
   doctor           Show what is live in this clone
   profile          Show, list, or set the active profile
+  run <agent>      Dispatch a hook agent through its runner and map its
+                   verdict to an exit code (0 admits, 2 refuses)
   log              Show the injection audit trail for a session
   docs [page]      Print the bundled documentation
   ci [--hook H]    Run the declared git gates against HEAD, as CI does
@@ -111,9 +114,9 @@ command's own code.";
 /// Every command `run` dispatches. The usage test and the prime test
 /// both walk it, so a command that dispatches but is undocumented, or
 /// documented but does not dispatch, fails a test.
-const COMMANDS: [&str; 15] = [
+const COMMANDS: [&str; 16] = [
     "hook", "githook", "remind", "allow", "status", "init", "check", "doctor", "trust", "profile",
-    "log", "docs", "prime", "ci", "reviews",
+    "run", "log", "docs", "prime", "ci", "reviews",
 ];
 
 /// The prime: what gaff is, for an agent's context.
@@ -1410,6 +1413,43 @@ fn set_profile(cfg: &config::Config, name: Option<String>, session: Option<Strin
         }
         Err(e) => fail(&format!("cannot write the profile: {e}")),
     }
+}
+
+/// `gaff run <agent>`
+///
+/// Dispatch a hook agent through its runner and map the agent's verdict
+/// to an exit code: 0 admits, 2 refuses. Every failure refuses, so a
+/// misconfigured or untrusted run never admits by accident.
+fn run_run(args: &[String]) -> ExitCode {
+    let block = ExitCode::from(u8::try_from(crate::hookagent::BLOCK).unwrap_or(2));
+    let Some(name) = args.iter().find(|a| !a.starts_with('-')) else {
+        return fail("usage: gaff run <agent>");
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cfg = match config::load_layered(&cwd) {
+        Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
+        Loaded::Absent => config::Config::default(),
+        Loaded::Broken(err) => {
+            eprintln!("gaff: the config is not valid, so the agent did not run: {err}");
+            return block;
+        }
+    };
+    let Some(agent) = cfg.agents.iter().find(|a| &a.name == name) else {
+        eprintln!(
+            "gaff: no agent named `{name}`. Declare it under `agents:` in $HOME/.config/gaff/gaff.yml."
+        );
+        return block;
+    };
+    // The context command and the runner execute in this repo. A cloned
+    // repo is untrusted, so consent is required, as it is for a handler.
+    if !crate::handler::is_trusted(&cwd) {
+        eprintln!(
+            "gaff: this repo is not trusted, so `{name}` did not run. Run `gaff trust` from a terminal to allow it."
+        );
+        return block;
+    }
+    let code = crate::hookagent::dispatch(agent, &cwd);
+    ExitCode::from(u8::try_from(code).unwrap_or(2))
 }
 
 /// `gaff trust`

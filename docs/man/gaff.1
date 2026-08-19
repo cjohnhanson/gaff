@@ -97,6 +97,19 @@ from
 is human-only.
 gaff decides who is asking by structural identity, where a terminal on
 stdin is a human and anything else is an agent.
+.It Cm run Ar agent
+Dispatch a hook agent through its runner and map the agent's verdict to
+an exit code: 0 admits, 2 refuses.
+gaff runs the agent's context command, feeds its output to the runner on
+standard input, and reads a
+.Ql gaff-verdict: pass
+or
+.Ql gaff-verdict: fail
+line.
+The runner is a config choice, so gaff names no runtime.
+Every failure refuses: a fail verdict, a missing verdict, a non-zero
+runner, a timeout, a failed context, an unknown agent, and an untrusted
+repo all exit 2.
 .It Cm trust
 Allow handlers to run in this repo.
 Every agent tool call passes through
