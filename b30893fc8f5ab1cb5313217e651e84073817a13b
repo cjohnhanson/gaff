@@ -1,5 +1,0 @@
-signoff[review-tests] PASS b30893f criteria as vendored were followed
-signoff[review-docs] PASS b30893f docs match the change
-signoff[review-code] PASS b30893f no correctness defect found
-signoff[review-deps] PASS b30893f no dependency change
-signoff[review-usability] PASS b30893f messages read clearly
