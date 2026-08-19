@@ -81,6 +81,8 @@ github:
         uses: Swatinem/rust-cache@v2
       - name: install missouri
         uses: cjohnhanson/missouri@main
+      - name: install gaff from tree
+        command: [sh, -c, "cargo install --path . --locked --root \"$HOME/.gaff-tools\" gaff && echo \"$HOME/.gaff-tools/bin\" >> \"$GITHUB_PATH\""]
       - name: formatting
         command: [cargo, fmt, --all, --check]
       - name: clippy
