@@ -52,6 +52,11 @@ pub struct Config {
     /// The tool calls to refuse. This is the only feature that blocks.
     #[serde(default)]
     pub guards: Vec<crate::guard::Guard>,
+    /// The hook agents. `gaff run <name>` dispatches one through a
+    /// configurable runner and maps its decision to an exit code, so the
+    /// runtime is a config choice and no vendor is named.
+    #[serde(default)]
+    pub agents: Vec<Agent>,
     /// The independent reviews a change must pass before it merges.
     /// Each name is a review skill the repo carries.
     ///
@@ -61,6 +66,45 @@ pub struct Config {
     /// `reviews: []` and chose that no review is required.
     #[serde(default)]
     pub reviews: Option<Vec<String>>,
+}
+
+/// A hook agent: a declarative agent gaff dispatches through an agnostic
+/// runner, mapping the agent's decision to an exit code.
+///
+/// gaff names no runtime. `runner` is a command, and its default is
+/// derived from the name, so a different runner is a config change, not a
+/// code change. The decision is read from the runner's output, so the
+/// runner needs no gaff-specific feature.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Agent {
+    /// The agent name. `gaff run <name>` selects it.
+    pub name: String,
+    /// The command whose stdout is the agent's situation, as argv. Its
+    /// output is fed to the runner on stdin. Empty means no context.
+    #[serde(default)]
+    pub context: Vec<String>,
+    /// The runner command, as argv. Empty defaults to
+    /// `[kersh, run, <name>, --context-file, -]`.
+    #[serde(default)]
+    pub runner: Vec<String>,
+    /// The gaff profile the run is governed by, set as `GAFF_PROFILE`
+    /// for the runner.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Environment variables the runner inherits by name. gaff clears the
+    /// environment and adds back a safe set, so a runner that reads a
+    /// credential from the environment, such as an API key, names it here.
+    #[serde(default)]
+    pub env_passthrough: Vec<String>,
+    /// The dispatch deadline in milliseconds. The runner has its own
+    /// bound; this is gaff's backstop against a hung runner.
+    #[serde(default = "default_agent_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+const fn default_agent_timeout_ms() -> u64 {
+    600_000
 }
 
 /// A profile: a named bundle of entries, guards, and a stop rule.
@@ -401,6 +445,7 @@ impl Default for Config {
             git: Vec::new(),
             github: Vec::new(),
             guards: Vec::new(),
+            agents: Vec::new(),
             reviews: None,
         }
     }
@@ -1101,6 +1146,16 @@ pub fn load(cwd: &Path) -> Loaded {
                     cfg.guards.len()
                 );
                 cfg.guards.clear();
+            }
+            // A repo may never declare an agent, for the same reason it may
+            // not declare a guard or a handler: `gaff run` executes the
+            // agent's commands, and a repo is untrusted content on clone.
+            if !cfg.agents.is_empty() {
+                eprintln!(
+                    "gaff: {CONFIG_PATH} declares {} agent(s). A repo may not declare an agent, so they are ignored. Agents belong in $HOME/.config/gaff/gaff.yml.",
+                    cfg.agents.len()
+                );
+                cfg.agents.clear();
             }
             // A repo profile may not carry a guard or a stop rule, for
             // the same reason a repo top level may not: both block, and a
