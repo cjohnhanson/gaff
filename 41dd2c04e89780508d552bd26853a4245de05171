@@ -1,1 +1,3 @@
 signoff[fresh-eyes] PASS 41dd2c0 gaff run dispatch reviewed by an independent subagent: fail-closed verified on every refuse path (fail/missing/capped verdict, non-zero runner, timeout, failed context, unknown agent, untrusted repo); env-hardening, agnosticism, and timeout/kill confirmed. Squash of the reviewed atuo-core branch
+
+signoff[mutation] PASS 41dd2c0 mutation-verified the fail-closed core by hand: parse_decision default Missing->Pass killed by unit tests; dispatch runner-exit check disabled killed by the agent-run missouri case. Both mutants failed a test
