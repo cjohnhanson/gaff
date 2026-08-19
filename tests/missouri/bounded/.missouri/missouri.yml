@@ -22,7 +22,7 @@ transitions:
           text: USER_SAFETY
       profiles:
         quiet:
-          only: []
+          base: false
       guards:
         - name: user-guard
           tool: Bash

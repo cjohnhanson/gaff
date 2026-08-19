@@ -20,4 +20,5 @@ pub mod guard;
 pub mod handler;
 pub mod hookagent;
 pub mod init;
+pub mod reviewnote;
 pub mod state;

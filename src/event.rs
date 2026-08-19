@@ -233,6 +233,12 @@ impl Capability {
 /// - `Notification`, `StopFailure`, `InstructionsLoaded`, and
 ///   `DirectoryAdded` discard the output.
 /// - `SessionEnd` shares a budget of 1.5 seconds.
+///
+/// This table keys on Claude Code's event names, so a generic host's
+/// normalized names miss it and read as `UNVERIFIED`. That is dead on the
+/// live path: the flush gate reads [`Kind`], never this. A refactor that
+/// gated flushing on `injection_safe` would mute a generic host, so it
+/// must not.
 #[must_use]
 pub fn capability(event_name: &str) -> Capability {
     match event_name {

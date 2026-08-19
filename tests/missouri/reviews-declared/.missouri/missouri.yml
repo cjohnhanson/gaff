@@ -1,0 +1,22 @@
+doc: |
+  The repo declares the reviews a change must pass. A merge gate reads
+  the list from gaff, never by parsing the config file. An absent
+  declaration and an empty one differ: nobody stated a policy, against
+  an author who stated that none is required.
+
+  Each command sets HOME to an absolute path of its own. A real user
+  config would add its names to the union, and the assertions would
+  then drift with the machine. A relative HOME breaks the sandbox,
+  which resolves a cache path under it.
+transitions:
+  - name: "reviews prints the declared list, one to a line, in order"
+    command: |
+      HOME="$PWD/home"; export HOME; mkdir -p "$HOME"
+      OUT=$(gaff reviews)
+      code=$?
+      [ "$code" = 0 ] || { echo "FAIL: exit $code"; exit 1; }
+      [ "$(printf '%s' "$OUT" | tr '\n' ',')" = "review-tests,review-docs" ] || { echo "FAIL: got [$OUT]"; exit 1; }
+      rm -rf "$HOME"
+      echo LISTED_OK
+    target: ../reviews-listed
+    stdout: "LISTED_OK\n"

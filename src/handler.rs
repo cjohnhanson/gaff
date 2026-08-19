@@ -62,8 +62,14 @@ pub(crate) const ENV_ALLOWLIST: [&str; 7] =
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HandlersConfig {
+    /// The base handlers, active under every profile.
     #[serde(default)]
     pub handlers: Vec<Handler>,
+    /// Per-profile handlers, keyed by profile name. A command stays in
+    /// this one owner-only file, so a profile's handlers live here and
+    /// not in `gaff.yml`.
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, Vec<Handler>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -243,14 +249,26 @@ pub fn load_checked() -> Result<HandlersConfig, String> {
         .map_err(|e| format!("{} is not valid: {e}", path.display()))
 }
 
-/// Load handlers for the hook path. A problem yields no handlers
-/// and a warning, because gaff degrades rather than blocks.
+/// Load the effective handlers for the hook path under `profile`.
+///
+/// The result's `handlers` is the active bundle's handlers first, then
+/// the base handlers, so the bundle's spend the shared session-start
+/// budget first. A problem yields no handlers and a warning, because
+/// gaff degrades rather than blocks.
 #[must_use]
-pub fn load() -> HandlersConfig {
-    load_checked().unwrap_or_else(|e| {
+pub fn load(profile: Option<&str>) -> HandlersConfig {
+    let mut config = load_checked().unwrap_or_else(|e| {
         eprintln!("gaff: {e}. Running no handlers.");
         HandlersConfig::default()
-    })
+    });
+    let mut effective = profile
+        .and_then(|name| config.profiles.remove(name))
+        .unwrap_or_default();
+    effective.append(&mut config.handlers);
+    HandlersConfig {
+        handlers: effective,
+        profiles: std::collections::BTreeMap::new(),
+    }
 }
 
 /// Whether a file is writable only by its owner. A group- or

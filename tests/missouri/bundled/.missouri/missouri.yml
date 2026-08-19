@@ -1,0 +1,65 @@
+doc: |
+  A profile is a bundle. It carries its own guards and a stop rule, and
+  they take effect only under that profile. A base guard holds under
+  every profile. The bundle's stop rule materializes as a hold the first
+  time the session stops under it, and a clear releases it for good.
+transitions:
+  - name: "a bundle's guard and stop rule take effect only under the profile"
+    command: |
+      export HOME="$PWD/home"
+      mkdir -p "$HOME/.config/gaff"
+      cat > "$HOME/.config/gaff/gaff.yml" <<'EOF'
+      guards:
+        - name: no-secrets
+          tool: Read
+          field: file_path
+          matches: '\.env$'
+          message: That path holds secrets.
+      profiles:
+        reviewer:
+          base: false
+          guards:
+            - name: read-only
+              tool: Bash
+              matches: 'rm\s+-rf'
+              message: This session reads and reports.
+          stop:
+            hold: Append findings to the scratch first.
+            times: 2
+      transitions:
+        agent_may_set:
+          - reviewer
+      EOF
+
+      pre() { printf '{"hook_event_name":"PreToolUse","session_id":"%s","tool_name":"%s","tool_input":{"%s":"%s"}}' "$1" "$2" "$3" "$4" | gaff hook > /dev/null 2>&1; echo $?; }
+      stop() { printf '{"hook_event_name":"Stop","session_id":"%s"}' "$1" | gaff hook > /dev/null 2>&1; echo $?; }
+
+      # Under no profile: the bundle's guard is silent, the base guard holds.
+      [ "$(pre s-none Bash command 'rm -rf /tmp/x')" = "0" ] || { echo "FAIL: a bundle guard must not fire without its profile"; exit 1; }
+      [ "$(pre s-none Read file_path '/x/.env')" = "2" ] || { echo "FAIL: a base guard holds under every profile"; exit 1; }
+
+      # Select the bundle by session state, the hook-agent mechanism.
+      echo | gaff profile set reviewer --session s-rev > /dev/null || { echo "FAIL: an allowed bundle switch must succeed"; exit 1; }
+
+      # Under the profile: the bundle guard fires, and the base guard still fires.
+      [ "$(pre s-rev Bash command 'rm -rf /tmp/x')" = "2" ] || { echo "FAIL: the bundle guard must fire under its profile"; exit 1; }
+      [ "$(pre s-rev Read file_path '/x/.env')" = "2" ] || { echo "FAIL: the base guard must still fire under a bundle"; exit 1; }
+
+      # The bundle's stop rule refuses the first stop, then lets go once
+      # its budget is spent.
+      [ "$(stop s-rev)" = "2" ] || { echo "FAIL: the bundle stop hold must refuse the first stop"; exit 1; }
+      MSG=$(printf '{"hook_event_name":"Stop","session_id":"s-rev"}' | gaff hook 2>&1 >/dev/null)
+      case "$MSG" in
+        *"Append findings"*) ;;
+        *) echo "FAIL: the hold must deliver its text: $MSG"; exit 1 ;;
+      esac
+
+      # A clear releases the hold, and a compaction does not re-arm it.
+      gaff remind --clear --id profile-reviewer --session s-rev > /dev/null
+      printf '{"hook_event_name":"SessionStart","session_id":"s-rev","source":"compact"}' | gaff hook > /dev/null 2>&1
+      [ "$(stop s-rev)" = "0" ] || { echo "FAIL: a released hold must not come back"; exit 1; }
+
+      rm -rf home .gaff-state
+      echo BUNDLE_OK
+    target: ../bundled-primed
+    stdout: "BUNDLE_OK\n"

@@ -1,21 +1,33 @@
 //! The adapter seam: the one place where a host's shape is known.
 //!
 //! Everything above this module works on the normalized [`Envelope`].
-//! An adapter owns three host-specific facts: how a raw hook payload
-//! maps to an envelope, which events gaff subscribes to, and where
-//! `gaff init` writes the registration.
+//! An adapter owns the host-specific facts: how a raw hook payload maps
+//! to an envelope, how injected context is rendered back to the host,
+//! which events gaff subscribes to, and where `gaff init` writes the
+//! registration.
 //!
-//! Claude Code is the only implemented adapter. That is a statement of
-//! what is built, not of what the design allows. gaff does not guess
-//! another host's payload shape, because a guessed schema is worse than
-//! an absent one: it fails at run time inside someone's session.
+//! Output is a host fact too. A host reads injected context in its own
+//! shape, so the rendering lives here, in `context_output`. Refusals and
+//! holds do not: every host reads exit 2 as a refusal and the child's
+//! stderr as the reason. That is a requirement on the host, not a shape
+//! gaff renders. A host that blocks on some other code, or drops the
+//! child's stderr, would break that contract.
+//!
+//! Two adapters ship. Claude Code is the host a person installs against.
+//! The generic host speaks gaff's own normalized vocabulary, for a host
+//! such as an agent runner that calls `gaff hook` itself; it reads only
+//! gaff's field names, so it is not a guess at a real host's payload.
+//! gaff does not guess a payload shape, because a guessed schema is worse
+//! than an absent one: it fails at run time inside someone's session.
 //!
 //! # Adding an adapter
 //!
 //! Add a [`Adapter`] constant with the host's real field names, its
-//! real event names, and its real settings path, taken from that host's
-//! documentation. Add it to [`ADAPTERS`]. Give `sniff` a predicate that
-//! matches only that host's payload. Nothing else in gaff changes.
+//! event names, its `context_output` shape, and, if it self-registers,
+//! its settings path, taken from that host's documentation. Append it to
+//! [`ADAPTERS`], never prepend, because `gaff init` uses the first entry
+//! as its default. Give `sniff` a predicate that matches only that host's
+//! payload. Nothing else in gaff changes.
 
 use serde_json::Value;
 
@@ -25,8 +37,21 @@ use crate::event::{Envelope, Kind, SCHEMA_VERSION};
 pub struct Adapter {
     /// The name for `--host` and `GAFF_HOST`.
     pub name: &'static str,
+    /// The payload key that carries the event name. The parse reads it,
+    /// and a test builds a sample payload with it, so a second adapter's
+    /// vocabulary is not assumed to be this host's.
+    pub event_key: &'static str,
+    /// Whether `gaff init` registers hooks for this host. A host that
+    /// calls `gaff hook` directly needs no settings file, so it does not
+    /// self-register and carries an empty settings path.
+    pub self_registers: bool,
     /// Map a raw hook payload to the normalized envelope.
     pub parse: fn(Value) -> Envelope,
+    /// Render injected context to this host's stdout shape. Claude Code
+    /// wraps it in its hook JSON; a generic host gets gaff's own
+    /// normalized shape. This is the output a second host could not read
+    /// while it was hardcoded in the CLI.
+    pub context_output: fn(event: &str, context: &str) -> String,
     /// Recognize this host's payload by its shape. Detection prefers an
     /// explicit name; this is the fallback.
     pub sniff: fn(&Value) -> bool,
@@ -71,7 +96,10 @@ pub const CLAUDE_CODE_EVENTS: &[&str] = &[
 
 pub const CLAUDE_CODE: Adapter = Adapter {
     name: "claude-code",
+    event_key: "hook_event_name",
+    self_registers: true,
     parse: from_claude_code,
+    context_output: claude_code_context_output,
     sniff: |json| json.get("hook_event_name").is_some(),
     settings_path: ".claude/settings.local.json",
     repo_settings_path: ".claude/settings.json",
@@ -80,6 +108,61 @@ pub const CLAUDE_CODE: Adapter = Adapter {
     hook_events: CLAUDE_CODE_EVENTS,
     tool_field: claude_code_tool_field,
 };
+
+/// The events a generic host subscribes to, in gaff's own normalized
+/// vocabulary. A host that speaks the vocabulary needs no per-host names.
+pub const GENERIC_EVENTS: &[&str] = &[
+    "session_start",
+    "prompt",
+    "pre_tool_call",
+    "tool_call",
+    "tool_batch",
+    "stop",
+];
+
+/// A host that speaks gaff's normalized vocabulary directly.
+///
+/// It reads the event from `gaff_event` and the rest from gaff's own
+/// field names, so this is not a guess at any real host's payload. It
+/// does not self-register: a host such as kersh calls `gaff hook` itself
+/// and needs no settings file. It reads exit 2 as a refusal and the
+/// child's stderr as the reason, the same universal contract every host
+/// uses; that is a requirement on the host, not a shape gaff renders.
+pub const GENERIC: Adapter = Adapter {
+    name: "generic",
+    event_key: "gaff_event",
+    self_registers: false,
+    parse: from_generic,
+    context_output: generic_context_output,
+    sniff: |json| json.get("gaff_event").is_some(),
+    settings_path: "",
+    repo_settings_path: "",
+    user_settings_path: "",
+    session_env: "GAFF_SESSION_ID",
+    hook_events: GENERIC_EVENTS,
+    tool_field: claude_code_tool_field,
+};
+
+/// Claude Code reads injected context from this exact JSON on stdout.
+///
+/// The bytes must not drift: the missouri suites parse this field, and a
+/// byte-exact unit test pins it. `serde_json` keeps the key order because
+/// the crate enables `preserve_order`.
+fn claude_code_context_output(event: &str, context: &str) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": event,
+            "additionalContext": context,
+        }
+    })
+    .to_string()
+}
+
+/// A generic host reads gaff's own normalized shape: the event and the
+/// context text. It is self-delimiting and leaves room for a later field.
+fn generic_context_output(event: &str, context: &str) -> String {
+    serde_json::json!({ "event": event, "context": context }).to_string()
+}
 
 /// Claude Code puts the tool input under `tool_input`.
 ///
@@ -122,7 +205,11 @@ fn shell_quote(arg: &str) -> String {
 }
 
 /// Every implemented adapter.
-pub const ADAPTERS: &[&Adapter] = &[&CLAUDE_CODE];
+///
+/// `CLAUDE_CODE` stays first: `gaff init` with no `--host` uses the first
+/// entry as the default target, and Claude Code is the host a person
+/// installs against. A new adapter is appended, never prepended.
+pub const ADAPTERS: &[&Adapter] = &[&CLAUDE_CODE, &GENERIC];
 
 /// Build an envelope from a Claude Code hook payload.
 fn from_claude_code(json: Value) -> Envelope {
@@ -138,6 +225,35 @@ fn from_claude_code(json: Value) -> Envelope {
         event,
         // Drop an unsafe id at the boundary. The id names a state
         // directory, and it arrives from the host payload.
+        session_id: get("session_id").filter(|id| {
+            let ok = crate::state::valid_session_id(id);
+            if !ok {
+                eprintln!("gaff: refusing an unsafe session id. Passing through.");
+            }
+            ok
+        }),
+        cwd: get("cwd"),
+        tool_name: get("tool_name"),
+        raw: json,
+    }
+}
+
+/// Build an envelope from a generic host's payload.
+///
+/// The event is already a normalized name, so `Kind::parse` maps it. The
+/// rest reads gaff's own field names. Nothing is guessed about a real
+/// host: a host opts into this shape by naming itself `generic`.
+fn from_generic(json: Value) -> Envelope {
+    let get = |key: &str| {
+        json.get(key)
+            .and_then(Value::as_str)
+            .map(std::string::ToString::to_string)
+    };
+    let event = get("gaff_event").unwrap_or_else(|| "unknown".to_string());
+    Envelope {
+        gaff_schema: SCHEMA_VERSION,
+        kind: Kind::parse(&event),
+        event,
         session_id: get("session_id").filter(|id| {
             let ok = crate::state::valid_session_id(id);
             if !ok {
@@ -188,8 +304,12 @@ pub fn session_from_env(flag: Option<&str>) -> Option<String> {
 /// The one-line hint for a missing session, naming every host's variable.
 #[must_use]
 pub fn session_hint() -> String {
+    // Name only a self-registering host's variable. A generic host uses
+    // GAFF_SESSION_ID, which the sentence already names, so listing it
+    // again reads as a duplicate.
     let hosts: Vec<String> = ADAPTERS
         .iter()
+        .filter(|a| a.self_registers)
         .map(|a| format!("{} for {}", a.session_env, a.name))
         .collect();
     format!(
@@ -270,12 +390,33 @@ mod tests {
     }
 
     #[test]
-    fn every_adapter_declares_a_settings_path_and_events() {
+    fn every_adapter_declares_events_and_a_settings_path_if_it_registers() {
         for adapter in ADAPTERS {
-            assert!(!adapter.settings_path.is_empty(), "{}", adapter.name);
             assert!(!adapter.hook_events.is_empty(), "{}", adapter.name);
             assert!(by_name(adapter.name).is_some(), "{}", adapter.name);
+            // A self-registering adapter needs a place to write hooks. A
+            // generic host calls gaff directly and needs none.
+            if adapter.self_registers {
+                assert!(!adapter.settings_path.is_empty(), "{}", adapter.name);
+            } else {
+                assert!(adapter.settings_path.is_empty(), "{}", adapter.name);
+            }
+            assert!(!adapter.session_env.is_empty(), "{}", adapter.name);
         }
+    }
+
+    #[test]
+    fn the_context_output_shapes_are_stable() {
+        // Claude Code's bytes are pinned: the missouri suites parse this
+        // field and a byte change would silently reshape a live session.
+        assert_eq!(
+            (CLAUDE_CODE.context_output)("SessionStart", "hello"),
+            r#"{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"hello"}}"#
+        );
+        assert_eq!(
+            (GENERIC.context_output)("session_start", "hello"),
+            r#"{"event":"session_start","context":"hello"}"#
+        );
     }
 }
 
@@ -359,7 +500,7 @@ mod contract_tests {
                 .iter()
                 .map(|event| {
                     let payload = serde_json::json!({
-                        "hook_event_name": event,
+                        adapter.event_key: event,
                         "session_id": "s",
                     });
                     (adapter.parse)(payload).kind
@@ -391,7 +532,7 @@ mod contract_tests {
         for adapter in ADAPTERS {
             let mapped = adapter.hook_events.iter().any(|event| {
                 let payload = serde_json::json!({
-                    "hook_event_name": event,
+                    adapter.event_key: event,
                     "session_id": "s",
                     "tool_name": "Bash",
                     "tool_input": {"command": "x"},

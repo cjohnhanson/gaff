@@ -46,6 +46,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("log") => run_log(&args[1..]),
         Some("docs") => run_docs(&args[1..]),
         Some("ci") => run_ci(&args[1..]),
+        Some("reviews") => run_reviews(&args[1..]),
         Some("prime") => {
             print!("{}", prime());
             ExitCode::SUCCESS
@@ -97,6 +98,8 @@ Commands:
   log              Show the injection audit trail for a session
   docs [page]      Print the bundled documentation
   ci [--hook H]    Run the declared git gates against HEAD, as CI does
+  reviews          Print the reviews a change must pass, one to a line
+  reviews check    Refuse a push whose tips name no review (reads stdin)
   prime            Print what gaff is and how to use it, for an agent's context
 
 Options:
@@ -111,9 +114,9 @@ command's own code.";
 /// Every command `run` dispatches. The usage test and the prime test
 /// both walk it, so a command that dispatches but is undocumented, or
 /// documented but does not dispatch, fails a test.
-const COMMANDS: [&str; 15] = [
+const COMMANDS: [&str; 16] = [
     "hook", "githook", "remind", "allow", "status", "init", "check", "doctor", "trust", "profile",
-    "run", "log", "docs", "prime", "ci",
+    "run", "log", "docs", "prime", "ci", "reviews",
 ];
 
 /// The prime: what gaff is, for an agent's context.
@@ -212,14 +215,18 @@ fn run_hook(args: &[String]) -> ExitCode {
         }
     };
 
-    // A guard is the one thing that may exit 2, and it runs first.
+    // A guard is the one thing that may exit 2, and the base guards run
+    // first.
     //
-    // It needs only the envelope and the config. Resolving the state
-    // directory or the profile before it would make a refusal depend
-    // on state gaff might fail to reach, and neither can select a
-    // guard anyway.
+    // The base guards need only the envelope and the config. The built-ins
+    // come first and no config drops them, then the user's base guards.
+    // A bundle's guards need the profile, which needs the session state,
+    // so they run after the store and the profile resolve, below. Base
+    // guards never depend on state gaff might fail to reach.
+    let mut base_guards = crate::guard::builtin();
+    base_guards.extend(cfg.guards.iter().cloned());
     if envelope.kind == crate::event::Kind::PreToolCall
-        && let Some((guard, refusal)) = guard_refusal(&cfg, &envelope, adapter)
+        && let Some((guard, refusal)) = guard_refusal(&base_guards, &envelope, adapter)
     {
         // A one-shot allowance from the human lets this call through.
         // It needs the store, so it is the one guard-path step that
@@ -259,18 +266,34 @@ fn run_hook(args: &[String]) -> ExitCode {
         &gaff_dir,
         &cfg,
     );
+    // The active bundle's own guards run now, after the profile is known.
+    // They compose on top of the base guards, which already ran; nothing
+    // here can remove a base guard.
+    if let Some(code) = bundle_guard_refusal(
+        &envelope,
+        adapter,
+        &cfg,
+        profile.as_deref(),
+        session.as_deref(),
+        &store,
+    ) {
+        return code;
+    }
+
     let cfg = cfg.with_profile(profile.as_deref());
 
-    let handlers = crate::handler::load().handlers;
+    let handlers = crate::handler::load(profile.as_deref()).handlers;
 
     // Stop is the last moment before the model walks away, so it is the
     // one flush point that is a decision rather than a moment, and the
     // one that can still be refused.
     if envelope.kind == crate::event::Kind::Stop
         && let Some(sid) = session.as_deref()
-        && let Some(code) = refuse_stop(&handlers, &store, sid, &cwd)
     {
-        return code;
+        materialize_profile_hold(&cfg, profile.as_deref(), &store, sid);
+        if let Some(code) = refuse_stop(&handlers, &store, sid, &cwd) {
+            return code;
+        }
     }
 
     if let Some(context) =
@@ -281,15 +304,10 @@ fn run_hook(args: &[String]) -> ExitCode {
             // vocabulary a config is written in.
             store.record_injection(sid, envelope.kind.as_str(), &context);
         }
-        println!(
-            "{}",
-            json!({
-                "hookSpecificOutput": {
-                    "hookEventName": envelope.event,
-                    "additionalContext": context,
-                }
-            })
-        );
+        // The output shape is the host's, so it lives behind the adapter.
+        // Claude Code gets its hook JSON; a generic host gets gaff's own
+        // normalized shape. The trailing newline stays, as before.
+        println!("{}", (adapter.context_output)(&envelope.event, &context));
     }
     ExitCode::SUCCESS
 }
@@ -302,6 +320,28 @@ fn run_hook(args: &[String]) -> ExitCode {
 /// user config, which is why it may run at all. The second runs nothing,
 /// which is why an agent may set one — `gaff trust` exists so an agent
 /// cannot schedule command execution for itself.
+/// Materialize the active bundle's stop rule as a hold, once per
+/// session. Materializing at stop time, not at session start, keeps a
+/// compaction or a resume from re-arming a hold the model released, and
+/// lets a mid-session profile switch set the hold without a fresh start.
+fn materialize_profile_hold(
+    cfg: &config::Config,
+    profile: Option<&str>,
+    store: &Store,
+    session: &str,
+) {
+    let Some(stop) = cfg.profile_stop(profile) else {
+        return;
+    };
+    let id = format!("profile-{}", profile.unwrap_or(""));
+    // Ask the store, which sanitizes the id to its on-disk name. A
+    // profile name with a `.` or a space would otherwise never match a
+    // stored hold, so the `times` budget would reset on every stop.
+    if !store.has_hold(session, &id) && !store.is_released(session, &id) {
+        let _ = store.write_hold(session, &id, &stop.hold, stop.times);
+    }
+}
+
 fn refuse_stop(
     handlers: &[crate::handler::Handler],
     store: &Store,
@@ -601,6 +641,12 @@ fn run_init(args: &[String]) -> ExitCode {
             }
         },
     };
+    if !adapter.self_registers {
+        return fail(&format!(
+            "the `{}` host does not register hooks. A host that calls `gaff hook` itself needs no settings file.",
+            adapter.name
+        ));
+    }
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
@@ -764,6 +810,11 @@ fn run_check(args: &[String]) -> ExitCode {
     };
 
     let mut problems = entry_problems(&cfg, &cwd);
+    // `load_layered` drops a profile carrying a removed key with a
+    // warning, so `cfg` no longer shows it. `check` reads the raw files
+    // to report the removed key as an error, since a stale key is a
+    // config the operator must fix, not a runtime that degrades.
+    problems.extend(config::legacy_key_problems(&cwd));
 
     // Git hooks never travel with a clone, so a fresh checkout of a
     // repo that declares them has none installed. Nothing said so, and
@@ -813,6 +864,7 @@ fn run_check(args: &[String]) -> ExitCode {
     for entry in &cfg.git {
         problems.extend(entry.problems());
     }
+    problems.extend(review_problems(cfg.reviews.as_deref()));
 
     for w in &warnings {
         eprintln!("gaff: {w}");
@@ -916,18 +968,68 @@ fn cross_reference_problems(cfg: &config::Config) -> Vec<String> {
         .chain(cfg.sections.iter().map(|s| &s.name))
         .collect();
     for (pname, profile) in &cfg.profiles {
-        let referenced = profile
-            .only
-            .iter()
-            .flatten()
-            .chain(profile.disable.iter())
-            .chain(profile.cadence.keys());
-        for name in referenced {
+        // A `disable` name must name a base entry to drop; a name that
+        // matches nothing is a rule that never fires.
+        for name in &profile.disable {
             if !entry_names.contains(&name) {
                 problems.push(format!(
-                    "profile `{pname}`: `{name}` names no reminder or section"
+                    "profile `{pname}`: disable `{name}` names no base reminder or section"
                 ));
             }
+        }
+        // A bundle entry shares the pending-marker keyspace with base
+        // entries and with the bundle's own entries across kinds. A
+        // section and a reminder of one name collide. A bundle entry
+        // may shadow a base entry of the same kind by name, which is
+        // the retime, so only cross-kind and within-kind duplicates are
+        // problems.
+        let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+        for (name, kind) in profile
+            .reminders
+            .iter()
+            .map(|r| (r.name.as_str(), "reminder"))
+            .chain(
+                profile
+                    .sections
+                    .iter()
+                    .map(|s| (s.name.as_str(), "section")),
+            )
+        {
+            if let Some(prev) = seen.insert(name, kind)
+                && prev != kind
+            {
+                problems.push(format!(
+                    "profile `{pname}`: `{name}` is both a {prev} and a {kind}; names are one keyspace"
+                ));
+            }
+        }
+        // A bundle entry that collides cross-kind with a base entry
+        // shares one pending marker with it at runtime, and one of the
+        // two stops firing. A same-kind name is the retime and is fine.
+        // Only matters when the bundle keeps the base entries.
+        if profile.base {
+            let base_reminders: Vec<&str> = cfg.reminders.iter().map(|r| r.name.as_str()).collect();
+            let base_sections: Vec<&str> = cfg.sections.iter().map(|s| s.name.as_str()).collect();
+            for r in &profile.reminders {
+                if base_sections.contains(&r.name.as_str()) {
+                    problems.push(format!(
+                        "profile `{pname}`: reminder `{}` collides with a base section; names are one keyspace",
+                        r.name
+                    ));
+                }
+            }
+            for s in &profile.sections {
+                if base_reminders.contains(&s.name.as_str()) {
+                    problems.push(format!(
+                        "profile `{pname}`: section `{}` collides with a base reminder; names are one keyspace",
+                        s.name
+                    ));
+                }
+            }
+        }
+        // A bundle's own guards are validated like base guards.
+        for guard in &profile.guards {
+            problems.extend(guard.problems());
         }
     }
     if let Some(d) = &cfg.default_profile
@@ -970,8 +1072,13 @@ fn cross_reference_problems(cfg: &config::Config) -> Vec<String> {
 /// read a file that merely mentioned the command, including one that
 /// banned it, as a registration.
 fn doctor_hooks(cwd: &std::path::Path) {
+    // Only a self-registering host has hooks to report. A generic host
+    // calls gaff directly and has no settings file, so reporting it as
+    // "NOT registered" would tell the user to run a command gaff refuses.
     for adapter in crate::adapter::ADAPTERS {
-        doctor_hooks_for(adapter, cwd);
+        if adapter.self_registers {
+            doctor_hooks_for(adapter, cwd);
+        }
     }
 }
 
@@ -1762,8 +1869,38 @@ fn run_githook(args: &[String]) -> ExitCode {
 /// This is the only path in gaff that leads to exit 2. Every failure
 /// path, including a broken guard, still degrades, because a gaff
 /// fault must never block a session.
-fn guard_refusal(
+/// Refuse a pre-tool call against the active bundle's own guards.
+///
+/// Returns exit 2 on a refusal the human did not allow once. The base
+/// guards ran earlier; this composes on top and removes none of them.
+fn bundle_guard_refusal(
+    envelope: &crate::event::Envelope,
+    adapter: &crate::adapter::Adapter,
     cfg: &config::Config,
+    profile: Option<&str>,
+    session: Option<&str>,
+    store: &Store,
+) -> Option<ExitCode> {
+    if envelope.kind != crate::event::Kind::PreToolCall {
+        return None;
+    }
+    let bundle = cfg.profiles.get(profile?)?;
+    if bundle.guards.is_empty() {
+        return None;
+    }
+    let (guard, refusal) = guard_refusal(&bundle.guards, envelope, adapter)?;
+    if session.is_some_and(|sid| store.take_allowance(sid, &guard)) {
+        eprintln!(
+            "gaff: the guard `{guard}` would have refused this call. Allowed once by the user."
+        );
+        return None;
+    }
+    eprintln!("{refusal}");
+    Some(ExitCode::from(2))
+}
+
+fn guard_refusal(
+    guards: &[crate::guard::Guard],
     envelope: &crate::event::Envelope,
     adapter: &crate::adapter::Adapter,
 ) -> Option<(String, String)> {
@@ -1793,10 +1930,7 @@ fn guard_refusal(
         }
         found
     };
-    // The built-ins come first and no config can drop them.
-    let mut guards = crate::guard::builtin();
-    guards.extend(cfg.guards.iter().cloned());
-    let hit = crate::guard::first_refusal(&guards, tool, &value)?;
+    let hit = crate::guard::first_refusal(guards, tool, &value)?;
     Some((
         hit.name.clone(),
         format!(
@@ -1828,6 +1962,8 @@ mod tests {
             vec!["init", "--command"],
             vec!["init", "--host"],
             vec!["init", "--host", "nosuchhost"],
+            // A host that does not self-register is refused, not blocked.
+            vec!["init", "--host", "generic"],
             vec!["profile", "nonsense"],
             vec!["profile", "set"],
             vec!["log", "--session"],
@@ -2053,6 +2189,257 @@ fn run_ci(args: &[String]) -> ExitCode {
     ci_phases(&cwd, &cfg, &hooks)
 }
 
+/// Faults in the declared review names.
+///
+/// A gate prints one name to a line and reads the result back, so a
+/// name that holds a newline becomes two requirements and a name that
+/// is empty becomes a blank line. A repeat inside one layer hides a
+/// typo: the author sees two entries and the gate requires one.
+fn review_problems(reviews: Option<&[String]>) -> Vec<String> {
+    let Some(names) = reviews else {
+        return Vec::new();
+    };
+    let mut problems = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for name in names {
+        if name.trim().is_empty() {
+            problems
+                .push("a review name is empty. Name the review a change must pass.".to_string());
+            continue;
+        }
+        if name.chars().any(char::is_whitespace) {
+            problems.push(format!(
+                "the review name `{name}` holds whitespace. A gate reads one name to a line, so a name with a newline becomes two requirements."
+            ));
+        }
+        if seen.contains(&name.as_str()) {
+            problems.push(format!(
+                "the review `{name}` is declared twice. Remove one, or name the second review."
+            ));
+        }
+        seen.push(name);
+    }
+    problems
+}
+
+/// What a repo sees when `.gaff/gaff.yml` declares no `reviews:` key.
+///
+/// An unknown policy is not an empty one, so the check refuses rather
+/// than requiring nothing.
+const NO_POLICY: &str = "`.gaff/gaff.yml` declares no `reviews:` key. Add one. Write \
+     `reviews: []` if a change needs no review, or list the reviews it must pass.";
+
+/// `gaff reviews [check]`: the review policy, and the gate that holds it.
+///
+/// With no argument it prints the required reviews, one to a line. A
+/// merge gate reads the list from here. A gate that parsed the config
+/// file itself would break when the format changes, and it would then
+/// require nothing.
+///
+/// `check` reads git's pre-push ref lines on stdin and refuses a push
+/// whose tips do not name every declared review.
+///
+/// An absent declaration and an empty one differ. A repo that states
+/// no `reviews:` key gets an error, because no policy must not read as
+/// "no review is required". A repo that writes `reviews: []` succeeds
+/// and prints nothing, because an author chose that.
+fn run_reviews(args: &[String]) -> ExitCode {
+    match args.first().map(String::as_str) {
+        None => run_reviews_list(),
+        Some("check") => run_reviews_check(&args[1..]),
+        Some(arg) => fail(&format!(
+            "unexpected argument `{arg}` (reviews takes `check` or nothing)"
+        )),
+    }
+}
+
+/// Print why each tip was refused. Returns true when any was.
+fn report_review_faults(verdicts: &[crate::reviewnote::Verdict]) -> bool {
+    let mut refused = false;
+    for v in verdicts {
+        if v.faults.is_empty() {
+            continue;
+        }
+        refused = true;
+        for fault in &v.faults {
+            match fault {
+                crate::reviewnote::Missing::Note => {
+                    eprintln!(
+                        "reviews: no review note on {} (pushing to {}).",
+                        v.commit, v.remote_ref
+                    );
+                }
+                crate::reviewnote::Missing::Reviews(absent) => {
+                    eprintln!(
+                        "reviews: {} carries no sign-off for {}.",
+                        v.commit,
+                        absent.join(", ")
+                    );
+                }
+                crate::reviewnote::Missing::Failed(names) => {
+                    eprintln!(
+                        "reviews: {} is signed off as failed for {}.",
+                        v.commit,
+                        names.join(", ")
+                    );
+                }
+                crate::reviewnote::Missing::WrongCommit { review, named } => {
+                    eprintln!(
+                        "reviews: the {review} sign-off on {} names {named}, a different commit.",
+                        v.commit
+                    );
+                    eprintln!("  A sign-off names the commit its reviewer read.");
+                }
+                crate::reviewnote::Missing::Duplicate(review) => {
+                    eprintln!(
+                        "reviews: {} carries two {review} sign-offs, so neither counts.",
+                        v.commit
+                    );
+                }
+                crate::reviewnote::Missing::ThinEvidence { review, words } => {
+                    eprintln!(
+                        "reviews: the {review} sign-off on {} gives {words} words of evidence.",
+                        v.commit
+                    );
+                }
+                crate::reviewnote::Missing::ShortCommit { review, named } => {
+                    eprintln!(
+                        "reviews: the {review} sign-off on {} names `{named}`, which is not a sha.",
+                        v.commit
+                    );
+                    // Say which way it is wrong. One message calling a
+                    // 41-character sha "shorter" sent a reader looking
+                    // for the wrong mistake.
+                    let floor = crate::reviewnote::SHA_FLOOR;
+                    if named.chars().count() < floor {
+                        eprintln!(
+                            "  A sha carries at least {floor} hex characters. A shorter prefix matches many commits."
+                        );
+                    } else if !named.chars().all(|c| c.is_ascii_hexdigit()) {
+                        eprintln!("  A sha carries hex characters only.");
+                    } else {
+                        eprintln!("  A sha carries at most 64 hex characters.");
+                    }
+                }
+            }
+        }
+        eprintln!("  `gaff reviews` lists what a change must pass here.");
+        eprintln!("  A reviewer who did not write the change reads it, then records one line:");
+        eprintln!(
+            "    git notes --ref=reviews add -f -m \
+             'signoff[<review>] PASS {} <what was checked, and how>' {}",
+            crate::reviewnote::short(&v.commit),
+            v.commit
+        );
+    }
+    refused
+}
+
+/// `gaff reviews check`: every declared review needs a sign-off on
+/// every pushed tip. The check refuses a push whose tip lacks one.
+///
+/// Reads git's pre-push ref lines on stdin, so a pre-push hook pipes
+/// its own stdin straight through.
+///
+/// The check reads a claim. It shows that someone recorded a review.
+/// It cannot show that the review happened.
+fn run_reviews_check(args: &[String]) -> ExitCode {
+    // The command takes no argument. Every commit it checks arrives on
+    // stdin, as one line per ref, the way git sends them to a pre-push
+    // hook. A pull request needs the branch head rather than the merge
+    // commit CI checks out, and `gaff ci` supplies it by substituting
+    // that sha into the ref line it synthesizes. So one mechanism
+    // carries the head.
+    //
+    // An earlier version took `--head <sha>` as well. It replaced every
+    // pushed ref with one synthetic entry and suppressed the
+    // empty-stdin guard below, and nothing ever passed it. A second
+    // mechanism that weakens the first, with no caller, is worse than
+    // no mechanism.
+    if let Some(arg) = args.first() {
+        return fail(&format!(
+            "unexpected argument `{arg}` (reviews check takes none, and reads refs on stdin)"
+        ));
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    let cfg = match ci_config(&cwd) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let Some(required) = cfg.reviews.as_ref() else {
+        return fail(NO_POLICY);
+    };
+
+    let mut stdin = String::new();
+    if std::io::stdin().read_to_string(&mut stdin).is_err() {
+        return fail("cannot read the pushed refs from stdin");
+    }
+    let refs = crate::reviewnote::parse_refs(&stdin);
+
+    // A line git did not write means the stream was cut. git writes
+    // four fields per ref, so anything shorter is a truncation rather
+    // than a push. Dropping such a line silently defeated the guard
+    // below: one line reading `refs/heads/main` left no refs and
+    // non-empty stdin, so the check reported nothing to do and exited
+    // 0.
+    let truncated = crate::reviewnote::truncated_lines(&stdin);
+    if truncated > 0 {
+        return fail(&format!(
+            "{truncated} line(s) on stdin carry fewer than the four fields git writes \
+             for a pushed ref, so the stream is truncated. Check that nothing upstream \
+             in the pipeline consumed part of it."
+        ));
+    }
+
+    // Empty stdin is a real push, not a wiring fault. git runs a
+    // pre-push hook with no lines at all when the remote already holds
+    // everything, and `git push` on an up-to-date branch is a routine
+    // keystroke. An earlier version refused it and told the reader to
+    // hunt a pipeline bug that did not exist.
+    //
+    // Passing is safe because a push that moves no ref lands no
+    // commit. The stream that goes missing while refs still move is
+    // the dangerous case, and a partial read leaves a line with fewer
+    // than four fields, which `truncated_lines` above refuses.
+    if refs.is_empty() {
+        if stdin.split_whitespace().next().is_none() {
+            println!("reviews: nothing to check. git sent no ref, so this push moves nothing.");
+        } else {
+            println!("reviews: nothing to check. Every pushed ref is a deletion or a notes ref.");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let verdicts = crate::reviewnote::check(&cwd, &refs, required);
+    let refused = report_review_faults(&verdicts);
+    if refused {
+        return ExitCode::from(1);
+    }
+    println!("reviews: ok");
+    ExitCode::SUCCESS
+}
+
+/// `gaff reviews`: print the required reviews, one to a line.
+fn run_reviews_list() -> ExitCode {
+    let Ok(cwd) = std::env::current_dir() else {
+        return fail("cannot resolve the working directory");
+    };
+    // One config read. Two reads could disagree with each other.
+    let cfg = match ci_config(&cwd) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let Some(names) = cfg.reviews.as_ref() else {
+        return fail(NO_POLICY);
+    };
+    for name in names {
+        println!("{name}");
+    }
+    ExitCode::SUCCESS
+}
+
 /// The hook set `gaff ci` runs: `--hook` values, else both.
 fn ci_hooks(args: &[String]) -> Result<Vec<String>, ExitCode> {
     let mut hooks: Vec<String> = Vec::new();
@@ -2169,6 +2556,23 @@ fn ci_phases(cwd: &std::path::Path, cfg: &config::Config, hooks: &[String]) -> E
             head.sha
         );
     }
+    // A pull request event checks out a merge commit the forge builds.
+    // No reviewer saw it, so a review check reading the checkout would
+    // refuse every pull request. The branch head is what a reviewer
+    // read, and this is the only place that reads it: a gate takes its
+    // argv from the committed config, so a shell cannot introduce the
+    // override there.
+    let env = |k: &str| std::env::var(k).ok();
+    let pr_head = match crate::reviewnote::pull_request_head(&env) {
+        Some(Ok(sha)) => Some(sha),
+        Some(Err(why)) => return fail(&format!("this is a pull request event and {why}")),
+        None => None,
+    };
+    let push_sha = pr_head.clone().unwrap_or_else(|| head.sha.clone());
+    if let Some(sha) = &pr_head {
+        println!("gaff: ci: pull request. The gates see {sha}, the branch head.");
+    }
+
     for hook in hooks {
         let (args, stdin): (Vec<String>, Option<Vec<u8>>) = if hook == "pre-push" {
             // git's pre-push contract: the remote name and URL as
@@ -2176,9 +2580,8 @@ fn ci_phases(cwd: &std::path::Path, cfg: &config::Config, hooks: &[String]) -> E
             // synthesized local ref is never refs/notes/*, so a
             // notes exemption in a gate cannot fire here.
             let line = format!(
-                "{branch} {sha} {branch} 0000000000000000000000000000000000000000\n",
+                "{branch} {push_sha} {branch} 0000000000000000000000000000000000000000\n",
                 branch = head.branch,
-                sha = head.sha
             );
             (
                 vec![

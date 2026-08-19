@@ -38,12 +38,17 @@ keeping the user's label on it.
 - `default_profile` takes the repo value, unless it names a profile the
   user declared. The same holds for a committed `.gaff/profile`. A repo
   may select its own profiles, not the user's.
-- A repo profile filters and retimes the repo's own entries. Its `only`,
-  `disable`, `cadence`, and `max_inject_bytes` do not reach a user
-  entry.
+- A repo profile governs the repo's own entries. It runs with `base:
+  true` forced, its `disable` reaches only its own names, and it carries
+  no guard and no stop rule. Those block, and a repo may not.
 - `transitions`: the user value wins whenever the user sets one. That
   field says which profiles an agent may grant itself, and a repo must
   never widen it.
+- `reviews`: both lists join, and neither drops a name from the other.
+  A script reads this list to decide whether a change may merge, so a
+  layer that replaced it could require nothing. The repo must state the
+  policy: a user config adds a name and never supplies a list the repo
+  omitted.
 
 Only the user config may hold handlers, and they live in their own file.
 That keeps the security boundary easy to check: a command can only come
@@ -59,6 +64,61 @@ from `handlers.yml`.
 | `profiles` | `{}` | The named overlays (see below) |
 | `default_profile` | none | The profile that applies when nothing else selects one |
 | `transitions` | `{}` | Which profiles an agent may select for itself |
+| `git` | `[]` | The git-hook entries (see below) |
+| `github` | `[]` | The workflows to generate (see below) |
+| `guards` | `[]` | The tool calls to refuse (user config only) |
+| `reviews` | none | The reviews a change must pass (see below) |
+
+## Reviews
+
+A repository names the independent reviews a change must pass:
+
+```yaml
+reviews:
+  - review-tests
+  - review-docs
+```
+
+Each name is a review skill the repository carries. gaff records the
+policy and enforces nothing. A separate script reads the list and
+decides whether a change may merge.
+
+`gaff reviews` prints one name to a line, in declaration order. A
+script that read this file itself would break when the format changes,
+and it would then require nothing.
+
+An absent `reviews:` key and `reviews: []` mean different things:
+
+| The repository config | `gaff reviews` | The meaning |
+|-----------------------|----------------|-------------|
+| no `reviews:` key | exits 1, names the fix | Nobody stated a policy |
+| `reviews: []` | exits 0, prints the user's names if any | An author requires none of its own |
+| one or more names | exits 0, prints them | Those reviews are required |
+
+The error matters. A deleted `reviews:` key must not mean "no review is
+required", because a script would then merge an unreviewed change. An
+author who wants no review writes `reviews: []`.
+
+A missing config file, an empty file, and a file gaff cannot parse each
+exit 1.
+
+The repository states the policy, and a user config adds to it. Where
+the repository states one, both lists join and neither drops a name
+from the other. The user's names come first, then the repository's.
+
+Where the repository states none, the command exits 1 and the user's
+list does not stand in. That holds for a repository config that is
+missing, empty, unparseable, or without the key. Gate policy belongs
+to the repository. A truncated config beside a user config would
+otherwise read as a policy the repository never wrote.
+
+`gaff check` refuses an empty name, a name holding whitespace, and a
+name repeated within one config. A name holding a newline would become
+two requirements, because a caller reads one name to a line. A name in
+both configs is not a repeat; the merge keeps one copy.
+
+`gaff reviews` does not run these checks. A caller that needs them runs
+`gaff check` too.
 
 ## Sections
 
@@ -85,39 +145,78 @@ crosses, at the next safe injection point.
 
 ## Profiles
 
-A profile is a named overlay on the entries the config already
-declares. A profile never adds an entry. It selects from the declared
-entries and may override their cadences, so one file still states
-everything a repo can inject.
+A profile is a named bundle. It declares its own sections, reminders,
+guards, and stop rule. The effective config for a session is the base
+entries plus the active bundle. A bundle's handlers live in
+`handlers.yml` under its own `profiles` map, because a command comes
+only from that one owner-only file.
 
 ```yaml
 profiles:
-  focus:
-    only: [build-clean]        # keep only these entries
-    cadence:
-      build-clean: {tool_calls: 2}   # override the cadence
-  quiet:
-    disable: [chatty]          # drop these entries
-    max_inject_bytes: 512      # a tighter cap under this profile
-default_profile: focus
+  reviewer:
+    base: false                # deliver only this bundle's entries
+    sections:
+      - name: review-brief
+        file: sections/review-brief.md
+    reminders:
+      - name: cite
+        every: {tool_calls: 10}
+        text: Cite file and line.
+    guards:
+      - name: read-only
+        tool: Bash
+        matches: 'rm\s+-rf'
+        message: This session reads and reports.
+    stop:
+      hold: Append findings to the scratch first.
+      times: 2
+    max_inject_bytes: 65536
+default_profile: null
 transitions:
-  agent_may_set: [focus]       # every other profile is human-only
+  agent_may_set: [reviewer]    # every other profile is human-only
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `only` | every entry | Keep only the named entries |
-| `disable` | `[]` | Drop the named entries; applied after `only` |
-| `cadence` | `{}` | Cadence overrides, keyed by entry name |
+| `base` | `true` | When false, deliver only the bundle's sections and reminders, not the base ones. Guards always compose regardless. |
+| `sections` | `[]` | The bundle's own sections |
+| `reminders` | `[]` | The bundle's own reminders |
+| `guards` | `[]` | The bundle's own guards; user layer only |
+| `stop` | none | A `hold` text and optional `times`; user layer only |
+| `disable` | `[]` | Drop these base entries when `base` is true |
 | `max_inject_bytes` | the base cap | The cap under this profile |
+
+How the entries compose:
+
+- Guards always compose, base plus bundle. No profile removes a base
+  guard.
+- Sections and reminders compose base plus bundle when `base` is true,
+  and deliver the bundle's alone when `base` is false. A bundle entry
+  comes before the base entries of its kind, so the reason the profile
+  exists spends the byte cap and the session-start budget first.
+- A bundle entry that takes a base entry's name of the same kind
+  replaces it. This is how a bundle retimes a base reminder.
+- A bundle's `stop` rule becomes a hold the first time the session
+  stops under it, under the id `profile-<name>`. `gaff remind --clear
+  --id profile-<name>` releases it, and a compaction does not re-arm a
+  released hold.
 
 The resolution path is `GAFF_PROFILE`, then the session state, then a
 `.gaff/profile` file, then `default_profile`. The first hit wins. An
 unknown name applies nothing and warns, because a typo must never
-silently empty the config.
+silently empty the config. `GAFF_PROFILE` cannot select a bundle that
+carries guards or a stop rule unless `transitions.agent_may_set` names
+it, because that channel is not a trusted one. A hook agent selects a
+child's bundle by writing session state before the spawn.
 
 A switch re-primes: the next flush delivers every section rather than
 wait for each refresh cadence.
+
+The keys `only` and `cadence` are removed. `base: false` plus the
+bundle's own declarations replace `only`, and a bundle entry that
+shadows a base entry by name replaces `cadence`. A config that still
+carries either key drops that one profile with a migration line, and
+`gaff check` fails on it.
 
 ### The transition policy
 
@@ -273,6 +372,28 @@ handlers:
 `gitdir:` file. It never runs `git`, because that would honor the
 repo's own `.git/config`.
 
+### Per-profile handlers
+
+A profile's handlers live in `handlers.yml` under a `profiles` map,
+keyed by profile name. A command stays in this one owner-only file,
+never in `gaff.yml`. The active profile's handlers run first, then the
+base handlers.
+
+```yaml
+handlers:
+  - name: ci                    # base: active under every profile
+    events: [session_start]
+    every: {tool_calls: 20}
+    command: ["/opt/homebrew/bin/gh", "run", "list", "--limit", "1"]
+profiles:
+  reviewer:
+    - name: diff
+      events: [session_start]
+      every: {tool_calls: 1}
+      command: ["/usr/bin/git", "diff", "main...HEAD"]
+      max_bytes: 65536
+```
+
 ### What runs, and what that costs you
 
 **A handler's command runs with the repo as its working directory.**
@@ -421,13 +542,19 @@ editing the file. That is `gaff allow`:
 The next call that guard would refuse passes instead, once, with a note
 on stderr saying so. The call after that is refused again.
 
-Two things make this safe to offer. `gaff allow` refuses to run without
-a terminal on stdin, the same check `gaff trust` makes. And gaff carries
-a built-in guard, which no config declares and no config removes, that
-refuses `gaff allow` and `gaff trust` from any Bash call an agent makes.
-The boundary is structural: every agent command passes through `gaff
-hook` first, and a human's shell has no hook. `!gaff allow` in the
-harness runs in the human's shell.
+Two things stand between an agent and its own grant. `gaff allow`
+refuses to run without a terminal on stdin, the same check `gaff trust`
+makes. And gaff carries a built-in guard, which no config declares and
+no config removes, that refuses `gaff allow` and `gaff trust` from any
+Bash call an agent makes. The boundary is structural: every agent
+command passes through `gaff hook` first, and a human's shell has no
+hook. `!gaff allow` in the harness runs in the human's shell.
+
+Note the limit, which is the one `gaff trust` carries. `gaff allow`
+records the grant in gaff's state directory. An agent that can write
+that directory can arm the one-shot without running the command, and an
+agent that can allocate a terminal passes the stdin check. The gate
+raises the cost and makes the grant visible. It is not a sandbox.
 
 The `!` prefix runs the command in the harness's own shell. That is what
 puts a terminal on stdin and keeps the call out of the hook.
@@ -638,12 +765,26 @@ Write these names in a config, and read them in `gaff log`. A host's own
 name, such as Claude Code's `PostToolBatch`, never appears above the
 adapter.
 
-Claude Code is the only implemented adapter. An adapter owns four
-host-specific facts. It owns the payload mapping, and the map from its
-event names onto the set above. It also owns its own event names for
-registration, and the settings path that `gaff init` writes. `gaff hook` selects the adapter
-from `GAFF_HOST`, or from the payload shape when that variable is
-absent. `gaff init --host <name>` targets a named host.
+An adapter owns its host's facts. It owns the payload mapping and the map
+from its event names onto the set above. It owns how injected context is
+rendered back: Claude Code gets its hook JSON, and a host reads context
+in its own shape, so that rendering is a host fact. It owns its event
+names for registration and the settings path that `gaff init` writes.
+`gaff hook` selects the adapter from `GAFF_HOST`, or from the payload
+shape when that variable is absent. `gaff init --host <name>` targets a
+named host.
+
+A refusal is not a host fact. Every host reads exit 2 as a refusal and
+the child's stderr as the reason, so a guard and a hold need no per-host
+rendering. A host that gaff governs must block on exit 2 and forward the
+child's stderr to its model.
+
+Two adapters ship. Claude Code is the host a person installs against. The
+`generic` host speaks gaff's own normalized vocabulary: it reads the
+event from `gaff_event` and the rest from gaff's own field names, and it
+renders context as `{"event": <name>, "context": <text>}`. It suits a
+host, such as an agent runner, that calls `gaff hook` itself. It does not
+self-register, so `gaff init --host generic` is refused.
 
 gaff ships no guessed schema for an untested host. Adding one means
 adding an `Adapter` constant with that host's real field names, taken

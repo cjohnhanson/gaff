@@ -82,9 +82,20 @@
                 mkdir -p $out/share/man/man1
                 cp docs/man/gaff.1 $out/share/man/man1/
               '';
-              # The nix check runs the unit tests only. The missouri suite
-              # runs in development, because it needs the missouri binary,
-              # which lives in its own derivation.
+              # The integration tests drive a real git to build their
+              # fixtures, and stdenv builds PATH from the declared inputs
+              # alone. Sandboxing is not the mechanism: the build fails
+              # the same way with sandbox = false. It has to be a native
+              # check input, because strictDeps keeps host-platform
+              # inputs off PATH, so checkInputs reaches nothing and the
+              # same eight tests fail. gitMinimal carries every builtin
+              # the fixtures use, at a tenth of the closure.
+              nativeCheckInputs = [ pkgs.gitMinimal ];
+              # The nix check runs cargo test, so the unit tests and the
+              # integration tests both run here. The missouri suite is not
+              # a cargo target at all: tests/missouri holds state
+              # directories and no .rs file, so cargo never builds it. CI
+              # installs missouri through its own action.
               checkPhase = ''
                 tmpHome="$(mktemp -d)"
                 export HOME="$tmpHome"
@@ -106,6 +117,10 @@
             buildInputs = [
               pkgs.rust-bin.stable.latest.default
               pkgs.jq
+              # `cargo test` here runs the review-note fixtures, which drive
+              # git. An impure shell inherits the user's git and passes; a
+              # pure one has none and fails the same eight tests.
+              pkgs.gitMinimal
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.libiconv
