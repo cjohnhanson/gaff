@@ -251,12 +251,21 @@ pub fn shortfall(note: Option<&str>, required: &[String], commit: &str) -> Vec<M
 /// checks that commit out. No reviewer read it, so a check against it
 /// would refuse every pull request. A reviewer reads the branch head.
 ///
-/// THE ENVIRONMENT DOES NOT REACH THIS. An earlier version keyed the
-/// override on `GITHUB_ACTIONS`, `GITHUB_EVENT_NAME` and
-/// `GITHUB_EVENT_PATH`. Those are ordinary variables, and nothing
-/// tells a runner from a shell, so setting all three and writing a
-/// payload file pushed an unreviewed commit past the gate. A reviewer
-/// reproduced it against a bare remote.
+/// THE ENVIRONMENT REACHES THIS, and the caller decides what that
+/// costs. `GITHUB_ACTIONS`, `GITHUB_EVENT_NAME` and
+/// `GITHUB_EVENT_PATH` are ordinary variables, and nothing here tells
+/// a runner from a shell. Setting all three and writing a payload
+/// file makes this function name any commit the caller likes.
+///
+/// `gaff reviews check` does not call this, so a push cannot be
+/// steered that way. `gaff ci` does, and `gaff ci` pushes nothing, so
+/// the cost of a forged payload is a local run that certifies the
+/// wrong commit. In a runner the variables come from the runner.
+///
+/// An earlier version wired this into the push path, and a reviewer
+/// pushed an unreviewed commit past the gate with it against a bare
+/// remote. The lesson kept is narrow: the push path reads no
+/// environment. This function is not the push path.
 ///
 /// Only `gaff ci` calls this. It substitutes the sha into the ref line
 /// it synthesizes on the pre-push hook's stdin, so the check reads the

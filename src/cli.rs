@@ -2619,12 +2619,26 @@ fn ci_head(cwd: &std::path::Path) -> Result<CiHead, String> {
         .map_err(|e| format!("cannot read HEAD: {e}"))?;
     let head_text = head_text.trim();
     let (branch, sha) = if let Some(refname) = head_text.strip_prefix("ref: ") {
-        let sha = resolve_ref(&git_dir, refname.trim()).ok_or_else(|| {
+        let refname = refname.trim();
+        // HEAD must name a branch. A gate exempts a notes ref, because
+        // pushing review records proposes no change, and the ref line
+        // here is synthesized from HEAD. So a HEAD pointing at
+        // `refs/notes/reviews` synthesized an exempt line and the whole
+        // gate reported success with nothing checked. One
+        // `git symbolic-ref` was the entire attack.
+        if !refname.starts_with("refs/heads/") {
+            return Err(format!(
+                "HEAD names {refname}, which is not a branch. `gaff ci` builds its ref line \
+                 from HEAD, and a line naming a notes ref is exempt from the review check, \
+                 so the run would certify nothing."
+            ));
+        }
+        let sha = resolve_ref(&git_dir, refname).ok_or_else(|| {
             format!(
                 "cannot resolve {refname}: the branch has no commit yet, or the ref is unreadable"
             )
         })?;
-        (refname.trim().to_string(), sha)
+        (refname.to_string(), sha)
     } else {
         // Detached HEAD holds the sha itself.
         ("refs/heads/detached".to_string(), head_text.to_string())
