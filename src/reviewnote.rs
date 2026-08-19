@@ -111,7 +111,7 @@ pub struct Signoff {
 /// The form is one line, anchored at the start of a line:
 ///
 /// ```text
-/// signoff[fresh-eyes] PASS 4f1c2ab removed the guard and walk_up went red
+/// signoff[review-tests] PASS 4f1c2ab removed the guard and walk_up went red
 /// ```
 ///
 /// Prose around the lines is ignored, so a note can carry a narrative.
@@ -151,9 +151,9 @@ pub fn parse_signoffs(note: &str) -> Vec<Signoff> {
 /// this commit, and carries evidence.
 ///
 /// Substring matching was the first design and it is unsound. A note
-/// reading `mutation: skipped this round` contains `mutation`, and a
-/// note reading `fresh-eyes: FAILED, do not merge` contains
-/// `fresh-eyes`. Prose about a review reads exactly like a record of
+/// reading `review-tests: skipped this round` contains the name, and a
+/// note reading `review-tests: FAILED, do not merge` contains it too.
+/// Prose about a review reads exactly like a record of
 /// one, so the line form carries a verdict instead.
 ///
 /// The commit binding matters most. Without it a sign-off copies
