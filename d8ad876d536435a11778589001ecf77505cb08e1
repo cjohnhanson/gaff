@@ -1,0 +1,5 @@
+signoff[review-tests] PASS d8ad876d536435a11778589001ecf77505cb08e1 three guard cases build a fixture and run the gate in it; the reviewer mutation of both reconciliation loops turns two red
+signoff[review-docs] PASS d8ad876d536435a11778589001ecf77505cb08e1 every prose surface swept for the retired names; the gate comment, the commit gate comment and the contributing docs now state the declared policy
+signoff[review-code] PASS d8ad876d536435a11778589001ecf77505cb08e1 the local anti-weakening guard and its awk parser are deleted, because pull_request_target reads the policy from the base branch and needs neither
+signoff[review-deps] PASS d8ad876d536435a11778589001ecf77505cb08e1 six skills vendored from cjohnhanson/skills at 031c5cf, content hashed, MIT into MIT, and no package manifest changed
+signoff[review-usability] PASS d8ad876d536435a11778589001ecf77505cb08e1 the refusal names each missing review and the command to record it, measured against a fixture through five note shapes
