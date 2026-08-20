@@ -2324,9 +2324,11 @@ fn report_review_faults(verdicts: &[crate::reviewnote::Verdict]) -> bool {
             }
         }
         eprintln!("  `gaff reviews` lists what a change must pass here.");
-        eprintln!("  A reviewer who did not write the change reads it, then records one line:");
+        eprintln!("  A reviewer who did not write the change reads it, then records one line.");
+        eprintln!("  `append` keeps the lines already there. `add -f` replaces the whole");
+        eprintln!("  note, so a second reviewer following it drops the first one's line.");
         eprintln!(
-            "    git notes --ref=reviews add -f -m \
+            "    git notes --ref=reviews append -m \
              'signoff[<review>] PASS {} <what was checked, and how>' {}",
             crate::reviewnote::short(&v.commit),
             v.commit

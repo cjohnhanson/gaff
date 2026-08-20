@@ -12,11 +12,40 @@
 # required CI check is what enforces this.
 set -e
 
+# Every required review needs vendored criteria, and every vendored
+# review needs to be required. A name with no criteria is a review
+# nobody can perform. A criterion nobody requires is a check that one
+# edit dropped. Checking both directions is what stops that edit.
+required=$(gaff reviews)
+for name in $required; do
+  if [ ! -f ".agents/skills/$name/SKILL.md" ]; then
+    echo "merge-gate: $name is required and has no criteria in .agents/skills." >&2
+    echo "  Vendor it: almanac add github:cjohnhanson/skills --path skills/$name --name $name --accept" >&2
+    exit 1
+  fi
+done
+for dir in .agents/skills/review-*/; do
+  [ -d "$dir" ] || continue
+  name=${dir#.agents/skills/}
+  name=${name%/}
+  if ! printf '%s\n' "$required" | grep -qx "$name"; then
+    echo "merge-gate: $name is vendored and required by nothing." >&2
+    echo "  Name it under reviews: in .gaff/gaff.yml, or remove it." >&2
+    exit 1
+  fi
+done
+
+
 # git sends the ref list on stdin. The first reader spends the stream.
 # Capture it before any other program can read it. If a test runner
 # read stdin first, the check below would see EOF and check nothing.
 gate_refs=$(cat)
 
+# The escape needs both the marker and CARGO, which only a cargo-run
+# process sets, so a plain shell cannot turn the tests off with one
+# variable. A pushing developer never has CARGO set. The policy check
+# above runs either way.
+if [ -z "${MERGE_GATE_SKIP_TESTS:-}" ] || [ -z "${CARGO:-}" ]; then
 echo "merge-gate: cargo test"
 # --all-features, because a feature that is off by default is still
 # shipped code. The gate once built without mcp and never compiled it.
@@ -36,7 +65,9 @@ if [ -n "${CI:-}" ]; then
 	export MISSOURI_SANDBOX
 fi
 
-if [ -d tests/missouri ]; then
+fi
+
+if [ -d tests/missouri ] && { [ -z "${MERGE_GATE_SKIP_TESTS:-}" ] || [ -z "${CARGO:-}" ]; }; then
 	command -v missouri >/dev/null || {
 		echo "merge-gate: missouri is not on PATH and tests/missouri exists." >&2
 		exit 1
