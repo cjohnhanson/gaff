@@ -1216,23 +1216,24 @@ fn doctor_guards(loaded: &Loaded) {
     }
 }
 
-/// `gaff docs [topic]` — print the bundled documentation.
 fn run_docs(args: &[String]) -> ExitCode {
-    args.first().map(String::as_str).map_or_else(
-        || {
+    let set = docs::set();
+    match diataxis::docs::request_from_args(args) {
+        // The listing carries gaff's own header, which names the
+        // command a reader types next.
+        Ok(diataxis::Request::List) => {
             print!("{}", docs::listing());
             ExitCode::SUCCESS
+        }
+        Ok(request) => match set.render(request) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&format!("{e}\n{}", docs::listing())),
         },
-        |name| {
-            docs::topic(name).map_or_else(
-                || fail(&format!("unknown topic `{name}`\n{}", docs::listing())),
-                |body| {
-                    print!("{body}");
-                    ExitCode::SUCCESS
-                },
-            )
-        },
-    )
+        Err(e) => fail(&format!("{e}\n{}", docs::listing())),
+    }
 }
 
 /// `gaff profile [show|list|set <name>] [--session <sid>]`

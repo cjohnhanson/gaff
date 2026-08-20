@@ -1,3 +1,9 @@
+<!-- metadata
+title: "Configuration reference"
+description: "Every key in .gaff/gaff.yml: sections, reminders, guards, and cadences"
+type: reference
+-->
+
 # Configuration reference
 
 The repo config lives at `.gaff/gaff.yml`. It holds data only: text, file

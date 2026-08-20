@@ -1,3 +1,9 @@
+<!-- metadata
+title: "How gaff works"
+description: "Why injected context decays, and how counting, arming, and flushing answer it"
+type: explanation
+-->
+
 # How it works
 
 ## Count, arm, flush
