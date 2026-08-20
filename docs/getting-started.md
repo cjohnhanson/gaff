@@ -1,3 +1,9 @@
+<!-- metadata
+title: "Getting started with gaff"
+description: "Install gaff, wire the hooks, and watch a section fire"
+type: tutorial
+-->
+
 # Getting started
 
 gaff keeps context alive in a long coding-agent session. Context injected
