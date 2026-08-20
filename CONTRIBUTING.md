@@ -65,16 +65,22 @@ Read the list with:
 gaff reviews
 ```
 
-Today that is `fresh-eyes` and `mutation`. A reviewer who did not write
-the change reads it, then removes a guard the change adds and watches a
-named test go red. Each sign-off is one line, anchored at the start of
-a line, naming the commit it reviewed:
+Today those are `review-tests`, `review-docs`, `review-code`,
+`review-deps`, and `review-usability`. Each is a skill under
+`.agents/skills`, vendored by almanac and pinned. One agent reads one
+criterion, sees the change and nothing from the author's session, and
+records one line anchored at the start of a line, naming the commit it
+reviewed. Write all the lines in one note: separate writes race on the
+notes ref, and the loser is a sign-off nobody sees again.
 
 ```sh
 git notes --ref=reviews add -m \
-'signoff[fresh-eyes] PASS 4f1c2ab read the parser and every guard
-signoff[mutation] PASS 4f1c2ab removed the FAIL branch, a_failed_signoff went red' <sha>
+'signoff[review-tests] PASS 4f1c2ab removed a guard, a_failed_signoff went red
+signoff[review-docs] PASS 4f1c2ab swept every prose surface against the code' <sha>
 ```
+
+`.agents/skills/signoff-driver/SKILL.md` states the whole procedure, and
+when to stop: one pass, one fix, one re-run.
 
 Prose around the lines is ignored, so a note can carry a narrative too.
 
@@ -86,9 +92,9 @@ The commit binding is the load-bearing part. Without it a sign-off
 copies forward onto a later commit nobody read, and nothing says so.
 
 Prose alone is not a sign-off, and that rule has a reason. A note
-reading `mutation: skipped this round` names the review, so the first
-version of this check passed it. So did `fresh-eyes: FAILED, do not
-merge`.
+reading `review-tests: skipped this round` names the review, so the
+first version of this check passed it. So did `review-tests: FAILED, do
+not merge`. Only a line matching the sign-off shape counts.
 
 ## Running the gates locally
 
