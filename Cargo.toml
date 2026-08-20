@@ -42,6 +42,17 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 
+# Two names, one build. `gaff` is what a person types. `gaffr` exists
+# because the registries that matter for `uvx` and `npx` needed a free
+# name, and maturin ties the command to the Cargo bin name.
+[[bin]]
+name = "gaff"
+path = "src/main.rs"
+
+[[bin]]
+name = "gaffr"
+path = "src/bin/gaffr.rs"
+
 [dependencies]
 fs2 = "0.4.3"
 regex = "1"
@@ -60,6 +71,10 @@ gix-hash = { version = "0.26", default-features = false, features = ["sha1"] }
 # no file read covers. No network feature is on: every read is local.
 gix = { version = "0.86.0", default-features = false, features = ["revision", "sha1"] }
 
+# The documentation set. gaff parses its own arguments, so it takes
+# the store half and none of the clap surface.
+diataxis = { version = "0.1", default-features = false, features = ["store"] }
+
 # For the open flags on a section body: O_NONBLOCK so a FIFO cannot
 # wedge the hook, and O_NOFOLLOW so the final component cannot be
 # swapped for a link after the path was confined.
@@ -76,3 +91,6 @@ nix = { version = "0.31", default-features = false, features = ["signal"] }
 strip = "symbols"
 lto = "thin"
 codegen-units = 1
+
+[build-dependencies]
+diataxis = { version = "0.1", default-features = false, features = ["build"] }
