@@ -63,10 +63,10 @@ fn run_gate_in(required: &[&str], vendored: &[&str]) -> (i32, String) {
         .parent()
         .expect("the test binary has a directory")
         .to_owned();
-    let path = match std::env::var_os("PATH") {
-        Some(p) => format!("{}:{}", bin.display(), p.to_string_lossy()),
-        None => bin.display().to_string(),
-    };
+    let path = std::env::var_os("PATH").map_or_else(
+        || bin.display().to_string(),
+        |p| format!("{}:{}", bin.display(), p.to_string_lossy()),
+    );
     let mut child = Command::new("sh")
         .arg("scripts/merge-gate.sh")
         .current_dir(&dir)
