@@ -69,15 +69,31 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
 
 ## Install
 
-From the first published release onward:
+Pick the line for a tool you already use. Every one installs the same
+binary. Each gives you both the `gaff` and `gaffr` commands.
+
+Run it without installing:
+
+```sh
+uvx gaffr
+npx gaffr
+```
+
+Install it for good:
 
 ```sh
 cargo install gaff
+uv tool install gaffr
+npm install -g gaffr
+brew install cjohnhanson/tap/gaff
 ```
 
+The published name is `gaffr`, because `gaff` was already taken on PyPI and npm.
+Both commands install together, so `gaff` is what you type.
+
 A tagged release also carries a prebuilt binary and the man page, for
-macOS and Linux on x86-64 and arm64. Take the archive for your
-platform from the [releases page](https://github.com/cjohnhanson/gaff/releases),
+macOS and Linux on x86-64 and arm64. Take the archive for your platform
+from the [releases page](https://github.com/cjohnhanson/gaff/releases),
 put `gaff` on your `PATH`, and put `man/gaff.1` where `man` looks.
 
 To build from a checkout:
