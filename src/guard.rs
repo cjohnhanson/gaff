@@ -210,7 +210,7 @@ fn representatives_within(pattern: &str, depth: usize) -> Vec<String> {
 }
 
 /// The index of the `)` matching the `(` at `open`.
-fn closing(chars: &[char], open: usize) -> Option<usize> {
+const fn closing(chars: &[char], open: usize) -> Option<usize> {
     let mut depth = 0;
     let mut i = open;
     while i < chars.len() {
