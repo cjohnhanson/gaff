@@ -13,9 +13,9 @@
 /// Every command `run` dispatches, mirroring `COMMANDS` in `src/cli.rs`.
 /// That constant is private, and a second copy is the point: a command
 /// added there without a man entry fails this test.
-const COMMANDS: [&str; 15] = [
+const COMMANDS: [&str; 16] = [
     "hook", "githook", "remind", "allow", "status", "init", "check", "doctor", "trust", "profile",
-    "log", "docs", "prime", "ci", "reviews",
+    "run", "log", "docs", "prime", "ci", "reviews",
 ];
 
 const MAN: &str = include_str!("../docs/man/gaff.1");
