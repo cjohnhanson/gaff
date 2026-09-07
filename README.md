@@ -69,12 +69,8 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
 
 ## Install
 
-Nothing is published yet. Every line below works from the first
-tagged release onward, and none of them works before it. To use the tool
-today, build it from a checkout with the last command in this section.
-
-Pick the line for a tool you already use. Every one installs the same
-binary. Each gives you both the `gaff` and `gaffr` commands.
+There is no release yet, and no way to install this today. The commands
+below are what the first tagged release will provide. Each one fails now.
 
 Run it without installing:
 
@@ -89,22 +85,22 @@ Install it for good:
 cargo install gaff
 uv tool install gaffr
 npm install -g gaffr
-brew install cjohnhanson/tap/gaff
 ```
 
-The name to publish under is `gaffr`, because `gaff` was already taken on PyPI and npm.
-Both commands install together, so `gaff` is what you type.
+Homebrew is not set up yet. No tap exists, and no release step builds
+one, so `brew install` will not work until that is built.
 
-A tagged release also carries a prebuilt binary and the man page, for
-macOS and Linux on x86-64 and arm64. Take the archive for your platform
-from the [releases page](https://github.com/cjohnhanson/gaff/releases),
-put `gaff` on your `PATH`, and put `man/gaff.1` where `man` looks.
+A tagged release will also carry a prebuilt binary and the man page, for
+macOS and Linux on x86-64 and arm64, on the
+[releases page](https://github.com/cjohnhanson/gaff/releases).
 
-To build from a checkout:
+Building from a checkout does not work either. This crate depends on two
+sibling crates that are not published, so `cargo install --git` cannot
+resolve them. Clone `mdstore` and `diataxis` beside this repository and
+point at them with a `[patch.crates-io]` section in `.cargo/config.toml`.
 
-```sh
-cargo install --git https://github.com/cjohnhanson/gaff
-```
+The name to publish under is `gaffr`, because `gaff` was already
+taken. Both commands install together, so `gaff` is what you type.
 
 ## Using it
 
