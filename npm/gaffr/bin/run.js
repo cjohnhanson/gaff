@@ -16,12 +16,12 @@ const os = require("os");
 // host libc is needed.
 const PLATFORMS = {
   darwin: {
-    arm64: "@gaffr/cli-darwin-arm64/gaff",
-    x64: "@gaffr/cli-darwin-x64/gaff",
+    arm64: "@cjohnhanson/gaffr-darwin-arm64/gaff",
+    x64: "@cjohnhanson/gaffr-darwin-x64/gaff",
   },
   linux: {
-    arm64: "@gaffr/cli-linux-arm64-musl/gaff",
-    x64: "@gaffr/cli-linux-x64-musl/gaff",
+    arm64: "@cjohnhanson/gaffr-linux-arm64-musl/gaff",
+    x64: "@cjohnhanson/gaffr-linux-x64-musl/gaff",
   },
 };
 
