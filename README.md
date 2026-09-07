@@ -69,47 +69,40 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
 
 ## Install
 
-Nothing is published yet. Every line here fails today. Each one works from
-the first tagged release.
+The package is `gaffr` on PyPI and npm, because `gaff` was taken. The
+command is `gaff` everywhere, and both names install together.
 
-To run it without an install:
+Not released yet. Until the first tag, build from source:
 
 ```sh
-uvx gaffr
-npx gaffr
+cargo install --locked --git https://github.com/cjohnhanson/gaff
 ```
 
-To install it:
+Requires Rust 1.88 and a C compiler. macOS and Linux, x86-64 and arm64.
+
+From the first release onward:
 
 ```sh
-cargo install gaff
+cargo install --locked gaff
+brew install cjohnhanson/tap/gaff
 uv tool install gaffr
 npm install -g gaffr
-brew install cjohnhanson/tap/gaff
 ```
 
-On PyPI and npm the name is `gaffr`, because `gaff` was taken. On
-crates.io and in the tap it is `gaff`. The install puts both names on your
-path. Type `gaff`.
+Or run it without installing:
 
-A tagged release carries four archives: macOS and Linux, on x86-64 and
-arm64. Each archive holds a prebuilt binary and the man page. A release
-also carries a `.deb` for Debian and Ubuntu, on the same two
-architectures. Install a `.deb` with `dpkg -i`. A `.deb` is a file, not a
-repository, so `apt-get install` does not reach it. The [releases
-page](https://github.com/cjohnhanson/gaff/releases) holds all of them.
+```sh
+uvx gaffr status
+npx gaffr status
+```
 
-A source build needs two things. Rust 1.88 or later, because a locked
-dependency asks for it. And a C compiler, because a dependency reads a
-remote over HTTPS and that TLS stack builds a C library. On Debian and
-Ubuntu that is `build-essential`; on macOS, the Xcode command line
-tools. A prebuilt binary needs neither.
+A release also carries prebuilt archives and a `.deb`, on the [releases
+page](https://github.com/cjohnhanson/gaff/releases). Each archive holds
+the binary and the man page. Install a `.deb` with `dpkg -i`: it is a
+file, not a repository, so `apt-get install` does not reach it.
 
-A checkout does not build from a clone alone. `diataxis` is an unpublished
-dependency, so `cargo install --git` cannot resolve it. Clone `diataxis`
-and `mdstore` beside this repository. Then patch both in
-`.cargo/config.toml`, under `[patch.crates-io]`. The crate names there are
-`diataxis` and `mdstore-core`.
+Check the install with `gaff --version`, and `gaff doctor` for what is
+live in a clone.
 
 ## Using it
 
