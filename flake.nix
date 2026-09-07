@@ -43,8 +43,10 @@
           toolchain = pkgs.rust-bin.stable.latest.default;
           craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
 
-          # cleanCargoSource removes the non-Rust files. The bundled docs
-          # and the missouri fixtures must survive the filter.
+          # cleanCargoSource removes the non-Rust files. The bundled docs, the
+          # missouri fixtures, and the gate scripts must survive the filter.
+          # tests/merge_gate_guard.rs copies scripts/merge-gate.sh into a
+          # fixture, so a filter that drops it fails three tests at build.
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter =
@@ -56,7 +58,9 @@
               || (builtins.match ".*/docs$" path != null)
               || (builtins.match ".*/docs/.*" path != null)
               || (builtins.match ".*/skills$" path != null)
-              || (builtins.match ".*/skills/.*" path != null);
+              || (builtins.match ".*/skills/.*" path != null)
+              || (builtins.match ".*/scripts$" path != null)
+              || (builtins.match ".*/scripts/.*" path != null);
           };
 
           commonArgs = {

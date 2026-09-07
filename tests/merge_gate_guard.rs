@@ -55,9 +55,22 @@ fn run_gate_in(required: &[&str], vendored: &[&str]) -> (i32, String) {
         .expect("a criteria file is written");
     }
 
+    // The gate calls gaff from PATH. A build sandbox has no installed gaff,
+    // so the test passed only where one was already on the developer's PATH.
+    // CARGO_BIN_EXE_gaff names the binary this test was built against, which
+    // is the one the assertions are about.
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_gaff"))
+        .parent()
+        .expect("the test binary has a directory")
+        .to_owned();
+    let path = std::env::var_os("PATH").map_or_else(
+        || bin.display().to_string(),
+        |p| format!("{}:{}", bin.display(), p.to_string_lossy()),
+    );
     let mut child = Command::new("sh")
         .arg("scripts/merge-gate.sh")
         .current_dir(&dir)
+        .env("PATH", path)
         .env_remove("GITHUB_ACTIONS")
         .env_remove("GITHUB_EVENT_NAME")
         .env_remove("GITHUB_EVENT_PATH")
