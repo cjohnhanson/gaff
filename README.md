@@ -69,6 +69,10 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
 
 ## Install
 
+Nothing is published yet. Every line below works from the first
+tagged release onward, and none of them works before it. To use the tool
+today, build it from a checkout with the last command in this section.
+
 Pick the line for a tool you already use. Every one installs the same
 binary. Each gives you both the `gaff` and `gaffr` commands.
 
@@ -88,7 +92,7 @@ npm install -g gaffr
 brew install cjohnhanson/tap/gaff
 ```
 
-The published name is `gaffr`, because `gaff` was already taken on PyPI and npm.
+The name to publish under is `gaffr`, because `gaff` was already taken on PyPI and npm.
 Both commands install together, so `gaff` is what you type.
 
 A tagged release also carries a prebuilt binary and the man page, for
