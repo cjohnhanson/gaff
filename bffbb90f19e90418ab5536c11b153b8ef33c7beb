@@ -1,0 +1,8 @@
+Two cold reviews read the earlier commits on this branch. One attacked the gate's design and returned unsound. One read the commits and returned SHIP with no blocker. Their findings and evidence are on bffbb90~1 and earlier.
+
+This commit was not read by either. It fixes a defect an independent session measured after those reviews: the fixture helper cleared git's config variables and not the ones git exports to a hook, so a suite run from pre-push aimed every fixture at the repository being pushed. A fixture commit reached a real branch tip. `core.bare` turning true on this clone has the same cause.
+
+The sign-off below says what that is worth, and no more.
+
+signoff[fresh-eyes] PASS bffbb90 found and measured by an independent session, not by the author, and reproduced here before the fix: with GIT_DIR and GIT_WORK_TREE aimed elsewhere, a fixture commit named one carrying f.txt landed on another repository's tip. No reviewer has read the fix itself.
+signoff[mutation] PASS bffbb90 dropping GIT_DIR from the cleared set turns a_fixture_cannot_reach_the_repository_a_hook_is_running_for red and names the variable; the first version of that test iterated the constant it guarded, so the same mutation left the suite green until it named the nine independently

@@ -1,0 +1,24 @@
+fresh-eyes: independent reviewer, gaff ci (2c2a6e6 + c0466c8), two rounds.
+
+Exercised: build, 230 unit tests, missouri 24/24; scratch repos for a
+git shim on PATH (no git spawned), packed refs, a linked worktree,
+detached HEAD, an unborn branch, tab/upper-case/comment/pushurl remote
+config, the exact synthesized pre-push line, drift and orphan refusal,
+and entry exit-code propagation.
+
+Mutations applied in a scratch worktree, and what killed each:
+  fail-closed check disabled        -> missouri ci-declared "ci passed with no pre-push entry"
+  GITHUB_REF ignored                -> missouri "GITHUB_REF not used"
+  drift phase disabled              -> missouri "ci passed with the workflow missing"
+  exit code flattened to 1          -> missouri "exit code 1, wanted 3"
+  origin URL never read             -> missouri "args: origin"
+  ref line sha/zero swapped         -> missouri "ref line: ..."
+  pre-push stdin not synthesized    -> missouri "ref line: " (empty)
+  default hook order reversed       -> cargo ci_hooks_defaults_to_both_and_refuses_an_unknown_hook; missouri "hook order"
+  orphan check disabled             -> missouri "ci passed with an orphan workflow"
+  with: block not rendered          -> cargo a_uses_step_renders_with_sorted_inputs_and_rejects_bad_shapes; missouri "with not rendered"
+  origin section match made exact   -> cargo the_origin_url_parser_reads_what_git_writes_and_what_hands_write
+  phase-1 problems ignored          -> survives by design; run_with_stdin refuses the entry (exit 1, no panic)
+
+Residual, non-blocking: a double-quoted origin URL containing # or ;
+is truncated at the comment character by origin_url_from_config_text.

@@ -1,0 +1,8 @@
+Two cold reviews read this work. One attacked the gate's design and returned unsound. One read the commits and returned SHIP with no blocker.
+
+The design finding is not a code defect and is not fixed here. A gate that runs inside a pull request cannot constrain it: the change supplies the config declaring both the policy and the command, the workflow that runs the gate, the script it calls, and the binary. A pull request that leaves `reviews:` intact passes by replacing the hook command with `echo ok`. Filed as 7cap, recorded as zettel note hvrm.
+
+Rebased onto main after #5 merged. The fixture fix this branch carried is dropped, because main landed an equivalent one first, and its regression test is kept. Both fixes were the same shape and neither author had an attachment to their copy.
+
+signoff[fresh-eyes] PASS 949e82d two reviewers read this cold, one attacking the design and one the commits; the notes-ref fail-open and the forged-payload claim were both reproduced before either fix, and gaff ci was re-run under a detached HEAD with a pull request payload to confirm the new guard leaves the path every CI run takes
+signoff[mutation] PASS 949e82d four guards mutated one at a time, each turning one named test red: the branch requirement on HEAD, the detached HEAD arm, and both stdin call sites, which were bound only at their functions until three end-to-end tests were added
