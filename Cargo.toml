@@ -2,6 +2,11 @@
 name = "gaff"
 version = "0.1.0"
 edition = "2024"
+# 1.88, read from the graph rather than from the edition. Edition 2024
+# needs 1.85, and that floor is too low here: a locked dependency asks
+# for 1.88 itself. A floor that is too low is worse than none, because a
+# consumer takes it and meets an error from inside the crate anyway.
+rust-version = "1.88"
 description = "A context-lifecycle handler for coding agents: counters, cadenced re-injection, prime sections, and profiles"
 license = "MIT"
 authors = ["Cody Hanson"]
@@ -75,7 +80,10 @@ gix-hash = { version = "0.26", default-features = false, features = ["sha1"] }
 # database. The single-binary rule bans a git process, and note reading
 # needs object decoding, packfile lookup, and the notes fanout, which
 # no file read covers. No network feature is on: every read is local.
-gix = { version = "0.86.0", default-features = false, features = ["revision", "sha1"] }
+# 0.87, not 0.86. gix 0.86 pulls gix-protocol 0.64, which requires
+# bisync, and every published bisync version is yanked, so a consumer
+# cannot resolve this crate. gix-protocol 0.65 dropped it.
+gix = { version = "0.87", default-features = false, features = ["revision", "sha1"] }
 
 # The documentation set. gaff parses its own arguments, so it takes
 # the store half and none of the clap surface.
