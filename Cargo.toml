@@ -100,3 +100,22 @@ codegen-units = 1
 
 [build-dependencies]
 diataxis = { version = "0.1", default-features = false, features = ["build"] }
+
+# `cargo deb` reads this. It produces target/debian/*.deb, which the
+# release attaches to the GitHub release. Installing that file is
+# `dpkg -i`, and it is not an apt repository: `apt-get install gaff`
+# needs a hosted, signed repository that does not exist yet.
+[package.metadata.deb]
+maintainer = "cjohnhanson <cody@codyjhanson.com>"
+section = "utils"
+priority = "optional"
+depends = "$auto"
+extended-description = "A context-lifecycle handler for coding agents"
+assets = [
+    ["target/release/gaff", "usr/bin/", "755"],
+    # The short name ships too, so the rule holds on apt: install under
+    # one name and both commands work.
+    ["target/release/gaffr", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/gaff/README", "644"],
+    ["LICENSE", "usr/share/doc/gaff/LICENSE", "644"],
+]
