@@ -28,8 +28,9 @@ exclude = [
     "tests/release_workflow.rs",
     "tests/review_gate_workflow.rs",
     "tests/common/",
-    # Copies scripts/merge-gate.sh, dropped below.
+    # These run scripts/, dropped below.
     "tests/merge_gate_guard.rs",
+    "tests/prepublish_gate.rs",
     ".tisket/",
     "tisket.yml",
     ".zettel/",
