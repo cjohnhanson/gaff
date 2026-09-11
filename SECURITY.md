@@ -26,10 +26,13 @@ gaff runs from a coding agent's hooks. It refuses a tool call by a
 guard, injects text into a session, holds a stop, and runs the commands
 the user-scoped config declares.
 
-Only the user-scoped config may name a command, and gaff runs no handler
-until a person trusts the repository from their own shell. Cloning a
-repository therefore never runs its code. A guard decides whether an
-agent's tool call proceeds.
+On the hook path, only the user-scoped config may name a command, and
+gaff runs no handler until a person trusts the repository from their
+own shell. A repository's `git:` and `github:` entries name commands
+too, and those run only after a person runs `gaff init --git` or
+`gaff init --github` in that repository. Cloning a repository therefore
+never runs its code. A guard decides whether an agent's tool call
+proceeds.
 
 In scope:
 
