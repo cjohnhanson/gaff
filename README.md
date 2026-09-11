@@ -47,8 +47,10 @@ ends with its opening instructions effectively invisible.
 ## Where config lives
 
 `$HOME/.config/gaff/gaff.yml` holds what you want in every repo.
-`.gaff/gaff.yml` holds what belongs to one repo, and it wins the names
-it shadows. A repo never widens the profiles an agent may grant itself.
+`.gaff/gaff.yml` holds what belongs to one repo. A repo entry under a
+name the user already declared is refused with a warning, and the
+user's entry stands. A repo never widens the profiles an agent may
+grant itself.
 Handlers live only in `$HOME/.config/gaff/handlers.yml`.
 
 ## What gaff is not

@@ -278,8 +278,8 @@ The repo config: reminders, sections, profiles, and cadences.
 It never holds a command.
 .It Pa ~/.config/gaff/gaff.yml
 The same keys, for every repo.
-The repo config lays over it, and a repo entry wins the name it
-shadows.
+A repo entry under a name the user declared is refused with a warning,
+and the user's entry stands.
 The user value of
 .Va transitions
 wins, because a repo must not widen what an agent grants itself.
