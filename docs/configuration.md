@@ -412,10 +412,12 @@ Consent is recorded in `$HOME/.config/gaff/trusted`, outside every repo
 tree, and that file must not be writable by other users. Without
 consent, no handler runs and gaff says so once.
 
-Note the limit of the gate: `gaff trust` refuses a caller whose stdin
-is not a terminal, so an agent cannot grant consent *through gaff*. An
-agent that can write your home directory can still edit the file. The
-gate raises the cost and makes the grant visible. It is not a sandbox.
+Note the limit of the gate. Every command an agent runs passes through
+`gaff hook` first, and a built-in guard there refuses `gaff trust`, so
+an agent cannot grant consent *through gaff*. The command itself tests
+for no terminal, because a human's `!` shell attaches none. An agent
+that can write your home directory can still edit the file. The gate
+raises the cost and makes the grant visible. It is not a sandbox.
 
 `command[0]` must be an absolute path. gaff never searches `PATH`,
 because a repo can prepend its own `bin/` and shadow the binary you
@@ -543,11 +545,11 @@ wants one specific call to go through, without editing the file, runs
 The next call that guard would refuse passes instead, once, with a note
 on stderr saying so. The call after that is refused again.
 
-Two things stand between an agent and its own grant. `gaff allow`
-refuses to run without a terminal on stdin, the same check `gaff trust`
-makes. gaff also carries a built-in guard, which no config declares and
-no config removes, that refuses `gaff allow` and `gaff trust` from any
-Bash call an agent makes. Every agent command passes through `gaff hook`
+One thing stands between an agent and its own grant. gaff carries a
+built-in guard, which no config declares and no config removes, that
+refuses `gaff allow` and `gaff trust` from any Bash call an agent
+makes. Neither command tests for a terminal on stdin, because a human's
+`!` shell attaches none. Every agent command passes through `gaff hook`
 first, and a human's shell has no hook. `!gaff allow` in the harness
 runs in the human's shell.
 
@@ -581,8 +583,8 @@ same guard works on any host with an adapter.
 
 Anywhere a deterministic hook runs, an agent can run instead. `gaff run
 <name>` dispatches a declarative agent and maps its verdict to an exit
-code: 0 admits, 2 refuses. The runtime is a config choice, so gaff names
-no vendor.
+code: 0 admits, 2 refuses. The runtime is a config choice. The default
+runner is `kersh`, a separate program; `runner` names any other.
 
 ```yaml
 agents:
@@ -757,7 +759,7 @@ An adapter maps its host's names onto this set:
 | `prompt` | The user submits a prompt | yes |
 | `tool_call` | One tool call finished; gaff counts these | no |
 | `tool_batch` | A batch of tool calls finished | yes |
-| `stop` | The agent finished a turn | no |
+| `stop` | The agent finished a turn | yes |
 
 A host event outside this set stays first-class. gaff forwards it and
 permits nothing, rather than dropping it.

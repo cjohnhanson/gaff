@@ -84,9 +84,9 @@ the operator trusted with `gaff trust`.
     gaff check --handlers    # validate the handler config
     gaff trust               # a human at a terminal only
 
-`gaff trust` refuses a caller whose stdin is not a terminal, so you
-cannot grant this through gaff. Do not route around it by writing the
-trusted file yourself. The operator decides which repos may run
+The built-in guard in `gaff hook` refuses `gaff trust` from any Bash
+call you make, so you cannot grant this through gaff. Do not route
+around it by writing the trusted file yourself. The operator decides which repos may run
 commands, and a handler's command runs with the repo as its working
 directory.
 

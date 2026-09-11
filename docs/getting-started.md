@@ -18,11 +18,11 @@ Run this from the repo root:
 
     gaff init
 
-The command registers `gaff hook` for five events in
+The command registers `gaff hook` for seven events in
 `.claude/settings.local.json`, a local file that git ignores. The events
-are SessionStart, UserPromptSubmit, PostToolUse, PostToolUseFailure, and
-PostToolBatch. Run `gaff init --uninstall` to remove exactly those
-entries.
+are SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
+PostToolUseFailure, PostToolBatch, and Stop. Run `gaff init --uninstall`
+to remove exactly those entries.
 
 ## Declare what to keep alive
 

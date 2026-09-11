@@ -134,7 +134,7 @@ pub fn prime() -> String {
          From the host's hooks, gaff runs guards on tool calls, injects sections and \
          reminders at session start and on a cadence, and can hold the stop until a \
          reminder clears. Each injected entry opens with a tag, gaff:<name> in square \
-         brackets, on its own line. A refused tool call names its guard. Repo config is \
+         brackets. A refused tool call names its guard. Repo config is \
          .gaff/gaff.yml; user config is $HOME/.config/gaff/gaff.yml.\n\
          Commands:\n\
          \x20 gaff doctor\n\
