@@ -21,8 +21,13 @@ exclude = [
     # generated platform packages each hold a built binary, and one of
     # those reached a crate before this line existed.
     "npm/",
-    # Drives npm/, dropped above, so it cannot run from the tarball.
+    # These drive npm/ and .github/, both dropped, so they cannot run
+    # from the tarball.
     "tests/npm_wrapper_platforms.rs",
+    "tests/npm_generate.rs",
+    "tests/release_workflow.rs",
+    "tests/review_gate_workflow.rs",
+    "tests/common/",
     ".tisket/",
     "tisket.yml",
     ".zettel/",

@@ -15,68 +15,67 @@ const os = require("os");
 // a glibc host alike. One Linux entry serves both, and no probe of the
 // host libc is needed.
 const PLATFORMS = {
-  darwin: {
-    arm64: "@cjohnhanson/gaffr-darwin-arm64/gaff",
-    x64: "@cjohnhanson/gaffr-darwin-x64/gaff",
-  },
-  linux: {
-    arm64: "@cjohnhanson/gaffr-linux-arm64-musl/gaff",
-    x64: "@cjohnhanson/gaffr-linux-x64-musl/gaff",
-  },
+	darwin: {
+		arm64: "@cjohnhanson/gaffr-darwin-arm64/gaff",
+		x64: "@cjohnhanson/gaffr-darwin-x64/gaff",
+	},
+	linux: {
+		arm64: "@cjohnhanson/gaffr-linux-arm64-musl/gaff",
+		x64: "@cjohnhanson/gaffr-linux-x64-musl/gaff",
+	},
 };
 
 const rel = env.GAFFR_BINARY ? null : PLATFORMS?.[platform]?.[arch];
 let bin = env.GAFFR_BINARY || null;
 let unresolved = false;
 if (!bin && rel) {
-  // The platform is built, so a failure here means the package did not
-  // install. That is a different problem from an unsupported platform
-  // and it gets a different message.
-  try {
-    bin = require.resolve(rel);
-  } catch {
-    unresolved = true;
-  }
+	// The platform is built, so a failure here means the package did not
+	// install. That is a different problem from an unsupported platform
+	// and it gets a different message.
+	try {
+		bin = require.resolve(rel);
+	} catch {
+		unresolved = true;
+	}
 }
 
 // An override that does not exist is a reader's typo, not a platform
 // they are stuck on. It gets its own message naming the path.
 if (bin && !existsSync(bin)) {
-  console.error(`GAFFR_BINARY is set to ${bin}, and no file is there.`);
-  process.exitCode = 1;
+	console.error(`GAFFR_BINARY is set to ${bin}, and no file is there.`);
+	process.exitCode = 1;
 } else if (unresolved) {
-  console.error(
-    `gaffr supports ${platform} ${arch}, and its binary package is not ` +
-      "installed. Reinstall, and if the install skipped optional " +
-      "dependencies, allow them."
-  );
-  process.exitCode = 1;
+	console.error(
+		`gaffr supports ${platform} ${arch}, and its binary package is not ` +
+			"installed. Reinstall with `npm install --include=optional`.",
+	);
+	process.exitCode = 1;
 } else if (!bin) {
-  console.error(
-    `gaffr ships no prebuilt binary for ${platform} ${arch}. ` +
-      "Install it with `cargo install gaff`, or set GAFFR_BINARY to a path."
-  );
-  process.exitCode = 1;
+	console.error(
+		`gaffr ships no prebuilt binary for ${platform} ${arch}. ` +
+			"Install it with `cargo install gaff`, or set GAFFR_BINARY to a path.",
+	);
+	process.exitCode = 1;
 } else {
-  const result = spawnSync(bin, process.argv.slice(2), {
-    shell: false,
-    stdio: "inherit",
-  });
-  if (result.error) {
-    // A path that is a directory, or a file without the execute bit,
-    // fails here. Reported raw it is a ten-frame stack trace naming
-    // this file, which tells a reader nothing about their own setup.
-    console.error(`gaffr cannot run ${bin}: ${result.error.message}`);
-    process.exitCode = 1;
-  } else if (result.signal) {
-    // A binary killed by a signal has a null status. Assigning that
-    // null exits 0, so a crash reads as a pass to the git hooks and the
-    // continuous integration that call this. Report it the way a shell
-    // does, as 128 plus the signal number.
-    const number = os.constants.signals[result.signal];
-    console.error(`gaffr: ${bin} was killed by ${result.signal}`);
-    process.exitCode = number ? 128 + number : 1;
-  } else {
-    process.exitCode = result.status;
-  }
+	const result = spawnSync(bin, process.argv.slice(2), {
+		shell: false,
+		stdio: "inherit",
+	});
+	if (result.error) {
+		// A path that is a directory, or a file without the execute bit,
+		// fails here. Reported raw it is a ten-frame stack trace naming
+		// this file, which tells a reader nothing about their own setup.
+		console.error(`gaffr cannot run ${bin}: ${result.error.message}`);
+		process.exitCode = 1;
+	} else if (result.signal) {
+		// A binary killed by a signal has a null status. Assigning that
+		// null exits 0, so a crash reads as a pass to the git hooks and the
+		// continuous integration that call this. Report it the way a shell
+		// does, as 128 plus the signal number.
+		const number = os.constants.signals[result.signal];
+		console.error(`gaffr: ${bin} was killed by ${result.signal}`);
+		process.exitCode = number ? 128 + number : 1;
+	} else {
+		process.exitCode = result.status;
+	}
 }
