@@ -53,7 +53,9 @@ Show the counters, the pending entries, and the one-shots.
 selects the session.
 .It Cm init Oo Fl -host Ar name Oc Op Fl -uninstall
 Register the agent hooks in the host's settings file.
-Claude Code is the only implemented host, and it is the default.
+Two hosts are implemented, Claude Code and
+.Ic generic ;
+Claude Code is the default.
 .It Cm init Fl -git Op Fl -uninstall
 Write one script in
 .Pa .git/hooks
@@ -120,7 +122,9 @@ standard input, and reads a
 or
 .Ql gaff-verdict: fail
 line.
-The runner is a config choice, so gaff names no runtime.
+The runner is a config choice; the default is
+.Nm kersh ,
+a separate program.
 Every failure refuses: a fail verdict, a missing verdict, a non-zero
 runner, a timeout, a failed context, an unknown agent, and an untrusted
 repo all exit 2.
@@ -306,6 +310,7 @@ A batch of tool calls finished.
 A flush point.
 .It Ic stop
 The agent finished a turn.
+A flush point.
 .El
 .Pp
 A host event outside this set stays first-class.

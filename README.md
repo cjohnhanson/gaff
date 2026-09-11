@@ -57,7 +57,8 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
   the matching, the timeouts, and the parallelism there. gaff registers
   as one handler. gaff does dispatch its own git hooks, because git has
   no dispatcher of its own.
-- **Not an enforcement layer.** gaff blocks nothing. It injects context
+- **Not an enforcement layer.** gaff refuses a tool call through a
+  guard and a stop through a hold, and nothing else. It injects context
   only on the events whose output channel is the model's session
   framing. It never decorates a tool result.
 - **Not a way to run repo-declared code.** The repo-level config is
@@ -130,7 +131,8 @@ Every feature and every command listed above is built and runs. Nothing
 is tagged yet, so the config keys and the output formats can still
 change.
 
-Claude Code is the only implemented host adapter. A host declares its
+Two host adapters ship: Claude Code, and `generic`, which reads gaff's
+own normalized field names for a host that speaks them. A host declares its
 payload mapping, its event names, and its settings path in
 `src/adapter.rs`, and nothing else in gaff changes. gaff ships no
 guessed schema for a host nobody has tested.

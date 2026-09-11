@@ -52,9 +52,11 @@ Out of scope:
 ## Known boundaries
 
 Documented limits are not vulnerabilities. `gaff trust` and `gaff allow`
-refuse a caller whose stdin is not a terminal, and neither is a sandbox.
-An agent that can write your home directory can still edit the files
-that record the grant. `gaff docs configuration` states both limits.
+are kept from an agent by the built-in guard in `gaff hook`, which
+refuses both from any Bash call an agent makes; neither command tests
+for a terminal, and neither is a sandbox. An agent that can write your
+home directory can still edit the files that record the grant.
+`gaff docs configuration` states both limits.
 
 `src/config.rs` documents what the section-path confinement covers, in
 the comments on `read_section_body` and `read_confined`. Read those
