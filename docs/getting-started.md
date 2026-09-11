@@ -42,8 +42,9 @@ Create `.gaff/gaff.yml`:
 
 A section is a file under `.gaff/`. gaff injects the whole file at
 session start, and again when its refresh cadence crosses. A reminder is
-one line of text on a cadence. Everything in this file is data, and gaff
-never runs anything a repo declares.
+one line of text on a cadence. Everything a hook reads from this file is
+data; a `git:` or `github:` entry names a command, and that runs only
+after you run `gaff init --git` or `gaff init --github` yourself.
 
 ## Schedule a one-shot from inside a session
 

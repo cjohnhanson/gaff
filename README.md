@@ -61,9 +61,12 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
   guard and a stop through a hold, and nothing else. It injects context
   only on the events whose output channel is the model's session
   framing. It never decorates a tool result.
-- **Not a way to run repo-declared code.** The repo-level config is
-  data: sections, text, and cadences. A handler's command can only be
-  declared in the user-scoped config. Note the limit of that claim. A
+- **Not a way to run repo-declared code from a hook.** On the agent
+  path the repo-level config is data: sections, text, and cadences. A
+  handler's command can only be declared in the user-scoped config. A
+  repo's `git:` and `github:` entries do name commands, and they run
+  only after a human runs `gaff init --git` or `gaff init --github` in
+  that repo. Note the limit of that claim. A
   handler's command still *runs in* the repo's working directory, and
   tools like `git`, `make`, and `just` read executable settings from
   there. Handlers are therefore deny-by-default, and they need
