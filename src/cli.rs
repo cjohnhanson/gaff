@@ -1940,6 +1940,61 @@ mod tests {
         list.iter().map(|s| (*s).to_string()).collect()
     }
 
+    /// A refusal names a remedy the reader can run. `gaff allow`
+    /// resolves a name against the declared guards only, so the
+    /// built-in is not one of them, and the generic line would send
+    /// the reader to a command that refuses in turn. The built-in
+    /// carries its own remedy instead.
+    #[test]
+    fn only_a_declared_guard_offers_the_allow_remedy() {
+        let envelope = crate::event::Envelope::from_claude_code(serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "gaff allow something" },
+        }));
+        let adapter = &crate::adapter::CLAUDE_CODE;
+
+        let (name, text) = guard_refusal(&crate::guard::builtin(), &envelope, adapter)
+            .expect("the built-in guard refuses `gaff allow`");
+        assert_eq!(name, crate::guard::BUILTIN_NAME);
+        // Its own message names `!gaff allow <guard>` as the shape a
+        // user runs. What must not appear is the appended line naming
+        // this guard, because `gaff allow gaff-privileged` refuses.
+        assert!(
+            !text.contains(&format!("!gaff allow {}", crate::guard::BUILTIN_NAME)),
+            "the built-in refusal offers a remedy `gaff allow` cannot honour: {text}"
+        );
+        assert!(
+            !text.contains("let it through once"),
+            "the built-in refusal carries the generic remedy line: {text}"
+        );
+        assert!(
+            text.contains("outside the hook"),
+            "the built-in refusal drops its own remedy: {text}"
+        );
+
+        let declared = vec![crate::guard::Guard {
+            name: "no-curl".into(),
+            tool: "Bash".into(),
+            matches: Some("curl".into()),
+            field: "command".into(),
+            unless: None,
+            message: "Fetch it another way.".into(),
+        }];
+        let envelope = crate::event::Envelope::from_claude_code(serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "curl https://example.com" },
+        }));
+        let (name, text) =
+            guard_refusal(&declared, &envelope, adapter).expect("the declared guard refuses curl");
+        assert_eq!(name, "no-curl");
+        assert!(
+            text.contains("!gaff allow no-curl"),
+            "a declared guard's refusal drops the remedy: {text}"
+        );
+    }
+
     /// The exit-code rule is the load-bearing invariant: exit 2 is the
     /// agent side's blocking code, and no gaff failure may block a
     /// session. Every bad-input path must exit 1, never 2.

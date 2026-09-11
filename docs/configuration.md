@@ -88,8 +88,10 @@ reviews:
 ```
 
 Each name is a review skill the repository carries. gaff records the
-policy and enforces nothing. A separate script reads the list and
-decides whether a change may merge.
+policy and enforces it: `gaff reviews check` reads git's pre-push ref
+lines and refuses a tip that lacks a sign-off for any declared name.
+A repository runs that check from its pre-push hook, and CI runs the
+same check on a pull request.
 
 `gaff reviews` prints one name to a line, in declaration order. A
 script that read this file itself would break when the format changes,
@@ -737,10 +739,13 @@ entry runs nothing and lands green.
 
 For `pre-push`, gaff synthesizes what git would send: `origin` and the
 origin URL as arguments, and one ref line on stdin,
-`refs/heads/<branch> <sha> refs/heads/<branch> <zero-sha>`. The sha is
-HEAD's; the branch is `GITHUB_REF` when it names a branch, else the
-checkout's branch, else `refs/heads/detached`. `GITHUB_SHA` never
-changes what is tested; a mismatch prints a warning.
+`refs/heads/<branch> <sha> refs/heads/<branch> <zero-sha>`. On a pull
+request the sha is the branch head, read from the event payload,
+because the checkout is a merge commit no reviewer read; gaff prints
+which sha the gates see. Otherwise the sha is HEAD's. The branch is
+`GITHUB_REF` when it names a branch, else the checkout's branch, else
+`refs/heads/detached`. `GITHUB_SHA` never changes what is tested; a
+mismatch prints a warning.
 
 The gaff repository publishes a composite action, `cjohnhanson/gaff`,
 that installs a pinned gaff and runs `gaff ci`. A repository that
