@@ -647,10 +647,12 @@ git:
 | `command` | required | The argv, run with the repo as the working directory |
 | `required` | `true` | Stop the hook when this entry fails |
 
-gaff installs these hooks: `pre-commit`, `prepare-commit-msg`,
-`commit-msg`, `post-commit`, `pre-push`, `post-checkout`, `post-merge`,
-and `pre-rebase`. git's own arguments are forwarded to the command, and
-`pre-push` passes its ref list through on stdin.
+`gaff init --git` writes one script in `.git/hooks` for each hook the
+`on` lists name. The hooks gaff knows are `pre-commit`,
+`prepare-commit-msg`, `commit-msg`, `post-commit`, `pre-push`,
+`post-checkout`, `post-merge`, and `pre-rebase`. git's own arguments
+are forwarded to the command, and `pre-push` passes its ref list
+through on stdin.
 
 ### A git hook blocks, and an agent hook does not
 

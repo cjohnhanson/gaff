@@ -20,7 +20,7 @@ set -e
 # edit dropped. Checking both directions is what stops that edit.
 command -v gaff >/dev/null || {
 	echo "merge-gate: gaff is not on PATH, so the review check cannot run." >&2
-	echo "  cargo install --git https://github.com/cjohnhanson/gaff" >&2
+	echo "  cargo install --locked --git https://github.com/cjohnhanson/gaff" >&2
 	exit 1
 }
 required=$(gaff reviews)
@@ -57,7 +57,7 @@ gate_refs=$(cat)
 if [ -z "${MERGE_GATE_SKIP_TESTS:-}" ] || [ -z "${CARGO:-}" ]; then
 	echo "merge-gate: cargo test"
 	# --all-features, because a feature that is off by default is still
-	# shipped code. The gate once built without mcp and never compiled it.
+	# shipped code, and a feature this crate adds later stays covered.
 	# Capture the output. On red, the failing test's name is the first
 	# thing a reader needs, and /dev/null once hid it from the CI log.
 	test_out=$(cargo test --workspace --all-features --quiet 2>&1 </dev/null) || {
@@ -79,6 +79,7 @@ fi
 if [ -d tests/missouri ] && { [ -z "${MERGE_GATE_SKIP_TESTS:-}" ] || [ -z "${CARGO:-}" ]; }; then
 	command -v missouri >/dev/null || {
 		echo "merge-gate: missouri is not on PATH and tests/missouri exists." >&2
+		echo "  cargo install --locked --git https://github.com/cjohnhanson/missouri" >&2
 		exit 1
 	}
 	echo "merge-gate: missouri run"
