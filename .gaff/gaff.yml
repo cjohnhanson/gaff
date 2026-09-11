@@ -5,9 +5,10 @@
 # An absent key means this repo declared no policy, and the check
 # refuses the push. An unknown policy is not an empty one. Write
 # `reviews: []` to require none.
-# Each name is a skill vendored into .agents/skills by almanac, and
-# each is read by one independent agent that sees the change and
-# nothing else. signoff-driver states the procedure and when to stop.
+#
+# Each name is a skill vendored into .agents/skills by almanac, and one
+# independent agent reads the change against it and nothing else.
+# signoff-driver states the procedure and when to stop.
 reviews:
   - review-tests
   - review-docs
@@ -15,12 +16,11 @@ reviews:
   - review-deps
   - review-usability
 
-# Repo-level gaff config. Two entries. The commit gate holds formatted
-# code and a clean clippy on pre-commit. The merge gate holds tests,
-# the missouri suite, and a sign-off for every declared review on
-# pre-push, which
-# is the merge check in a repo that merges by direct push. Installed by
-# `gaff init --git`.
+# Repo-level gaff config. The commit gate holds formatted code and a
+# clean clippy on pre-commit. The merge gate holds tests, the missouri
+# suite, and a sign-off for every declared review on pre-push. `main`
+# is protected and takes no direct push, so the pre-push hook is the
+# local copy of the required CI check. `gaff init --git` installs both.
 git:
   - name: commit-gate
     on:

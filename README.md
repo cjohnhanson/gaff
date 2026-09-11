@@ -4,7 +4,7 @@
 > drifting past.
 
 gaff is a context-lifecycle handler for coding agents. It counts the hook
-events of a session. It re-injects context on a cadence. It delivers
+events of a session and re-injects context on a cadence. It also delivers
 prime sections and advisory profiles.
 
 ## The problem
@@ -19,29 +19,30 @@ ends with its opening instructions effectively invisible.
 
 ## What gaff does
 
-- **Counters** — per-session tallies over the hook events: prompts and
-  tool calls. gaff keeps them in an append-only ledger, and a tool call
-  counts once across its Pre, Post, and failure events.
-- **Cadences** — re-inject a text every N tool calls or prompts. An
-  agent can also schedule a one-shot reminder N tool calls into its own
-  future. gaff re-arms a one-shot after a context compaction.
-- **Prime sections** — the session-start context, split into sections.
+- **Counters.** gaff tallies the prompts and the tool calls of each
+  session in an append-only ledger. A tool call counts once across its
+  Pre, Post, and failure events.
+- **Cadences.** A reminder re-injects its text every N tool calls or
+  prompts. An agent can also schedule a one-shot reminder N tool calls
+  into its own future, and gaff re-arms it after a context compaction.
+- **Prime sections.** The session-start context, split into sections.
   Each section refreshes on its own cadence.
-- **Handlers** — external commands whose output becomes context, on a
-  cadence. They live only in the user-scoped config, and a repo must be
-  trusted with `gaff trust` before any command runs in it.
-- **Guards** — refuse a tool call that matches a regular expression.
-  Declared once at user level, applied in every repo. This is the only
-  feature that blocks, and it blocks on purpose.
-- **Git hooks** — gaff writes the scripts in `.git/hooks/`, and they
-  call back into gaff. One config declares the agent side and the git
-  side. A hook gaff did not write is kept and called first.
-- **GitHub workflows** — generated from the same config, and checked
-  for drift. A check declared once runs in the git hook and in CI.
-- **Profiles** — named overlays that select which entries are active and
-  override their cadences. A transition policy states which profiles an
-  agent may select for itself. Profiles are advisory: gaff blocks
-  nothing.
+- **Handlers.** An external command whose output becomes context, on a
+  cadence. Handlers live only in the user-scoped config, and a repo must
+  be trusted with `gaff trust` before any command runs in it.
+- **Guards.** A guard refuses a tool call that matches a regular
+  expression. Declare one at user level and it applies in every repo.
+  This is the feature that blocks, and it blocks on purpose.
+- **Git hooks.** gaff writes the scripts in `.git/hooks/`, and they call
+  back into gaff. One config declares the agent side and the git side. A
+  hook gaff did not write is kept and called first.
+- **GitHub workflows.** gaff generates them from the same config and
+  checks them for drift. A check declared once runs in the git hook and
+  in CI.
+- **Profiles.** A profile is a named overlay that selects which entries
+  are active and overrides their cadences. A transition policy states
+  which profiles an agent may select for itself. Profiles are advisory,
+  and gaff blocks nothing through them.
 
 ## Where config lives
 
@@ -125,24 +126,21 @@ gaff docs getting-started          # the bundled documentation
 
 ## Status
 
-These parts work: counters deduped by `tool_use_id`, cadence reminders,
-one-shot reminders with a compaction re-arm, prime sections with a
-mid-session refresh, profiles with a transition policy, the injection
-audit trail (`gaff log`), byte-capped injection with attribution
-prefixes, the `init`, `check`, `doctor`, `profile`, and `log` commands,
-and the bundled docs.
+Every feature and every command listed above is built and runs. Nothing
+is tagged yet, so the config keys and the output formats can still
+change.
 
-Claude Code is the only implemented host adapter. The adapter is a
-seam, not a hard-coded path. A host declares its payload mapping, its
-event names, and its settings path in `src/adapter.rs`. Nothing else in
-gaff changes. gaff does not ship a guessed schema for a host
-nobody has tested.
+Claude Code is the only implemented host adapter. A host declares its
+payload mapping, its event names, and its settings path in
+`src/adapter.rs`, and nothing else in gaff changes. gaff ships no
+guessed schema for a host nobody has tested.
 
-A missouri state-graph suite of 15 paths and the cargo unit tests cover
-this. The suite's error-surface path checks that every failure exits 0
-or 1, never the blocking code 2. Exit 2 is reserved for the two places
-that mean it: a guard refusing a tool call, and `gaff githook` relaying
-the failing command's own code.
+A missouri state-graph suite of 28 paths and the cargo unit tests cover
+this. The suite's error-surface path checks that a gaff failure exits 0
+or 1, never the blocking code 2. Exit 2 belongs to a guard that refuses
+a tool call, a stop hook that refuses a stop, `gaff run` reporting an
+agent's refusal, and `gaff githook` relaying the failing command's own
+code.
 
 ## Related
 

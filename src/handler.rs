@@ -2,27 +2,26 @@
 //!
 //! # The threat model
 //!
-//! gaff runs with the agent's full privileges, and a handler's child
-//! runs with the repo as its working directory. That repo may be
-//! hostile. Three boundaries hold this feature together.
+//! gaff runs with the agent's privileges, and a handler's child runs
+//! with the repo as its working directory. That repo may be hostile.
 //!
-//! **A repo must not choose which handlers exist.** The config is read
-//! from `$HOME/.config/gaff/handlers.yml` and nowhere else. gaff does
-//! not consult `GAFF_CONFIG_DIR` or `XDG_CONFIG_HOME` here, because
-//! direnv, mise, a devcontainer, and a committed settings file all let
-//! a repo set an environment variable. An env-selectable config path is
-//! a repo-selectable command.
+//! A repo does not choose which handlers exist. gaff reads the config
+//! from `$HOME/.config/gaff/handlers.yml` and nowhere else. It does not
+//! consult `GAFF_CONFIG_DIR` or `XDG_CONFIG_HOME` here, because direnv,
+//! mise, a devcontainer, and a committed settings file all let a repo
+//! set an environment variable. A config path read from one is a config
+//! path the repo chooses.
 //!
-//! **A repo must not choose what a command resolves to.** `command[0]`
-//! must be an absolute path. gaff never searches `PATH`, so a repo that
+//! A repo does not choose what a command resolves to. `command[0]` must
+//! be an absolute path. gaff never searches `PATH`, so a repo that
 //! prepends its own `bin/` cannot shadow the binary the user named.
 //!
-//! **A repo must not execute merely because a handler ran in it.** This
-//! one cannot be closed: `git status` honors `core.pager` from the
+//! A repo still executes code merely because a handler ran in it, and
+//! gaff cannot close that. `git status` honors `core.pager` from the
 //! repo's own `.git/config`, and `make`, `just`, and `npm` all read
-//! executable settings from the working directory. So handlers are
-//! deny-by-default and need explicit per-repo consent, recorded outside
-//! every repo tree in `$HOME/.config/gaff/trusted`.
+//! executable settings from the working directory. Handlers are
+//! therefore deny-by-default. Consent is per repo, and it is recorded
+//! outside every repo tree in `$HOME/.config/gaff/trusted`.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -51,11 +50,11 @@ const BUDGET_FLUSH_MS: u64 = 500;
 
 /// The environment a child inherits.
 ///
-/// This is an allowlist, not a denylist. A denylist keeps losing the
-/// race: stripping `GIT_CONFIG_GLOBAL` still leaves `GIT_CONFIG_COUNT`,
-/// and every runtime adds another loader variable. A handler that needs
-/// a secret names it in `env_passthrough`, so the grant is explicit and
-/// visible in the config.
+/// This is an allowlist. A denylist cannot stay complete. Stripping
+/// `GIT_CONFIG_GLOBAL` leaves `GIT_CONFIG_COUNT`, and every runtime adds
+/// another loader variable. A handler that needs a secret names it in
+/// `env_passthrough`, so the grant is explicit and visible in the
+/// config.
 pub(crate) const ENV_ALLOWLIST: [&str; 7] =
     ["HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "USER"];
 
@@ -162,14 +161,12 @@ impl Handler {
                     _ => "",
                 };
                 out.push(format!(
-                    "handler `{}`: `{event}` is not a flush point.{hint} The flush points are session_start, prompt, and tool_batch. Any other event delivers its output to the tool result rather than the session framing.",
+                    "handler `{}`: `{event}` is not a flush point.{hint} The flush points are session_start, prompt, tool_batch, and stop. Any other event delivers its output to the tool result rather than the session framing.",
                     self.name
                 ));
             }
         }
-        // A blocking handler is a gate, and a gate that only sometimes
-        // gates is not one. It runs at every stop, so it needs no
-        // cadence and must not be asked for one.
+        // A blocking handler runs at every stop, so it takes no cadence.
         if !self.blocks && self.every.tool_calls.is_none() && self.every.prompts.is_none() {
             out.push(format!(
                 "handler `{}`: no cadence. Without `every`, the command would run on every flush.",
@@ -182,18 +179,16 @@ impl Handler {
                 self.name
             ));
         }
-        // A cadence of zero divides no count, so the handler never arms
-        // and never runs. It reads like a working entry.
-        // Only a stop can be refused. Every other flush point is a
-        // moment that has already happened, so there is nothing to
-        // block, and a handler claiming otherwise reads as a gate that
-        // does not exist.
+        // Only a stop can be refused. Every other flush point reports a
+        // moment that has already passed.
         if self.blocks && !self.events.iter().any(|e| e == "stop") {
             out.push(format!(
                 "handler `{}`: `blocks` applies to the `stop` event, and this handler does not subscribe to it. Only a stop can be refused.",
                 self.name
             ));
         }
+        // A cadence of zero divides no count, so the handler never arms
+        // and never runs. It reads like a working entry.
         if self.every.tool_calls == Some(0) || self.every.prompts == Some(0) {
             out.push(format!(
                 "handler `{}`: a cadence of 0 never fires. Use 1 to run at every flush.",
@@ -538,8 +533,8 @@ fn run_one(
         Ok(c) => c,
         Err(e) => {
             eprintln!("gaff: handler `{}` did not start: {e}", h.name);
-            // A gate gaff cannot run is not a gate. Blocking a stop on
-            // a command that never started would wedge the session.
+            // A stop held on a command that never started would wedge
+            // the session, so a spawn failure does not block.
             return (None, false);
         }
     };
@@ -677,12 +672,12 @@ pub(crate) fn kill_group(pid: u32) {
 
 /// Prepare command output for injection.
 ///
-/// Handler output is untrusted: commit messages and branch names reach
-/// it from a cloned repo. A line that starts with `[gaff:` would forge
-/// an entry in the model's session framing and in `gaff log`, so the
-/// prefix is defused. The result is truncated to `max_bytes` on a char
-/// boundary rather than dropped, because a handler entry carries no
-/// pending marker and a drop would lose it.
+/// Handler output is untrusted. Commit messages and branch names reach
+/// it from a cloned repo, and the token `[gaff:` would forge an entry in
+/// the model's session framing and in `gaff log`. gaff defuses that
+/// token anywhere on a line. The result truncates to `max_bytes` on a
+/// char boundary rather than dropping, because a handler entry carries
+/// no pending marker and a drop would lose it.
 #[must_use]
 pub fn sanitize(raw: &str, max_bytes: usize) -> String {
     let mut out = String::new();
@@ -901,9 +896,9 @@ mod blocking_tests {
 
     #[test]
     fn a_blocking_handler_needs_no_cadence() {
-        // It is a gate, and a gate that only sometimes gates is not
-        // one. Demanding a cadence made `problems` non-empty, which
-        // filtered the handler out and left the gate never running.
+        // A blocking handler runs at every stop. A demand for a cadence
+        // makes `problems` non-empty, which filters the handler out and
+        // leaves the gate never running.
         let h = handler(true, &["stop"], Every::default());
         assert!(h.problems().is_empty(), "{:?}", h.problems());
     }

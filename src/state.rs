@@ -1,18 +1,21 @@
 //! The session state: an append-only ledger, the pending and cursor
 //! files, the one-shots, and the fired markers.
 //!
-//! The layout is flat. A test fixture cannot represent an empty
-//! directory, and every file below takes part in a byte diff.
+//! Every entry is a file, and the layout goes one directory deep. A
+//! test fixture cannot represent an empty directory, and every file
+//! below takes part in a byte diff.
 //!
 //! ```text
 //! <root>/degraded                    marker: config failed to parse
 //! <root>/<session>/ledger.jsonl      one line per counted event
+//! <root>/<session>/ledger.lock       the append lock for the ledger
 //! <root>/<session>/pending-<name>    recurring reminder armed (multiple)
 //! <root>/<session>/cursor-<name>     last flushed multiple
 //! <root>/<session>/oneshot-<id>.json scheduled one-shot
 //! <root>/<session>/fired-<id>        one-shot consumed (O_EXCL claim)
 //! <root>/<session>/profile           the active profile name
 //! <root>/<session>/reprime           marker: re-deliver every section
+//! <root>/<session>/stop-refusals     consecutive stops refused
 //! <root>/<session>/holds/<id>        an armed stop hold (multiple)
 //! <root>/<session>/released/<id>     a profile hold the model released
 //! <root>/<session>/allow/<guard>     a one-shot guard allowance
@@ -418,11 +421,9 @@ impl Store {
 
     /// Hold this session open until the agent says the work is done.
     ///
-    /// The agent-facing stop hook. It is text and nothing else: gaff
-    /// refuses the stop and delivers the text, and the model reading it
-    /// decides whether the work is finished. No command runs, which is
-    /// why an agent may set one at all — `gaff trust` exists precisely
-    /// so an agent cannot schedule command execution for itself.
+    /// A hold is text. gaff refuses the stop and delivers the text, and
+    /// the model decides whether the work is finished. No command runs,
+    /// so an agent may set one for itself.
     ///
     /// # Errors
     /// Returns the IO error when the session directory cannot be
@@ -593,9 +594,8 @@ impl Store {
     /// How many times in a row a hold has refused a stop, after
     /// counting this one.
     ///
-    /// A hold nothing clears would otherwise refuse every stop forever,
-    /// and there is no way out of that from inside the session. The
-    /// count is the escape hatch.
+    /// A hold that nothing clears refuses every stop, and nothing inside
+    /// the session can undo it. This count bounds that.
     #[must_use]
     pub fn record_stop_refusal(&self, session: &str) -> u32 {
         let path = self.session_dir(session).join("stop-refusals");

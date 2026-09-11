@@ -60,10 +60,9 @@ pub struct Config {
     /// The independent reviews a change must pass before it merges.
     /// Each name is a review skill the repo carries.
     ///
-    /// `None` and `Some([])` differ, and the difference is the point.
-    /// `None` means nobody stated a policy, and a gate must refuse
-    /// rather than require nothing. `Some([])` means an author wrote
-    /// `reviews: []` and chose that no review is required.
+    /// `None` means nobody stated a policy, and a gate refuses rather
+    /// than require nothing. `Some([])` means an author wrote
+    /// `reviews: []`, and no review is required.
     #[serde(default)]
     pub reviews: Option<Vec<String>>,
 }
@@ -220,9 +219,8 @@ impl Transitions {
 impl Config {
     /// Apply a profile overlay and return the effective config.
     ///
-    /// An unknown name applies nothing and warns. A typo must never
-    /// silently empty the config, because a silent empty config looks
-    /// exactly like a working one.
+    /// An unknown name applies nothing and warns. An emptied config and
+    /// a working config look the same to a reader.
     ///
     /// The result is the effective config: base entries plus the active
     /// bundle. A bundle entry comes before the base entries of its kind,
@@ -539,24 +537,21 @@ pub struct Section {
 /// when a user section has no user config directory to resolve against.
 pub fn read_section_body(section: &Section, gaff_dir: &Path) -> Result<String, String> {
     let path = section_path(section, gaff_dir)?;
-    // The lexical confinement above is not enough on its own. It reads
-    // the path string, and a symlink is resolved by the filesystem
-    // afterwards. git carries a symlink through a clone, so a committed
-    // `.gaff/notes.md -> ~/.ssh/id_rsa` passed every lexical check and
-    // put the key into the model's context, and a link to `/dev/zero`
-    // wedged every hook event in the session while it ate memory.
+    // The lexical confinement above reads the path string, and the
+    // filesystem resolves a symlink afterwards. git carries a symlink
+    // through a clone, so a committed `.gaff/notes.md -> ~/.ssh/id_rsa`
+    // passes every lexical check, and a link to `/dev/zero` wedges every
+    // hook event in the session.
     //
     // A repo section therefore reads a regular file and nothing else. A
-    // user section may be a link, for the same reason the user config
-    // may: a dotfile manager installs it that way, and anyone who can
-    // write inside `$HOME/.config/gaff` already owns the machine.
-    // A repo section must resolve to a file that is really inside the
-    // repo's `.gaff/`. Testing the last component alone was not enough:
-    // any directory along the way could be a link, and the filesystem
-    // resolves it before the test runs. A committed `.gaff/sub -> /`,
-    // or `.gaff` itself as a link, moved the whole root out of the repo
-    // while the path string stayed clean. The comparison has to be
-    // positional, so both sides are canonicalized.
+    // user section may be a link, because a dotfile manager installs it
+    // that way, and a user who can write inside `$HOME/.config/gaff`
+    // needs no such path.
+    //
+    // A repo section must resolve to a file inside the repo's `.gaff/`.
+    // Any directory on the path can be a link, and the filesystem
+    // resolves it before a test of the last component runs. The
+    // comparison is therefore positional, over two canonical paths.
     if !section.user {
         // `.gaff` itself must be a real directory in the repo. If it is
         // a link, canonicalizing it would follow the link and then
@@ -609,10 +604,10 @@ pub fn read_section_body(section: &Section, gaff_dir: &Path) -> Result<String, S
 fn read_confined(section: &Section, path: &Path, no_follow: bool) -> Result<String, String> {
     // Open once, and answer every question from that one descriptor.
     //
-    // Resolving the path a second time for `metadata` and a third for
-    // the read left two windows in which the name could be swapped for
-    // a link pointing out of the repo. The checks then described a
-    // different file from the one that was read.
+    // A second resolution for `metadata` and a third for the read leave
+    // two windows in which the name can be swapped for a link pointing
+    // out of the repo. The checks would then describe a different file
+    // from the one that was read.
     let mut open = std::fs::OpenOptions::new();
     open.read(true);
     #[cfg(unix)]
@@ -702,16 +697,17 @@ pub struct Every {
     pub prompts: Option<u64>,
 }
 
-/// The outcome of a config load. `Broken` carries the parse error, so
-/// the caller can print a warning. A broken config never does more than
-/// warn.
+/// The outcome of a config load. `Broken` carries the parse error. The
+/// hook path warns on it and continues. `gaff check` and `gaff profile`
+/// exit non-zero on it.
 #[derive(Debug)]
 pub enum Loaded {
     Absent,
     Ok(Config),
-    /// The repo config failed to parse, and the user config stands
-    /// alone. The guards survive, and the state is still degraded, so
-    /// `gaff doctor` must say so.
+    /// The config loaded with a fault gaff worked around. The repo
+    /// config failed to parse and the user config stands alone, or a
+    /// profile carried a removed key. The guards survive, the state is
+    /// degraded, and `gaff doctor` says so.
     Degraded(Config),
     Broken(String),
 }
@@ -754,8 +750,7 @@ pub fn load_layered(cwd: &Path) -> Loaded {
     let user = match user_config_path() {
         None => {
             // No HOME means no user config, and guards live only
-            // there. Every guard is off, and the quietest failure is
-            // the worst one for a rule that blocks.
+            // there. Every guard is off, so gaff says so on stderr.
             eprintln!(
                 "gaff: no HOME, so the user config could not be read. Any guard declared there is not active."
             );
@@ -870,9 +865,7 @@ impl Config {
         // A repo may add a reminder or a section, and it may not take
         // the name of one the user declared. Taking the name replaces
         // the user's text with the repo's under the user's label, and
-        // the model is given no way to tell the two apart. Every other
-        // kind resolves a name collision in the user's favour; these
-        // two were the last exceptions.
+        // the model cannot tell the two apart.
         for r in repo.reminders {
             if user_reminder_names.contains(&r.name) {
                 eprintln!(
@@ -894,11 +887,9 @@ impl Config {
             s.user = false;
             self.sections.push(s);
         }
-        // The names the *user* declared. These were captured before the
-        // repo's entries were merged in. Computing them afterwards
-        // swept up the repo's own names, so a repo profile could not
-        // filter the repo's own entries either and every repo profile
-        // became a silent no-op.
+        // The names the user declared, captured before the repo's
+        // entries merged in. A list computed afterwards holds the repo's
+        // own names, and every repo profile then becomes a no-op.
         let user_entries: Vec<String> = user_reminder_names
             .iter()
             .chain(user_section_names.iter())
@@ -921,13 +912,11 @@ impl Config {
         // replace one the user declared. Both run commands, and the
         // consent a user gave was to their own entry, not to whatever
         // a later pull puts under the same name.
-        // A git entry is a blocking check, and both layers installed
-        // theirs on purpose. Dropping either one silences a check
-        // somebody asked for: dropping the repo's passed a commit the
-        // repo meant to gate, and refusing to run anything blocked
-        // every commit in the clone. So both run, and the name is
-        // reported rather than resolved. Entries are matched by layer
-        // where identity matters, which is `use_git`.
+        // A git entry is a blocking check, and both layers declared
+        // theirs. Dropping either one silences a check somebody asked
+        // for, so both run and a name collision is reported rather than
+        // resolved. Entries are matched by layer where identity
+        // matters, which is `use_git`.
         for entry in repo.git {
             if self.git.iter().any(|u| u.name == entry.name) {
                 eprintln!(
@@ -951,13 +940,11 @@ impl Config {
         // A guard comes from the user config only. A repo cannot add
         // one, and a repo cannot remove one.
         //
-        // Guards are the single blocking feature, and a repo is
-        // untrusted content. A repo-declared guard is a cloned
+        // A repo is untrusted content. A repo-declared guard is a cloned
         // repository deciding which tool calls its reader may make, and
-        // a repo declaring `tool: '.*'` would refuse every call. The
-        // repo's guards are dropped here rather than merged.
-        // The repo's guards were already dropped by `load`. Nothing to
-        // merge here, and nothing to warn about twice.
+        // a repo declaring `tool: '.*'` would refuse every call. `load`
+        // already dropped the repo's guards, so there is nothing to
+        // merge here and nothing to warn about twice.
 
         // A repo may set the cap, but not so low that it silences what
         // the user declared. A cap of one byte drops every user entry
@@ -971,11 +958,9 @@ impl Config {
                 repo.max_inject_bytes
             };
         }
-        // A repo may set its own default profile, and it may not point
-        // at one the user wrote. A user profile such as `quiet` is a
-        // switch the user pulls when they want it; a repo that could
-        // name it as the default would decide when the user's own kill
-        // switch fires.
+        // A repo may set its own default profile, and it may not name a
+        // user profile here. The user decides when their own profile
+        // applies.
         if let Some(name) = repo.default_profile {
             if self.profiles.get(&name).is_some_and(|p| p.user) {
                 eprintln!(
@@ -987,10 +972,8 @@ impl Config {
         }
         if !user_set_transitions {
             // A repo may state a policy where the user stated none, and
-            // it may not name a user profile in it. `agent_may_set` is
-            // the one remaining door onto a user profile: a repo that
-            // could name `quiet` there would let an agent it prompts
-            // fire the user's own kill switch.
+            // it may not name a user profile in it. The user decides
+            // when their own profile applies.
             self.transitions = repo.transitions.map(|mut t| {
                 t.agent_may_set.retain(|name| {
                     let user_owned = self.profiles.get(name).is_some_and(|p| p.user);
@@ -1019,8 +1002,7 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 /// The path must be a regular file. A repo can commit a symlink, and
 /// git carries it through a clone, so a `.gaff/gaff.yml` pointing at
 /// `/dev/zero` would read until the process died, and one pointing at
-/// a FIFO would block every tool call forever. Neither is a refusal,
-/// and both are worse than one.
+/// a FIFO would block every tool call.
 fn read_config_file(path: &Path) -> Result<Option<String>, String> {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return Ok(None);
@@ -1039,11 +1021,10 @@ fn read_config_file(path: &Path) -> Result<Option<String>, String> {
 /// This one follows a symlink, and checks the target. Every mainstream
 /// dotfile manager (home-manager, stow, chezmoi) installs
 /// `$HOME/.config/gaff/gaff.yml` as a link into a managed store, so
-/// refusing a link here disarms the guards for a layout the user did
-/// nothing wrong to have. The threat the refusal answers is a *cloned
-/// repo* aiming gaff at a device or a pipe; anyone who can write inside
-/// `$HOME/.config/gaff` already owns the machine. The regular-file and
-/// size checks still apply, to the target.
+/// refusing a link here disarms the guards for an ordinary layout. The
+/// refusal answers a cloned repo that aims gaff at a device or a pipe,
+/// and a user who can write inside `$HOME/.config/gaff` needs no such
+/// path. The regular-file and size checks still apply, to the target.
 fn read_user_config_file(path: &Path) -> Result<Option<String>, String> {
     let Ok(meta) = std::fs::metadata(path) else {
         return Ok(None);
@@ -1847,8 +1828,8 @@ mod boundary_tests {
 
     #[test]
     fn a_repo_cannot_name_a_user_profile_as_the_default() {
-        // `quiet` is the user's own switch. A repo naming it decides
-        // when the user's kill switch fires.
+        // `quiet` is the user's own profile, so a repo may not name it
+        // as the default.
         let user = user_cfg("profiles:\n  quiet:\n    only: []\n");
         let repo = repo_cfg("default_profile: quiet\n");
         let merged = user.overlaid_with(repo);
