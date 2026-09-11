@@ -4,8 +4,7 @@
 //! gaff names no runtime. It runs the configured context command, feeds
 //! the output to the runner on stdin, reads a verdict marker from the
 //! runner's output, and exits 0 on a pass. Every other outcome exits
-//! [`BLOCK`], so a broken agent, a missing verdict, a runner error, or a
-//! timeout refuses rather than admits.
+//! [`BLOCK`].
 
 use std::io::Read as _;
 use std::path::Path;

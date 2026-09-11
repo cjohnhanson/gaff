@@ -6,9 +6,6 @@
 //! `.gaff/gaff.yml` declares the reviews a change must pass. This
 //! module reads that list. It then reads the note on each pushed tip
 //! and looks for a sign-off naming every declared review.
-//!
-//! This check ran as a shell script in six repositories before gaff
-//! took it. See commit efbfdc4.
 
 /// One pushed ref, as git writes it to a pre-push hook's stdin.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,11 +47,9 @@ pub fn parse_refs(stdin: &str) -> Vec<PushedRef> {
 /// git writes four fields to a pre-push hook. A line with fewer is a
 /// truncated stream, not a push.
 ///
-/// This exists because dropping such a line silently defeated the
-/// guard that reads an empty ref list as a wiring fault. One line
-/// reading `refs/heads/main` parsed to no refs and to non-empty
-/// stdin, so the check reported "nothing to check" and exited 0. A
-/// caller that lost most of the stream then passed the gate.
+/// A dropped line leaves no refs and non-empty stdin, so the check
+/// would report "nothing to check" and exit 0. A caller that lost most
+/// of the stream would then pass the gate.
 #[must_use]
 pub fn truncated_lines(stdin: &str) -> usize {
     stdin
@@ -71,15 +66,14 @@ pub enum Missing {
     Note,
     /// No sign-off line for these declared reviews.
     Reviews(Vec<String>),
-    /// A review signed off as failed. Naming it is the point.
+    /// A review signed off as failed. The fault names it.
     Failed(Vec<String>),
     /// A sign-off names a different commit than the one being pushed.
     WrongCommit { review: String, named: String },
     /// Two sign-off lines for one review. Which one counts is unclear,
     /// so neither does.
     Duplicate(String),
-    /// Evidence under the floor. A script cannot grade evidence. It can
-    /// refuse a keystroke.
+    /// Evidence under the floor.
     ThinEvidence { review: String, words: usize },
     /// A sign-off names too short a sha, or one that is not hex. A
     /// prefix match with no floor accepts a single character, and that
@@ -89,8 +83,8 @@ pub enum Missing {
 
 /// The fewest words of evidence a sign-off may carry.
 ///
-/// A floor, not a judgment. A script cannot tell a real reason from a
-/// plausible one, so it refuses only the case where nobody tried.
+/// A script cannot tell a real reason from a plausible one, so this
+/// check refuses only a sign-off that gives almost no words.
 ///
 /// A test reads this constant and the man page together, so the two
 /// cannot disagree. The page once stated a floor that no test read,
@@ -150,14 +144,12 @@ pub fn parse_signoffs(note: &str) -> Vec<Signoff> {
 /// Every declared review needs one sign-off line that passed, names
 /// this commit, and carries evidence.
 ///
-/// Substring matching was the first design and it is unsound. A note
-/// reading `review-tests: skipped this round` contains the name, and a
-/// note reading `review-tests: FAILED, do not merge` contains it too.
-/// Prose about a review reads exactly like a record of
-/// one, so the line form carries a verdict instead.
+/// Only a line with a verdict counts as a sign-off. A note reading
+/// `review-tests: skipped this round` holds the review name and records
+/// no review, and prose about a review reads like a record of one.
 ///
-/// The commit binding matters most. Without it a sign-off copies
-/// forward onto a later commit nobody read, and nothing says so.
+/// A sign-off names the commit its reviewer read. Without that name it
+/// carries forward onto a later commit.
 ///
 /// An empty policy passes every tip. A repo writing `reviews: []` has
 /// stated that it requires no review. An absent declaration never
@@ -194,9 +186,9 @@ pub fn shortfall(note: Option<&str>, required: &[String], commit: &str) -> Vec<M
             continue;
         }
         // A reviewer writes the short sha git prints, so a prefix
-        // matches. The floor is what makes a prefix mean anything: one
+        // matches. The floor is what makes a prefix mean anything. One
         // hex character matches one commit in sixteen, so a sign-off
-        // reading `PASS 5` signed off any commit starting with `5`.
+        // reading `PASS 5` would name any commit starting with `5`.
         if !is_hex_sha(&s.commit) {
             faults.push(Missing::ShortCommit {
                 review: name.clone(),
@@ -206,8 +198,7 @@ pub fn shortfall(note: Option<&str>, required: &[String], commit: &str) -> Vec<M
         }
         // git accepts an uppercase abbreviation, so a reviewer who
         // pasted one names the right commit. A case-sensitive compare
-        // reported it as a different commit and sent the reader
-        // hunting for a commit that does not exist.
+        // would report it as a different commit.
         if !commit
             .to_ascii_lowercase()
             .starts_with(&s.commit.to_ascii_lowercase())
@@ -251,28 +242,21 @@ pub fn shortfall(note: Option<&str>, required: &[String], commit: &str) -> Vec<M
 /// checks that commit out. No reviewer read it, so a check against it
 /// would refuse every pull request. A reviewer reads the branch head.
 ///
-/// THE ENVIRONMENT REACHES THIS, and the caller decides what that
-/// costs. `GITHUB_ACTIONS`, `GITHUB_EVENT_NAME` and
-/// `GITHUB_EVENT_PATH` are ordinary variables, and nothing here tells
-/// a runner from a shell. Setting all three and writing a payload
-/// file makes this function name any commit the caller likes.
+/// The environment reaches this function. `GITHUB_ACTIONS`,
+/// `GITHUB_EVENT_NAME` and `GITHUB_EVENT_PATH` are ordinary variables,
+/// and nothing here tells a runner from a shell. A caller that sets all
+/// three and writes a payload file makes this function name any commit
+/// it likes. In a runner the variables come from the runner.
 ///
-/// `gaff reviews check` does not call this, so a push cannot be
-/// steered that way. `gaff ci` does, and `gaff ci` pushes nothing, so
-/// the cost of a forged payload is a local run that certifies the
-/// wrong commit. In a runner the variables come from the runner.
+/// Only `gaff ci` calls this, and `gaff ci` pushes nothing, so a forged
+/// payload costs a local run that certifies the wrong commit. The push
+/// path reads no environment, and `gaff reviews check` does not call
+/// this function.
 ///
-/// An earlier version wired this into the push path, and a reviewer
-/// pushed an unreviewed commit past the gate with it against a bare
-/// remote. The lesson kept is narrow: the push path reads no
-/// environment. This function is not the push path.
-///
-/// Only `gaff ci` calls this. It substitutes the sha into the ref line
-/// it synthesizes on the pre-push hook's stdin, so the check reads the
-/// same one line per ref that git sends. One mechanism carries the
-/// head, and `reviews check` takes no flag that names a commit. A flag
-/// would be a second mechanism, and it also had to suppress the
-/// empty-stdin guard to work.
+/// `gaff ci` substitutes the sha into the ref line it synthesizes on the
+/// pre-push hook's stdin, so the check reads the same one line per ref
+/// that git sends. One mechanism carries the head, and `reviews check`
+/// takes no flag that names a commit.
 #[must_use]
 pub fn pull_request_head(env: &dyn Fn(&str) -> Option<String>) -> Option<Result<String, String>> {
     if env("GITHUB_ACTIONS").as_deref() != Some("true")
@@ -317,9 +301,9 @@ pub fn head_sha_from_event(body: &str) -> Option<String> {
 /// Two hex characters make each level, which is git's own split.
 ///
 /// A sha that is not hex gets the flat candidate and no fanout. Every
-/// candidate is then absent from the tree, so the tip is refused. An
-/// earlier version sliced by byte index without checking, and a
-/// multi-byte character on stdin panicked the gate.
+/// candidate is then absent from the tree, so the tip is refused. The
+/// hex test comes first, because a slice by byte index would panic on a
+/// multi-byte character from stdin.
 fn note_paths(sha: &str) -> Vec<String> {
     let mut out = vec![sha.to_string()];
     if !is_hex_sha(sha) {
@@ -354,10 +338,8 @@ pub fn is_hex_sha(s: &str) -> bool {
 /// The first `SHA_FLOOR` characters, for a message.
 ///
 /// Truncates on a character boundary, not a byte index. A sha reaching
-/// a message is not always hex: it arrives on stdin, and a message
-/// naming a bad value is exactly when a reader needs it. Slicing by
-/// byte panicked the gate when a multi-byte character sat across the
-/// cut.
+/// a message is not always hex, because it arrives on stdin, and a
+/// slice by byte panics on a multi-byte character across the cut.
 #[must_use]
 pub fn short(sha: &str) -> &str {
     match sha.char_indices().nth(SHA_FLOOR) {
@@ -435,9 +417,9 @@ pub struct Verdict {
 
 /// Check every pushed tip against the declared reviews.
 ///
-/// `head_override` replaces the pushed refs when a pull request event
-/// supplies one, because the checked-out merge commit is not what a
-/// reviewer read.
+/// The caller supplies the refs. On a pull request `gaff ci` puts the
+/// branch head in them, because the checked-out merge commit is not
+/// what a reviewer read.
 #[must_use]
 pub fn check(cwd: &std::path::Path, refs: &[PushedRef], required: &[String]) -> Vec<Verdict> {
     refs.iter()
@@ -551,8 +533,6 @@ mod tests {
 
     #[test]
     fn a_signoff_naming_another_commit_is_refused() {
-        // Without this a sign-off copies forward onto a commit nobody
-        // read, and nothing says so.
         let other = "0000000000000000000000000000000000000001";
         let note = format!("signoff[fresh-eyes] PASS {other} read it closely enough\n");
         assert_eq!(
@@ -734,8 +714,8 @@ mod tests {
 
     #[test]
     fn a_sha_that_is_not_hex_gets_no_fanout_and_does_not_panic() {
-        // A multi-byte character on stdin panicked the gate, because
-        // the fanout sliced by byte index without checking.
+        // A fanout that sliced by byte index would panic on a
+        // multi-byte character from stdin.
         for bad in ["\u{20ac}abc", "not-a-sha", "", "zz"] {
             let paths = note_paths(bad);
             assert_eq!(paths, vec![bad.to_string()], "`{bad}` gained a fanout");
@@ -786,8 +766,8 @@ mod tests {
 
     #[test]
     fn short_truncates_on_a_character_boundary() {
-        // Slicing by byte panicked the gate when a multi-byte
-        // character sat across the cut at byte 7.
+        // A slice by byte panics on a multi-byte character across the
+        // cut at byte 7.
         assert_eq!(short("abcdef\u{e9}"), "abcdef\u{e9}");
         assert_eq!(short("abcdef\u{e9}ghij"), "abcdef\u{e9}");
         assert_eq!(short("\u{20ac}abc"), "\u{20ac}abc");

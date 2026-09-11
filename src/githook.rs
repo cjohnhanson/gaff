@@ -5,15 +5,15 @@
 //! the config and runs what that hook declares. The logic lives with
 //! gaff, so one config covers the agent domain and the git domain.
 //!
-//! # Two contracts, not one
+//! # How each domain blocks
 //!
-//! The agent domain and the git domain block differently, and the
-//! difference is deliberate.
+//! A git hook blocks. A non-zero exit aborts the commit or the push, so
+//! `gaff githook` returns the failing command's status.
 //!
-//! An agent hook must never block a session, so `gaff hook` exits 0 or
-//! 1 and never 2. A git hook exists *to* block: a non-zero exit aborts
-//! the commit or the push, and that is the point of a `pre-commit`
-//! check. So `gaff githook` returns the failing command's status.
+//! An agent hook blocks only where gaff means to refuse. `gaff hook`
+//! exits 2 for a guard, a hold, or a failed blocking handler. Every
+//! other outcome exits 0 or 1, because no gaff fault may block a
+//! session.
 //!
 //! # Why gaff writes `.git/hooks/` and not `core.hooksPath`
 //!
@@ -130,12 +130,10 @@ const STDIN_HOOKS: &[&str] = &["pre-push"];
 
 /// The script gaff writes for one hook.
 ///
-/// For a hook that receives its work on stdin, the stream is captured
-/// once and both readers are fed from the copy. A stream is consumed by
-/// whoever reads it first: a kept `pre-push.local` that inspected the
-/// ref list left gaff reading an empty stdin, so a protected-branch
-/// guard saw no refs and allowed every push. It failed open, silently,
-/// and only when a kept hook existed.
+/// A hook that receives its work on stdin gets one capture of the
+/// stream, and every reader reads the copy. The first reader spends the
+/// stream, so a kept `pre-push.local` that inspects the ref list would
+/// otherwise leave gaff no refs to check.
 fn script(hook: &str, command: &str) -> String {
     let head = format!(
         "#!/bin/sh\n\
@@ -193,8 +191,7 @@ fn is_ours(path: &Path) -> bool {
 /// git resolves hooks against the *common* directory, not a worktree's
 /// own git dir. A worktree's `.git` file points at
 /// `<common>/worktrees/<name>`, and a hook written there is never run.
-/// It reports as installed and silently does nothing, which is the
-/// worst failure a blocking check can have.
+/// It reports as installed and does nothing.
 #[must_use]
 pub fn hooks_dir(cwd: &Path) -> Option<PathBuf> {
     // Discover the git dir the way git does: walk up from cwd, follow
@@ -245,8 +242,8 @@ pub fn install(cwd: &Path, entries: &[GitHook], command: &str) -> std::io::Resul
     std::fs::create_dir_all(&dir)?;
     let declared = hooks_declared(entries);
     // Check every hook before writing any. A refusal found halfway
-    // through used to leave the repo half-configured, and which half
-    // depended on the order the entries happened to be declared in.
+    // through leaves the repo half-configured, and which half depends
+    // on declaration order.
     let mut blocked = Vec::new();
     for hook in &declared {
         let path = dir.join(hook);
@@ -258,24 +255,18 @@ pub fn install(cwd: &Path, entries: &[GitHook], command: &str) -> std::io::Resul
         }
     }
     if !blocked.is_empty() {
-        // Two foreign hooks and one slot to keep them in. Overwriting
-        // loses the second one for good, so gaff refuses and names the
-        // files involved.
+        // One slot holds one kept hook. gaff refuses a second foreign
+        // hook rather than overwrite it, and names the files.
+        let kept = blocked
+            .iter()
+            .map(|h| format!("{h}.local"))
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(std::io::Error::other(format!(
-            "{} was written by another tool, and {} is already taken. \
-             gaff will not overwrite it, and installed nothing. \
-             Move or merge {}, then run this again.",
+            "{} was written by another tool, and {kept} is already taken. \
+             gaff installed nothing, because an overwrite loses that file. \
+             Move or merge {kept}, then run this again.",
             blocked.join(", "),
-            blocked
-                .iter()
-                .map(|h| format!("{h}.local"))
-                .collect::<Vec<_>>()
-                .join(", "),
-            blocked
-                .iter()
-                .map(|h| format!("{h}.local"))
-                .collect::<Vec<_>>()
-                .join(", "),
         )));
     }
     let mut written = Vec::new();
@@ -293,7 +284,7 @@ pub fn install(cwd: &Path, entries: &[GitHook], command: &str) -> std::io::Resul
             // "calls it first" while that is true is a false report.
             if !is_executable(&kept) {
                 eprintln!(
-                    "gaff: {hook}.local is not executable, so it will not run. Run `chmod +x` on it, or git never ran it either."
+                    "gaff: {hook}.local is not executable, so it does not run. Run `chmod +x` on it. git did not run it either."
                 );
             }
         }
@@ -318,11 +309,10 @@ fn is_executable(_path: &Path) -> bool {
 
 /// Hooks the config declares that are not installed.
 ///
-/// Git hooks never travel with a clone. Every fresh clone of a repo
-/// that declares hooks therefore has none of them, and nothing said so:
-/// `gaff check` passed and every commit skipped every check. This is
-/// the likeliest fail-open of all, because it is the default state of a
-/// new checkout.
+/// Git hooks do not travel with a clone. A fresh clone of a repo that
+/// declares hooks has none of them installed, so every commit skips
+/// every check. This is the default state of a new checkout, so `gaff
+/// check` reports it.
 #[must_use]
 pub fn missing_installs(cwd: &Path, entries: &[GitHook]) -> Vec<String> {
     let Some(dir) = hooks_dir(cwd) else {
@@ -445,8 +435,7 @@ pub fn run(cwd: &Path, entries: &[GitHook], hook: &str, args: &[String]) -> i32 
             false
         })
         .collect();
-    // Report each repeated name once, with its real count. Warning per
-    // extra entry said "two" three times for three entries.
+    // Report each repeated name once, with its real count.
     let mut counts: Vec<(&str, usize)> = Vec::new();
     for entry in &due {
         match counts.iter_mut().find(|(n, _)| *n == entry.name) {
@@ -471,11 +460,10 @@ pub fn run(cwd: &Path, entries: &[GitHook], hook: &str, args: &[String]) -> i32 
     }
     // Read the hook's stdin once, and give every entry its own copy.
     //
-    // Inheriting one descriptor meant the first entry that read the ref
-    // list drained it, and every later entry saw EOF. A second
-    // protected-branch gate then found no refs and allowed the push.
-    // This is the same failure the generated script solves for a kept
-    // hook; it survived between gaff's own entries.
+    // One inherited descriptor lets the first entry drain the ref list,
+    // and every later entry sees EOF. A second protected-branch gate
+    // then finds no refs and allows the push. The generated script
+    // solves the same problem for a kept hook.
     let stdin_bytes = if STDIN_HOOKS.contains(&hook) {
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut buf).ok();
@@ -554,10 +542,8 @@ fn run_due_with_stdin(
             if entry.required {
                 return code;
             }
-            // Keep the first failure's code. Later ones overwrote it,
-            // so the number reported was the last thing to fail rather
-            // than the first thing that broke, which is what a reader
-            // goes and looks at.
+            // Keep the first failure's code. A reader looks at the
+            // first thing that broke.
             if worst == 0 {
                 worst = code;
             }

@@ -1,23 +1,19 @@
 //! The engine that turns an event into context: count, arm, and flush.
 //!
 //! gaff counts any event that carries a counted unit. gaff arms an entry
-//! at count time: it writes a pending marker when a cadence threshold is
-//! crossed. gaff flushes — emits the text — only at a flush point. A
-//! flush point is an event whose context sink is the model's session
-//! framing.
+//! at count time, and writes a pending marker when a cadence threshold
+//! is crossed. gaff emits the text only at a flush point, which is an
+//! event whose context sink is the model's session framing. The flush
+//! points are `session_start`, `prompt`, `tool_batch`, and `stop`.
 //!
 //! `PostToolUse` is not a flush point, whatever its payload says. Its
-//! context lands in the tool result (the qei8 bug class), so a reminder
-//! injected there reads as output from the command that just ran.
+//! context lands in the tool result, so a reminder injected there reads
+//! as output from the command that just ran.
 
 use crate::config::Config;
 use crate::event::{Envelope, Kind};
 use crate::state::Store;
 use std::path::Path;
-
-// The events that deliver the pending context are the flush kinds.
-// `stop` is one of them. Its sink is verified, and it is where every
-// rule of the form "drive the work to done" actually applies.
 
 /// The fixed attribution prefix for an agent-scheduled one-shot.
 const ONESHOT_PREFIX: &str = "[gaff:remind]";
@@ -94,9 +90,8 @@ pub fn handle_with(
                 event: envelope.kind.as_str(),
             })
         }
-        // Stop is the last moment before the model walks away, which
-        // makes it the one point where "is this actually done" can
-        // still change the answer. gaff used to do nothing here.
+        // A stop is the last event of a turn, so context delivered here
+        // still changes what the model does next.
         Kind::Stop | Kind::ToolBatch => flush(&FlushCtx {
             config,
             store,
@@ -264,16 +259,10 @@ enum SectionMode {
     PendingOnly,
 }
 
-/// Deliver the pending context. The sections come first, because they
-/// are the prime text. The recurring reminders follow in config order.
-/// The one-shots come last, sorted by id.
+/// Everything one flush needs.
 ///
-/// gaff consumes an entry only when it emits the entry. An entry that
-/// overflows the byte cap stays pending, and gaff appends the truncation
-/// marker instead.
-/// Everything one flush needs. The reviewer's note applies: derive no
-/// path here. `cwd` and `gaff_dir` can diverge, and running a handler
-/// in the wrong repo is a silent boundary crossing.
+/// `cwd` and `gaff_dir` can diverge, so this struct derives no path.
+/// Running a handler in the wrong repo is a silent boundary crossing.
 struct FlushCtx<'a> {
     config: &'a Config,
     store: &'a Store,
@@ -285,6 +274,9 @@ struct FlushCtx<'a> {
     event: &'a str,
 }
 
+/// Deliver the pending context. Sections come first, because they are
+/// the prime text. Recurring reminders follow in config order, and
+/// one-shots come last, sorted by id.
 fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
     let FlushCtx {
         config,
@@ -366,22 +358,17 @@ fn merge(entries: Vec<Entry>, config: &Config, store: &Store, session: &str) -> 
     ordered.extend(user);
     ordered.extend(repo);
 
-    // Size the payload before consuming anything.
+    // Size the payload before consuming anything. An entry is delivered
+    // whole or held back whole, because a cut into the tail loses text
+    // whose cadence is already spent.
     //
-    // Cutting bytes off the tail to make room for the marker amputated
-    // whichever entry landed last, and that entry's cadence was already
-    // spent, so the rest of its text never arrived on any later flush.
-    // A half-delivered rule can invert its own meaning.
+    // A second selection against a smaller budget is no better. A large
+    // user entry stops fitting, and a repo entry takes the space it
+    // vacates, which is the starvation the ordering prevents.
     //
-    // Re-selecting against a smaller budget is no better: a large user
-    // entry stops fitting, and the space it vacates is taken by the
-    // next entry in line, which is a repo entry. That is the same
-    // starvation the ordering exists to prevent.
-    //
-    // So the selection is made once, and the marker is fitted into what
-    // is left over. If it does not fit, it is omitted rather than
-    // displacing an entry. The overflow is still reported on stderr, so
-    // it is never silent either way.
+    // So the selection runs once. The marker takes what room is left,
+    // and it is omitted rather than displacing an entry. stderr reports
+    // the overflow either way.
     let mut plan = select(&ordered, config.max_inject_bytes);
     let room = config.max_inject_bytes.saturating_sub(plan.used);
     let marker_fits = plan.used == 0 || room >= TRUNCATION_MARKER.len() + SEPARATOR.len();
@@ -455,13 +442,10 @@ fn select(entries: &[Entry], budget: usize) -> Plan {
     let mut used = 0usize;
     let mut user_held_back = false;
     for (index, entry) in entries.iter().enumerate() {
-        // Once a user entry has been held back, the repo layer is
-        // closed. Selection is greedy, so a repo entry would otherwise
-        // be admitted into the space the user's entry could not use —
-        // the same starvation the ordering exists to prevent, reached
-        // in one pass. It also let a repo size an entry to fill the
-        // room the truncation marker needed, removing the model's only
-        // in-band sign that a user rule was missing.
+        // Once a user entry is held back, no repo entry is admitted.
+        // Selection is greedy, so a repo entry would otherwise take the
+        // space the user's entry could not use, and it could size
+        // itself to fill the room the truncation marker needs.
         if user_held_back && !entry.user {
             truncated = true;
             continue;
@@ -783,9 +767,8 @@ mod tests {
     }
 }
 
-/// A regression test. `Config::default()` once set `max_inject_bytes` to
-/// zero, so the no-config path suppressed every flush. The missouri
-/// suite found the bug.
+/// A regression test. A `max_inject_bytes` of zero in `Config::default`
+/// suppresses every flush on the no-config path.
 #[cfg(test)]
 mod regression {
     use super::*;

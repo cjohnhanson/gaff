@@ -24,10 +24,9 @@ A person works in many repos and wants some reminders everywhere. Put
 those in the user config. A repo adds to what the user declared, and it
 never overrides it.
 
-The rule is one sentence: **a repo may add, and it may not take a name
-the user already used.** A clone is untrusted content. If a repo could
-take a user entry's name, it would decide what that entry says while
-keeping the user's label on it.
+A repo may add, and it may not take a name the user already used. A
+clone is untrusted content. A repo that could take a user entry's name
+would decide what that entry says while keeping the user's label on it.
 
 - `reminders`, `sections`, `profiles`, `git`, and `github` merge by
   name. A repo entry under a name the user declared is refused with a
@@ -101,9 +100,9 @@ An absent `reviews:` key and `reviews: []` mean different things:
 | `reviews: []` | exits 0, prints the user's names if any | An author requires none of its own |
 | one or more names | exits 0, prints them | Those reviews are required |
 
-The error matters. A deleted `reviews:` key must not mean "no review is
-required", because a script would then merge an unreviewed change. An
-author who wants no review writes `reviews: []`.
+A deleted `reviews:` key must not mean "no review is required", because
+a script would then merge an unreviewed change. An author who wants no
+review writes `reviews: []`.
 
 A missing config file, an empty file, and a file gaff cannot parse each
 exit 1.
@@ -246,10 +245,8 @@ The harness delivers the output of those events as session framing. gaff
 never decorates PostToolUse. That context attaches to the tool result,
 and the model reads it as tool output.
 
-Stop is the last moment before the model walks away, which makes it the
-one point where "is this actually done" can still change the answer.
-Every rule of the form *drive the work to done* or *check the gate
-before saying shipped* applies exactly there.
+Stop is the last event of a turn, so context delivered there still
+changes what the model does next.
 
 A threshold that crosses on an unsafe event arms the entry. The delivery
 waits for the next safe event. Per flush, gaff merges the sections first,
@@ -261,11 +258,12 @@ appends `[gaff:truncated]`.
 
 ## Refusing a stop
 
-A guard refuses a tool call. A **stop hook** refuses the stop itself.
-Neither is a fault, so the exit-code rule holds: gaff's own failures
+A guard refuses a tool call. A stop hook refuses the stop itself.
+Neither is a fault, so the exit-code rule holds. gaff's own failures
 still exit 0 or 1, and 2 belongs to the places that mean it.
 
-There are two kinds, and the difference is who may run a command.
+There are two kinds of stop hook, and the difference is who may run a
+command.
 
 ### A blocking handler: the condition is a command
 
@@ -280,10 +278,9 @@ handlers:
     command: ["/opt/homebrew/bin/just", "test"]
 ```
 
-A blocking handler takes no `every`: it is a gate, and a gate that only
-sometimes gates is not one. It runs at every stop. Only `stop` accepts
-`blocks`, because every other flush point is a moment that has already
-happened, so there is nothing left to refuse.
+A blocking handler runs at every stop, so it takes no `every`. Only
+`stop` accepts `blocks`, because every other flush point reports a
+moment that has already passed.
 
 This lives in the user config, which is why the command may run at all.
 A repo cannot declare a handler.
@@ -299,9 +296,8 @@ gaff remind --clear --id goal
 
 gaff refuses the stop and delivers the text. The model reads it and
 decides whether the work is done, then releases the hold. Nothing runs,
-which is why an agent may set one: `gaff trust` exists precisely so an
-agent cannot schedule command execution for itself, and a hold needs no
-such right.
+so an agent may set one. `gaff trust` exists so an agent cannot schedule
+command execution for itself, and a hold needs no such right.
 
 A session may hold several times under different ids. The first one
 still held refuses the stop.
@@ -402,11 +398,11 @@ profiles:
 
 ### What runs, and what that costs you
 
-**A handler's command runs with the repo as its working directory.**
-Many ordinary tools read executable settings from there. `git` honors
+A handler's command runs with the repo as its working directory, and
+many ordinary tools read executable settings from there. `git` honors
 `core.pager` and `core.fsmonitor` from `.git/config`. `make`, `just`,
-and `npm` read their own repo files. gaff cannot close that. Handlers
-are therefore **deny-by-default**:
+and `npm` read their own repo files. gaff cannot close that, so handlers
+are deny-by-default:
 
 ```
 gaff trust          # from a terminal, in the repo you want to allow
@@ -425,15 +421,14 @@ gate raises the cost and makes the grant visible. It is not a sandbox.
 because a repo can prepend its own `bin/` and shadow the binary you
 named.
 
-The child's environment is an **allowlist**, not a denylist. The child
-gets `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `TZ`, `USER`, a
-sanitized `PATH`, and the `GAFF_*` variables below. It gets nothing
-else, and that includes your API tokens.
+The child's environment is an allowlist. The child gets `HOME`, `LANG`,
+`LC_ALL`, `LC_CTYPE`, `TERM`, `TZ`, `USER`, a sanitized `PATH`, and the
+`GAFF_*` variables below. It gets nothing else, and that includes your
+API tokens.
 
-A denylist kept losing: stripping `GIT_CONFIG_GLOBAL` still leaves
+A denylist cannot stay complete. Stripping `GIT_CONFIG_GLOBAL` leaves
 `GIT_CONFIG_COUNT`, which does the same job, and every runtime adds
-another loader variable. A handler that genuinely needs a secret names
-it:
+another loader variable. A handler that needs a secret names it:
 
 ```yaml
     env_passthrough: [GITHUB_TOKEN]
@@ -449,19 +444,20 @@ gaff exports `GAFF_EVENT`, `GAFF_SESSION_ID`, `GAFF_HANDLER_NAME`, and
 `GAFF_TIMEOUT_MS`. It never passes the hook payload, which holds the
 user's prompt text.
 
-Handler output is untrusted: commit messages and branch names reach it
-from a cloned repo. gaff drops the characters that render as nothing. These are the control
-codes, the zero-width characters, and the format characters. gaff then
-defuses the token `[gaff:` anywhere on a line. Output cannot pose as a
-section or a reminder, in the session framing or in `gaff log`.
+Handler output is untrusted, because commit messages and branch names
+reach it from a cloned repo. gaff drops the characters that render as
+nothing, which are the control codes, the zero-width characters, and the
+format characters. It then defuses the token `[gaff:` anywhere on a
+line. Output cannot pose as a section or a reminder, in the session
+framing or in `gaff log`.
 
 Output larger than 64 KiB is cut at that point rather than discarded.
 Output that does not fit the flush's byte cap is truncated with a
 marker. A handler's cadence is already spent, so a drop would lose the
 output for good.
 
-`GAFF_HANDLERS=off` disables every handler. It is the switch to reach
-for when a handler wedges a session.
+`GAFF_HANDLERS=off` disables every handler. Use it when a handler wedges
+a session.
 
 ### Cost
 
@@ -470,11 +466,10 @@ at `SessionStart`, 500 ms at every other flush point. A handler that
 misses the budget is skipped. A handler that overruns its deadline is
 killed, along with its process group.
 
-Two separate things are bounded, and both must be: the read, and the
-child. A grandchild that inherits the output pipe holds the read open. A child
-that closes its output and keeps running holds the wait open. Either
-one hangs the session. gaff bounds both, and it kills the process
-group.
+gaff bounds the read and the child separately, and kills the process
+group. A grandchild that inherits the output pipe holds the read open.
+A child that closes its output and keeps running holds the wait open.
+Either one hangs the session.
 
 A cadence counts tool calls and prompts, and a fresh session has
 neither, so a `SessionStart` subscription runs at session start
@@ -536,10 +531,10 @@ does not, and that exact gap let a private key reach a public repo.
 
 ### Letting one call through: `gaff allow`
 
-A guard is config, and nothing at runtime lifts one. That is deliberate:
-an agent that could lift a guard would lift the mass-stage guard. But
-the human sometimes wants one specific call to go through, without
-editing the file. That is `gaff allow`:
+A guard is config, and nothing at runtime lifts one, because an agent
+that could lift a guard would lift the mass-stage guard. A human who
+wants one specific call to go through, without editing the file, runs
+`gaff allow`:
 
 ```
 !gaff allow no-mass-stage
@@ -550,11 +545,11 @@ on stderr saying so. The call after that is refused again.
 
 Two things stand between an agent and its own grant. `gaff allow`
 refuses to run without a terminal on stdin, the same check `gaff trust`
-makes. And gaff carries a built-in guard, which no config declares and
+makes. gaff also carries a built-in guard, which no config declares and
 no config removes, that refuses `gaff allow` and `gaff trust` from any
-Bash call an agent makes. The boundary is structural: every agent
-command passes through `gaff hook` first, and a human's shell has no
-hook. `!gaff allow` in the harness runs in the human's shell.
+Bash call an agent makes. Every agent command passes through `gaff hook`
+first, and a human's shell has no hook. `!gaff allow` in the harness
+runs in the human's shell.
 
 Note the limit, which is the one `gaff trust` carries. `gaff allow`
 records the grant in gaff's state directory. An agent that can write
@@ -565,16 +560,16 @@ raises the cost and makes the grant visible. It is not a sandbox.
 The `!` prefix runs the command in the harness's own shell. That is what
 puts a terminal on stdin and keeps the call out of the hook.
 
-### The one place gaff exits 2
+### A guard exits 2 on purpose
 
-Everywhere else gaff exits 0 or 1, because a gaff *failure* must never
-block a session. A guard is not a failure. It is the operator saying
-"not this call", and exit 2 is the only way the harness hears that.
+A gaff failure exits 0 or 1, because no gaff fault may block a session.
+A guard is not a failure. It is the operator saying "not this call", and
+exit 2 is the only way the harness hears that.
 
 So the rule refines rather than breaks. A guard that matches exits 2 on
 purpose. Every other path still degrades, including a pattern that does
 not compile. A broken guard blocks nothing, and `gaff check` names it,
-because a guard that silently stops working is worse than no guard.
+because nothing else reports a guard that stopped working.
 
 ### Across hosts
 
@@ -804,10 +799,11 @@ prints a warning on stderr, writes a `degraded` marker in the state
 directory, and gaff continues without reminders. Run `gaff doctor` to see
 the degradation.
 
-Three things exit 2 on purpose, and none is a failure:
+A refusal is not a failure, and a refusal exits 2 on purpose. A guard
+refuses a tool call, which is the operator saying "not this call", and
+exit 2 is the only way the harness hears it. A stop hook refuses a stop,
+because the work is not done. `gaff run` reports the refusal of an agent
+it dispatched.
 
-- A **guard** that refuses a tool call. That is the operator saying "not
-  this call", and exit 2 is the only way the harness hears it.
-- A **stop hook** that refuses a stop, because the work is not done.
-- `gaff githook`, which relays the failing command's own exit code. A
-  hook command that exits 2 makes gaff exit 2.
+`gaff githook` is separate. It relays the failing command's own exit
+code, so a hook command that exits 2 makes gaff exit 2.

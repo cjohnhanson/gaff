@@ -16,11 +16,19 @@ set -eu
 TC="${TOOLCHAIN:-1.98.0}"
 fail=0
 say() { printf '  %-46s %s\n' "$1" "$2"; }
+
+# A refusal prints why. Both streams went to /dev/null, so every failure
+# read as a bare FAILS: a full disk and a real packaging fault looked the
+# same, and finding out which meant running the command again by hand.
 run() {
 	label="$1"
 	shift
-	if "$@" >/dev/null 2>&1; then say "$label" ok; else
+	out=$("$@" 2>&1)
+	if [ $? -eq 0 ]; then
+		say "$label" ok
+	else
 		say "$label" FAILS
+		printf '%s\n' "$out" | tail -12 | sed 's/^/      /'
 		fail=1
 	fi
 }

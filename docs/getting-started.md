@@ -7,10 +7,10 @@ type: tutorial
 # Getting started
 
 gaff keeps context alive in a long coding-agent session. Context injected
-at session start decays as the conversation grows. It moves into the
+at session start decays as the conversation grows, and moves into the
 low-attention middle of the model's context window. gaff counts what
-causes that decay. It counts the tool calls and the prompts. It then
-re-injects the important text on a cadence.
+causes that decay, the tool calls and the prompts, and re-injects the
+text you named on a cadence.
 
 ## Install the hooks
 
@@ -41,18 +41,18 @@ Create `.gaff/gaff.yml`:
         text: "Update your working notes before they go stale."
 
 A section is a file under `.gaff/`. gaff injects the whole file at
-session start. gaff injects it again when its refresh cadence crosses. A
-reminder is one line of text on a cadence. Everything in this file is
-data. gaff never runs anything that a repo declares.
+session start, and again when its refresh cadence crosses. A reminder is
+one line of text on a cadence. Everything in this file is data, and gaff
+never runs anything a repo declares.
 
 ## Schedule a one-shot from inside a session
 
-An agent, or you, can reach forward in time:
+An agent, or you, can schedule a reminder for later in the session:
 
     gaff remind "check whether the CI run finished" --after 10
 
 Ten counted tool calls later, the reminder appears at the next safe
-injection point. It carries the prefix `[gaff:remind]`. It fires once. It
+injection point, under the prefix `[gaff:remind]`. It fires once, and it
 re-arms after a context compaction, because the compaction erases what
 the reminder already delivered.
 
