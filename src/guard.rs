@@ -1,21 +1,20 @@
 //! Guards: refuse a tool call that matches a declared pattern.
 //!
-//! # This is the one place gaff exits 2
+//! # A guard exits 2 on purpose
 //!
-//! Everywhere else gaff exits 0 or 1, because a gaff *failure* must
-//! never block a session. A guard is not a failure. It is the operator
-//! saying "not this call", and the harness's only way to hear that is
-//! exit 2 on `PreToolUse`.
+//! A gaff failure exits 0 or 1, because no gaff fault may block a
+//! session. A guard is not a failure. It is the operator saying "not
+//! this call", and the harness's only way to hear that is exit 2 on
+//! `PreToolUse`. A hold, a blocking handler, and `gaff run` refuse the
+//! same way, from their own events.
 //!
 //! So the rule refines rather than breaks. A guard that matches exits
 //! 2 on purpose. Everything else, including a bad pattern, an
 //! unreadable config, and an unknown tool, still degrades to 0.
 //!
-//! A guard replaces a hand-written shell hook. The failure that
-//! prompted this feature was a shell guard whose regex was anchored to
-//! the start of the command, so `cd somewhere && git add -A` passed
-//! through it for months. A declared pattern is easier to read, and it
-//! is testable without a subprocess.
+//! A guard replaces a hand-written shell hook. A declared pattern is
+//! easier to read than a shell regex, and a test exercises it without a
+//! subprocess.
 
 use regex::Regex;
 use serde::Deserialize;
@@ -23,11 +22,9 @@ use serde::Deserialize;
 /// The fields each known tool actually sends.
 ///
 /// A guard matched against a field its tool never sends can never fire,
-/// and it reads exactly like a working rule. The check used to cover
-/// Bash and the file tools only, so every other pairing was blessed:
-/// `Grep` with `command`, `Glob` with `file_path`, `WebFetch` with
-/// `command`. A table covers them all and, unlike the old two-case
-/// test, names the right half of an alternation as the dead one.
+/// and it reads like a working rule. This table gives every tool's
+/// fields, so a check can name the dead half of an alternation such as
+/// `Bash|Read` on `file_path`.
 ///
 /// A tool with no matchable field is listed with an empty slice. A
 /// guard on it can still match every call, which is a legitimate way to
@@ -400,9 +397,9 @@ fn unsatisfiable(pattern: &str) -> Option<String> {
         }
         // `x$y`: nothing follows the end of the text.
         //
-        // An end anchor closing an alternation branch is ordinary and
-        // common — `($|[^a-z])` is exactly how a terminator is
-        // written — so only a literal following the anchor counts.
+        // An end anchor closing an alternation branch is ordinary.
+        // `($|[^a-z])` is how a terminator is written, so only a
+        // literal following the anchor counts.
         if c == '$'
             && !escaped
             && !multiline
@@ -602,14 +599,11 @@ impl Guard {
     /// Things worth saying that do not make the guard invalid.
     ///
     /// Everything decided by inference lives here rather than in
-    /// `problems`. A `problems` entry both fails `gaff check` and makes
-    /// `first_refusal` skip the guard, so a wrong verdict there costs a
-    /// silently disarmed control — the outcome this crate's own rules
-    /// call worse than no guard at all. Three separate heuristics were
-    /// each wrong about some legitimate pattern before this moved.
-    /// `problems` now holds only what is decided from fact: an
-    /// uncompilable regex, an unknown field, a tool that cannot send
-    /// the field named.
+    /// `problems`. A `problems` entry fails `gaff check` and makes
+    /// `first_refusal` skip the guard, so a wrong verdict there disarms
+    /// the guard in silence. `problems` holds only what is decided from
+    /// fact. That is an uncompilable regex, an unknown field, and a tool
+    /// that cannot send the field named.
     #[must_use]
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
@@ -655,7 +649,7 @@ impl Guard {
         }
         // A pattern naming several tools can be live for some and dead
         // for the rest. Name the dead ones, and only when at least one
-        // is live — otherwise `problems` already reported it as fatal.
+        // is live. Otherwise `problems` already reported it as fatal.
         if self.matches.is_none() {
             return out;
         }
@@ -697,20 +691,19 @@ impl Guard {
     }
 }
 
-/// The guards gaff carries itself. No config declares them, and no
-/// config removes them.
-///
-/// The boundary between a gaffed agent and a human shell is that every
-/// agent command passes through `gaff hook` first. So gaff can make its
-/// own privileged commands unrunnable from an agent, structurally: the
-/// human's shell has no hook, the agent's has this one. A terminal check
-/// on the command itself is a second line, not the first.
-///
-/// `gaff trust` grants a repo the right to run commands. `gaff allow`
-/// grants an exception to a guard. Neither is the agent's to grant.
 /// The name of the guard gaff carries itself.
 pub const BUILTIN_NAME: &str = "gaff-privileged";
 
+/// The guards gaff carries itself. No config declares them, and no
+/// config removes them.
+///
+/// Every agent command passes through `gaff hook` first, and a human's
+/// shell has no hook, so this guard makes gaff's own privileged
+/// commands unrunnable from an agent. A terminal check on the command
+/// itself is a second line, not the first.
+///
+/// `gaff trust` grants a repo the right to run commands. `gaff allow`
+/// grants an exception to a guard. Neither is the agent's to grant.
 #[must_use]
 pub fn builtin() -> Vec<Guard> {
     vec![Guard {
@@ -838,11 +831,9 @@ pub fn first_refusal<'a>(
         .filter(|g| g.matches_tool(tool))
         // A guard with no pattern refuses every call to its tool, and a
         // call that omits the field is still a call. Requiring the
-        // field here meant such a guard silently passed anything whose
-        // payload did not carry it, and made a tool that sends no
-        // matchable field impossible to refuse at all. The unit test
-        // asserted on `refuses` directly, one layer below this, so it
-        // passed while the shipped behaviour differed.
+        // field here would pass anything whose payload does not carry
+        // it, and would make a tool that sends no matchable field
+        // impossible to refuse at all.
         .find(|g| {
             field_value(&g.field).map_or_else(
                 || g.matches.is_none() && g.matches_tool(tool),
@@ -990,8 +981,8 @@ mod tests {
 
     #[test]
     fn a_compound_command_is_caught() {
-        // The shell guard this replaces anchored to the start of the
-        // line, so this exact shape passed through it for months.
+        // A pattern anchored to the start of the line misses this
+        // shape.
         let g = git_add_guard();
         assert!(g.refuses("Bash", "cd ~/Projects/x && git add -A && git status"));
         assert!(g.refuses("Bash", "git add -A"));
@@ -1548,8 +1539,8 @@ mod heuristic_tests {
 
     #[test]
     fn subsumption_covers_the_shapes_a_real_guard_has() {
-        // Every one of these was skipped when a `|`, `?`, or `*`
-        // anywhere in the pattern gave up — which is every real guard.
+        // A check that gives up on a `|`, a `?`, or a `*` anywhere in
+        // the pattern skips every one of these, and every real guard.
         for (m, u) in [
             (r"git\s+(add|stage)", "git"),
             (r"git\s+adds?", "git"),

@@ -6,19 +6,17 @@
 //! which events gaff subscribes to, and where `gaff init` writes the
 //! registration.
 //!
-//! Output is a host fact too. A host reads injected context in its own
-//! shape, so the rendering lives here, in `context_output`. Refusals and
-//! holds do not: every host reads exit 2 as a refusal and the child's
-//! stderr as the reason. That is a requirement on the host, not a shape
-//! gaff renders. A host that blocks on some other code, or drops the
-//! child's stderr, would break that contract.
+//! A host reads injected context in its own shape, so `context_output`
+//! renders it here. A refusal has no shape. Every host reads exit 2 as a
+//! refusal and the child's stderr as the reason, and a host that blocks
+//! on another code, or drops the child's stderr, breaks that contract.
 //!
 //! Two adapters ship. Claude Code is the host a person installs against.
 //! The generic host speaks gaff's own normalized vocabulary, for a host
-//! such as an agent runner that calls `gaff hook` itself; it reads only
+//! such as an agent runner that calls `gaff hook` itself. It reads only
 //! gaff's field names, so it is not a guess at a real host's payload.
-//! gaff does not guess a payload shape, because a guessed schema is worse
-//! than an absent one: it fails at run time inside someone's session.
+//! gaff does not guess a payload shape. A guessed schema fails at run
+//! time, inside a live session.
 //!
 //! # Adding an adapter
 //!
@@ -37,9 +35,10 @@ use crate::event::{Envelope, Kind, SCHEMA_VERSION};
 pub struct Adapter {
     /// The name for `--host` and `GAFF_HOST`.
     pub name: &'static str,
-    /// The payload key that carries the event name. The parse reads it,
-    /// and a test builds a sample payload with it, so a second adapter's
-    /// vocabulary is not assumed to be this host's.
+    /// The payload key that carries the event name. Each parse function
+    /// reads its own key as a literal, and a contract test builds a
+    /// sample payload from this field, so a second adapter's vocabulary
+    /// is not assumed to be this host's.
     pub event_key: &'static str,
     /// Whether `gaff init` registers hooks for this host. A host that
     /// calls `gaff hook` directly needs no settings file, so it does not
@@ -48,9 +47,8 @@ pub struct Adapter {
     /// Map a raw hook payload to the normalized envelope.
     pub parse: fn(Value) -> Envelope,
     /// Render injected context to this host's stdout shape. Claude Code
-    /// wraps it in its hook JSON; a generic host gets gaff's own
-    /// normalized shape. This is the output a second host could not read
-    /// while it was hardcoded in the CLI.
+    /// wraps it in its hook JSON, and a generic host gets gaff's own
+    /// normalized shape.
     pub context_output: fn(event: &str, context: &str) -> String,
     /// Recognize this host's payload by its shape. Detection prefers an
     /// explicit name; this is the fallback.
@@ -70,12 +68,9 @@ pub struct Adapter {
     pub hook_events: &'static [&'static str],
     /// Read one tool-input field out of this host's raw payload.
     ///
-    /// A guard names a normalized tool and a field, not a payload
-    /// shape, so the mapping from one to the other belongs to the
-    /// adapter. It was read straight off `tool_input` in the CLI
-    /// instead, which meant a host that nests tool input anywhere else
-    /// would disarm every guard while `check` and `doctor` both
-    /// reported them active.
+    /// A guard names a normalized tool and a field. The mapping from
+    /// that name to a payload key belongs to the adapter, because a
+    /// host may nest its tool input anywhere.
     pub tool_field: fn(&Value, &str) -> Option<String>,
 }
 
@@ -89,8 +84,8 @@ pub const CLAUDE_CODE_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
     // Stop is a flush point and the one event a hold or a blocking
-    // handler refuses. The feature shipped without this line, so gaff
-    // was never called at a stop and every hold sat on disk unread.
+    // handler refuses. Without this line the host never calls gaff at a
+    // stop, and every hold stays on disk unread.
     "Stop",
 ];
 
@@ -124,10 +119,9 @@ pub const GENERIC_EVENTS: &[&str] = &[
 ///
 /// It reads the event from `gaff_event` and the rest from gaff's own
 /// field names, so this is not a guess at any real host's payload. It
-/// does not self-register: a host such as kersh calls `gaff hook` itself
-/// and needs no settings file. It reads exit 2 as a refusal and the
-/// child's stderr as the reason, the same universal contract every host
-/// uses; that is a requirement on the host, not a shape gaff renders.
+/// does not self-register, because a host such as kersh calls `gaff
+/// hook` itself and needs no settings file. Like every host, it reads
+/// exit 2 as a refusal and the child's stderr as the reason.
 pub const GENERIC: Adapter = Adapter {
     name: "generic",
     event_key: "gaff_event",
@@ -166,10 +160,9 @@ fn generic_context_output(event: &str, context: &str) -> String {
 
 /// Claude Code puts the tool input under `tool_input`.
 ///
-/// A field may arrive as a string or as an argv array. Every element of
-/// an array must be a string: dropping the ones that are not and
-/// joining the rest invents a command line the host never sent, and the
-/// invented one does not match, so the guard passes in silence.
+/// A field arrives as a string or as an argv array. Every element of an
+/// array must be a string. A dropped element makes a command line the
+/// host never sent, and a guard does not match that line.
 fn claude_code_tool_field(raw: &Value, field: &str) -> Option<String> {
     match raw.get("tool_input").and_then(|i| i.get(field))? {
         Value::String(s) => Some(s.clone()),
@@ -343,9 +336,8 @@ pub fn detect(explicit: Option<&str>, payload: &Value) -> &'static Adapter {
         if let Some(found) = by_name(name) {
             return found;
         }
-        // Falling back is the safe direction, and doing it in silence
-        // is not. A typo in GAFF_HOST reads as a working setting while
-        // gaff parses somebody else's payload shape.
+        // Say so on stderr. A typo in GAFF_HOST reads as a working
+        // setting while gaff parses another host's payload shape.
         eprintln!(
             "gaff: no adapter named `{name}` (implemented: {}). Detecting the host from the payload instead.",
             ADAPTERS
@@ -459,9 +451,7 @@ mod kind_tests {
         assert!(Kind::SessionStart.is_flush());
         assert!(Kind::Prompt.is_flush());
         assert!(Kind::ToolBatch.is_flush());
-        // Stop is the last moment before the model walks away, and its
-        // sink is verified. It is where every "drive the work to done"
-        // rule actually applies.
+        // Stop is the last event of a turn, and its sink is verified.
         assert!(Kind::Stop.is_flush());
         // A tool call's context rides the tool result, never the framing.
         assert!(!Kind::ToolCall.is_flush());
@@ -487,11 +477,9 @@ mod contract_tests {
     use super::*;
 
     /// Every flush point gaff acts on must be an event the adapter
-    /// subscribes to. The stop hook shipped with `Stop` missing from
-    /// the subscription list, so `gaff init` never registered it, the
-    /// host never called gaff at a stop, and a hold sat on disk unread.
-    /// The unit tests piped a Stop payload straight into the hook, so
-    /// nothing noticed.
+    /// subscribes to. A flush point that is not subscribed is dead on
+    /// that host: `gaff init` never registers it, so the host never
+    /// calls gaff there.
     #[test]
     fn every_flush_point_is_a_subscribed_event() {
         for adapter in ADAPTERS {
@@ -524,9 +512,8 @@ mod contract_tests {
 
     /// Guards gate on `Kind::PreToolCall`, and an unrecognized event
     /// falls through to `Kind::Other`. An adapter whose pre-tool event
-    /// is named differently and never mapped gets zero guards, with
-    /// nothing said. That is a whole feature off on a new host, so the
-    /// mapping is asserted rather than assumed.
+    /// is never mapped gets zero guards and says nothing, so this test
+    /// asserts the mapping.
     #[test]
     fn every_adapter_maps_some_event_to_a_pre_tool_call() {
         for adapter in ADAPTERS {
@@ -547,10 +534,10 @@ mod contract_tests {
         }
     }
 
-    /// A guard names a normalized tool and a field. Reading the payload
-    /// in the CLI instead tied every guard to one host's schema, so a
-    /// second adapter would have disarmed all of them while `check` and
-    /// `doctor` reported them active.
+    /// A guard names a normalized tool and a field, and the adapter maps
+    /// that name onto its host's payload. An adapter that cannot read
+    /// the field disarms every guard while `check` and `doctor` still
+    /// report them active.
     #[test]
     fn every_adapter_can_read_a_tool_field() {
         for adapter in ADAPTERS {
@@ -588,7 +575,7 @@ mod contract_tests {
                 adapter.name
             );
             // A non-string element means the value is not a command
-            // line. Inventing one from the survivors passed the guard.
+            // line, and a line built from the rest passes the guard.
             let mixed = serde_json::json!({"tool_input": {"command": ["git", 7]}});
             assert_eq!((adapter.tool_field)(&mixed, "command"), None);
         }

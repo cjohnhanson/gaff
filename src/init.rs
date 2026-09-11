@@ -2,7 +2,7 @@
 //! config. The write is atomic and idempotent. `gaff init --uninstall`
 //! removes exactly what `gaff init` added, and nothing else.
 //!
-//! gaff owns no dispatch. This module writes ordinary entries into
+//! gaff owns no dispatch here. This module writes ordinary entries into
 //! `.claude/settings.local.json`, a local file that git ignores. The
 //! entries sit beside whatever else the file holds, and gaff keeps every
 //! unknown key. The rewrite writes a temporary file and renames it, so a
@@ -84,9 +84,8 @@ pub fn uninstall_for(
         hooks.retain(|_, entries| {
             if let Value::Array(list) = entries {
                 // Filter the inner hooks array, then drop an entry only
-                // once it is empty. Dropping the whole matcher group
-                // because one hook inside it was gaff's destroyed
-                // another tool's hook that shared the group.
+                // once it is empty. A matcher group may hold another
+                // tool's hook beside gaff's.
                 let mut emptied = Vec::new();
                 for (index, entry) in list.iter_mut().enumerate() {
                     let Some(inner) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
@@ -101,9 +100,8 @@ pub fn uninstall_for(
                         }
                     }
                 }
-                // Drop only what this call emptied. Sweeping every
-                // empty entry took one that arrived empty, which is
-                // the user's however inert it looks.
+                // Drop only what this call emptied. An entry that was
+                // already empty belongs to the user.
                 let before = list.len();
                 let mut index = 0;
                 list.retain(|_| {
@@ -119,8 +117,7 @@ pub fn uninstall_for(
         });
         if hooks.is_empty() {
             // `remove` is `swap_remove` under `preserve_order`, so it
-            // moves the last key into this slot and scrambles the
-            // file gaff just went to trouble to keep in order.
+            // moves the last key into this slot and reorders the file.
             settings.shift_remove("hooks");
         }
         changed
@@ -151,10 +148,9 @@ fn has_command(entry: &Value, command: &str) -> bool {
 ///
 /// A registration may name the binary bare (`gaff hook`), by an
 /// absolute path (`/nix/store/…/bin/gaff hook`), or by a profile link.
-/// Exact string equality treated each as a different hook, so uninstall
-/// left the absolute-path registration in place and reported "already
-/// up to date" while the hook ran twice. Compare the argv tail: the
-/// program's basename plus its arguments.
+/// Exact string equality reads each as a different hook, so the
+/// comparison uses the argv tail, which is the program's basename plus
+/// its arguments.
 fn runs_command(registered: &Value, command: &str) -> bool {
     let Some(reg) = registered.as_str() else {
         return false;
@@ -196,11 +192,9 @@ fn edit_settings(
             ),
         ));
     }
-    // Absent and unreadable are different things, and treating them
-    // alike destroyed settings files. One non-UTF8 byte, or a mode gaff
-    // could not read, made the read fail; gaff then proceeded as though
-    // the repo had no settings, wrote its own map, and renamed over the
-    // user's `permissions` and `model` keys at exit 0.
+    // Absent and unreadable are different. One non-UTF8 byte, or a mode
+    // gaff cannot read, fails the read. gaff refuses such a file, rather
+    // than write a fresh map over the user's own keys.
     let mut settings: Map<String, Value> = match std::fs::read_to_string(&path) {
         // An empty file is a common benign state, not corruption.
         Ok(bytes) if bytes.trim().is_empty() => Map::new(),
@@ -225,9 +219,8 @@ fn edit_settings(
         }
     };
 
-    // Replacing a non-object `hooks` value dropped whatever the user
-    // had there, silently and at exit 0, which contradicts the promise
-    // that gaff keeps every key it does not own.
+    // gaff keeps every key it does not own, so it refuses a non-object
+    // `hooks` value rather than replace what the user put there.
     if settings.get("hooks").is_some_and(|h| !h.is_object()) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -387,10 +380,9 @@ mod preservation_tests {
 
     #[test]
     fn an_unreadable_settings_file_is_never_replaced() {
-        // Treating "cannot read" like "does not exist" made gaff write
-        // its own map over a file it had never seen. One non-UTF8 byte
-        // was enough, and `permissions` — a security control — went
-        // with it, at exit 0.
+        // "cannot read" is not "does not exist". One non-UTF8 byte
+        // fails the read, and a fresh map written over the file would
+        // drop `permissions`, which is a security control.
         let d = scratch("unreadable");
         let path = d.join(".claude/settings.local.json");
         let original: &[u8] = b"{\"permissions\":{\"deny\":[\"x\"]},\"n\":\"caf\xe9\"}";
@@ -421,8 +413,8 @@ mod preservation_tests {
 
     #[test]
     fn uninstall_keeps_a_foreign_hook_that_shares_a_matcher_group() {
-        // Dropping the whole matcher group because one hook inside it
-        // was gaff's destroyed another tool's hook.
+        // A matcher group may hold another tool's hook beside gaff's,
+        // so the group survives until it is empty.
         let d = scratch("shared");
         let path = d.join(".claude/settings.local.json");
         std::fs::write(
@@ -489,9 +481,8 @@ mod link_tests {
 
     #[test]
     fn uninstall_keeps_the_key_order_of_the_rest() {
-        // Under `preserve_order`, `remove` is `swap_remove`: it moves
-        // the last key into the removed slot. That undid the ordering
-        // work on the one path that motivated it.
+        // Under `preserve_order`, `remove` is `swap_remove`, which moves
+        // the last key into the removed slot.
         let d = scratch("order");
         let path = d.join(".claude/settings.local.json");
         std::fs::write(&path, r#"{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6}"#).unwrap();
@@ -511,8 +502,7 @@ mod link_tests {
 
     #[test]
     fn uninstall_keeps_an_entry_that_was_already_empty() {
-        // Sweeping every empty entry took one that arrived that way,
-        // which is the user's however inert it looks.
+        // An entry that was already empty belongs to the user.
         let d = scratch("preempty");
         let path = d.join(".claude/settings.local.json");
         std::fs::write(

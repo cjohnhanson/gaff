@@ -2,13 +2,12 @@
 //!
 //! maturin ties an installed command name to the Cargo bin name, and
 //! refuses a `[project.scripts]` entry beside a binary. A wheel
-//! published as `gaffr` therefore needs a `gaffr` command, or
+//! published as `gaffr` therefore needs a `gaffr` command. Without one,
 //! `uvx gaffr` errors and tells the reader to type
-//! `uvx --from gaffr gaff` forever.
+//! `uvx --from gaffr gaff`.
 //!
-//! This execs `gaff` beside it rather than carrying a second copy.
-//! Both names then work from one install, which is what the naming
-//! scheme asks for.
+//! This execs `gaff` beside it rather than carrying a second copy, so
+//! both names work from one install.
 use std::os::unix::process::CommandExt;
 
 fn main() -> std::process::ExitCode {

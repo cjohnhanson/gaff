@@ -22,9 +22,14 @@ are credited unless you ask otherwise.
 
 ## Scope
 
-gaff runs from a coding agent's hooks. It refuses tool calls by a guard, injects text into a session, holds a stop, and runs commands a repository config declares.
+gaff runs from a coding agent's hooks. It refuses a tool call by a
+guard, injects text into a session, holds a stop, and runs the commands
+the user-scoped config declares.
 
-Running a repository's declared command is the boundary worth attacking. gaff refuses to run handlers until a person trusts the repository, from their own shell, so cloning a repository never runs its code. A guard also decides whether an agent's tool call proceeds.
+Only the user-scoped config may name a command, and gaff runs no handler
+until a person trusts the repository from their own shell. Cloning a
+repository therefore never runs its code. A guard decides whether an
+agent's tool call proceeds.
 
 In scope:
 
@@ -32,7 +37,8 @@ In scope:
   it should be confined to.
 - A fetch reaching a host or a path that no declaration named.
 - Reading untrusted content leading to code execution.
-- A repository's config causing a command to run before a person trusted it.
+- A repository's config causing a command to run, or causing one to run
+  before a person trusted the repository.
 - An agent granting itself a right the trust boundary withholds.
 - A guard that can be evaded by the shape of a command it should refuse.
 
@@ -45,6 +51,11 @@ Out of scope:
 
 ## Known boundaries
 
-Documented limits are not vulnerabilities. `src/confined.rs` carries a
-`# What this does not cover` section in its module documentation. Read
-it before reporting a traversal issue.
+Documented limits are not vulnerabilities. `gaff trust` and `gaff allow`
+refuse a caller whose stdin is not a terminal, and neither is a sandbox.
+An agent that can write your home directory can still edit the files
+that record the grant. `gaff docs configuration` states both limits.
+
+`src/config.rs` documents what the section-path confinement covers, in
+the comments on `read_section_body` and `read_confined`. Read those
+before you report a traversal issue.
