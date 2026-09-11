@@ -154,6 +154,7 @@ code.
 - [almanac](https://github.com/cjohnhanson/almanac) — agent skill index, over pluggable sources
 - [missouri](https://github.com/cjohnhanson/missouri) — end-to-end tests as directed graphs of filesystem states
 - [mdstore](https://github.com/cjohnhanson/mdstore) — the frontmattered markdown library the other three store documents with
+- [kersh](https://github.com/cjohnhanson/kersh) — the declarative agent runner a hook agent calls by default
 
 ## License
 
