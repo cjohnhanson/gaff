@@ -767,6 +767,7 @@ An adapter maps its host's names onto this set:
 |------------|---------|-------------|
 | `session_start` | A session begins or resumes | yes |
 | `prompt` | The user submits a prompt | yes |
+| `pre_tool_call` | A tool call is about to run; a guard runs here, and this is the only event that can refuse a call | no |
 | `tool_call` | One tool call finished; gaff counts these | no |
 | `tool_batch` | A batch of tool calls finished | yes |
 | `stop` | The agent finished a turn | yes |
