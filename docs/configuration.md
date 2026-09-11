@@ -6,8 +6,11 @@ type: reference
 
 # Configuration reference
 
-The repo config lives at `.gaff/gaff.yml`. It holds data only: text, file
-paths, and cadences. gaff executes nothing in it.
+The repo config lives at `.gaff/gaff.yml`. On the hook path it holds
+data only: text, file paths, and cadences, and gaff executes nothing in
+it. Its `git:` and `github:` entries name commands, and those run only
+where a human ran `gaff init --git` or `gaff init --github`; the
+sections on git hooks and GitHub workflows below say how.
 
 ## Where a config lives
 

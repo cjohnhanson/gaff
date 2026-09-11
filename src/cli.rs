@@ -1912,11 +1912,22 @@ fn guard_refusal(
         found
     };
     let hit = crate::guard::first_refusal(guards, tool, &value)?;
+    // The built-in guard's own message carries its remedy, and `gaff
+    // allow` knows no guard by that name, so the generic line would
+    // send the reader to a refusal.
+    let remedy = if hit.name == crate::guard::BUILTIN_NAME {
+        String::new()
+    } else {
+        format!(
+            "\n\nIf the user has approved this specific call, they can run `!gaff allow {}` to let it through once.",
+            hit.name
+        )
+    };
     Some((
         hit.name.clone(),
         format!(
-            "gaff: refused by the guard `{}`.\n\n{}\n\nIf the user has approved this specific call, they can run `!gaff allow {}` to let it through once.",
-            hit.name, hit.message, hit.name
+            "gaff: refused by the guard `{}`.\n\n{}{remedy}",
+            hit.name, hit.message
         ),
     ))
 }
