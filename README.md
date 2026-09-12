@@ -76,40 +76,50 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
 
 ## Install
 
-The package is `gaffr` on PyPI and npm, because `gaff` was taken. The
-command is `gaff` everywhere, and both names install together.
+The command is `gaff`, whichever package you install.
 
-```sh
-cargo install --locked gaff
-brew install cjohnhanson/tap/gaff
-uv tool install gaffr
-npm install -g gaffr
+**[Archives of precompiled binaries are available for macOS and
+Linux.](https://github.com/cjohnhanson/gaff/releases)** The Linux
+binaries are static executables. Each archive holds the binary, its man
+page, the README and the licence. There is no Windows build.
+
+| Package manager | Package | Command |
+| --- | --- | --- |
+| [Homebrew](https://brew.sh) | [cjohnhanson/tap/gaff](https://github.com/cjohnhanson/homebrew-tap) | `brew install cjohnhanson/tap/gaff` |
+| [Cargo](https://doc.rust-lang.org/cargo/) | [gaff](https://crates.io/crates/gaff) | `cargo install --locked gaff` |
+| [uv](https://docs.astral.sh/uv/) | [gaffr](https://pypi.org/project/gaffr/) | `uv tool install gaffr` |
+| [npm](https://www.npmjs.com) | [gaffr](https://www.npmjs.com/package/gaffr) | `npm install -g gaffr` |
+
+On Debian or Ubuntu, download the `.deb` from the [releases
+page](https://github.com/cjohnhanson/gaff/releases) and install it:
+
+```
+wget https://github.com/cjohnhanson/gaff/releases/download/v0.1.4/gaff_0.1.4-1_amd64.deb
+sudo dpkg -i gaff_0.1.4-1_amd64.deb
 ```
 
-`cargo install` builds from source. It needs Rust 1.88 and a C
-compiler. The other three carry a prebuilt binary for macOS and Linux,
-x86-64 and arm64, published by a tagged release.
+To run it once without installing anything:
 
-To build the unreleased `main` branch:
-
-```sh
-cargo install --locked --git https://github.com/cjohnhanson/gaff
 ```
-
-Or run it without installing:
-
-```sh
 uvx gaffr status
 npx gaffr status
 ```
 
-A release also carries prebuilt archives and a `.deb`, on the [releases
-page](https://github.com/cjohnhanson/gaff/releases). Each archive holds
-the binary and the man page. Install a `.deb` with `dpkg -i`: it is a
-file, not a repository, so `apt-get install` does not reach it.
+### Building
 
-Check the install with `gaff --version`, and `gaff doctor` for what is
-live in a clone.
+gaff is written in Rust, so you need a [Rust
+installation](https://www.rust-lang.org/) to compile it. gaff compiles
+with Rust 1.88 or newer. A C compiler is needed as well, which
+`aws-lc-sys` uses for its cryptography.
+
+To build gaff:
+
+```
+git clone https://github.com/cjohnhanson/gaff
+cd gaff
+cargo build --release
+./target/release/gaff --version
+```
 
 ## Using it
 
