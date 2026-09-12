@@ -40,7 +40,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("doctor") => run_doctor(),
         Some("profile") => run_profile(&args[1..]),
         Some("run") => run_run(&args[1..]),
-        Some("trust") => run_trust(),
+        Some("trust") => run_trust(&args[1..]),
         Some("allow") => run_allow(&args[1..]),
         Some("githook") => run_githook(&args[1..]),
         Some("log") => run_log(&args[1..]),
@@ -87,7 +87,7 @@ Commands:
   check            Validate .gaff/gaff.yml
                    (--handlers checks the user config;
                     --github reports a workflow that drifted)
-  trust            Allow handlers to run in this repo (the hook refuses
+  trust            Allow handlers in this directory (the hook refuses
                    it from an agent; run it from your shell)
   allow <guard>    Let the next call that guard would refuse through,
                    once (the hook refuses it from an agent)
@@ -875,7 +875,7 @@ fn run_check(args: &[String]) -> ExitCode {
     }
 }
 
-/// Report the declared handlers and whether this repo is trusted.
+/// Report the declared handlers and whether this directory is trusted.
 fn doctor_handlers() {
     let trusted = std::env::current_dir().is_ok_and(|d| crate::handler::is_trusted(&d));
     match crate::handler::load_checked() {
@@ -883,7 +883,7 @@ fn doctor_handlers() {
         Ok(cfg) if cfg.handlers.is_empty() => println!("handlers: none declared"),
         Ok(cfg) => {
             println!(
-                "handlers: {} declared; this repo is {}",
+                "handlers: {} declared; this directory is {}",
                 cfg.handlers.len(),
                 if trusted {
                     "trusted"
@@ -1425,11 +1425,12 @@ fn run_run(args: &[String]) -> ExitCode {
         );
         return block;
     };
-    // The context command and the runner execute in this repo. A cloned
-    // repo is untrusted, so consent is required, as it is for a handler.
+    // The context command and the runner execute in this directory. A
+    // directory nobody trusted stays untrusted, so consent is required
+    // here, as it is for a handler.
     if !crate::handler::is_trusted(&cwd) {
         eprintln!(
-            "gaff: this repo is not trusted, so `{name}` did not run. Run `gaff trust` from a terminal to allow it."
+            "gaff: this directory is not trusted, so `{name}` did not run. Run `gaff trust` from a terminal to allow it."
         );
         return block;
     }
@@ -1439,25 +1440,58 @@ fn run_run(args: &[String]) -> ExitCode {
 
 /// `gaff trust`
 ///
-/// Record consent for this repo to run handlers. A handler's child runs
-/// with the repo as its working directory, and many ordinary tools read
-/// executable settings from there, so consent is per-repo and explicit.
+/// Record consent for this directory to run handlers. A handler's child
+/// runs with that directory as its working directory, and many ordinary
+/// tools read executable settings from there, so consent is per
+/// directory and explicit.
 /// Only a human may grant it. Every command an agent runs passes
 /// through `gaff hook` first, and the built-in guard there refuses this
 /// command. A human's shell has no hook, so this runs. That includes
 /// the harness's `!` shell, which attaches no tty to stdin, so this
 /// command does not test for a terminal.
-fn run_trust() -> ExitCode {
+fn run_trust(args: &[String]) -> ExitCode {
+    // A consent command must not grant consent because the reader asked
+    // for help. Every argument refuses, and `--help` explains instead.
+    if let Some(first) = args.first() {
+        if matches!(first.as_str(), "--help" | "-h" | "help") {
+            println!("gaff trust");
+            println!();
+            println!("Allow handlers in this directory. Consent is per directory:");
+            println!("the record holds one path, and another directory needs its own");
+            println!("grant. It is recorded in ~/.config/gaff/trusted.");
+            println!();
+            println!("To revoke, remove that directory's line from that file.");
+            println!();
+            println!("Run this from your shell. The built-in guard in `gaff hook`");
+            println!("refuses it from an agent. That raises the cost and makes the");
+            println!("grant visible. It is not a sandbox: an agent that can write");
+            println!("your home directory can still edit the record.");
+            return ExitCode::SUCCESS;
+        }
+        return fail(&format!(
+            "`gaff trust` takes no argument, and got `{first}`. Run `gaff trust --help`."
+        ));
+    }
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
     };
+    // The record holds this directory, not the repository above it, so
+    // the message names the directory. A reader who was told "this
+    // repo" and then read `gaff doctor` at the repository root met two
+    // answers for one state. `trust` returns the path it wrote, so this
+    // prints that path rather than a second guess at it.
     match crate::handler::trust(&cwd) {
-        Ok(true) => {
-            println!("this repo may now run handlers");
+        Ok((true, recorded)) => {
+            println!(
+                "this directory may now run handlers: {}",
+                recorded.display()
+            );
+            println!("consent is per directory. Another directory needs its own `gaff trust`.");
             ExitCode::SUCCESS
         }
-        Ok(false) => {
-            println!("this repo was already trusted");
+        Ok((false, recorded)) => {
+            println!("this directory was already trusted: {}", recorded.display());
+            println!("consent is per directory. Another directory needs its own `gaff trust`.");
             ExitCode::SUCCESS
         }
         Err(e) => fail(&format!("cannot record the consent: {e}")),
@@ -1530,7 +1564,7 @@ fn check_handlers() -> ExitCode {
     }
     let trusted = std::env::current_dir().is_ok_and(|d| crate::handler::is_trusted(&d));
     if !trusted {
-        println!("note: this repo is not trusted, so no handler runs here. Run `gaff trust`.");
+        println!("note: this directory is not trusted, so no handler runs here. Run `gaff trust`.");
     }
     if bad || bad_guards {
         ExitCode::FAILURE

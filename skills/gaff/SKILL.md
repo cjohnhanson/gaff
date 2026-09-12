@@ -78,17 +78,18 @@ agent-settable, ask the operator to add it to
 
 A handler is an external command whose output becomes context on a
 cadence. Handlers are declared only in the operator's user-scoped config at
-`~/.config/gaff/handlers.yml`, never in a repo. They run only in a repo
-the operator trusted with `gaff trust`.
+`~/.config/gaff/handlers.yml`, never in a repo. They run only in a
+directory the operator trusted with `gaff trust`.
 
     gaff check --handlers    # validate the handler config
     gaff trust               # a human at a terminal only
 
-The built-in guard in `gaff hook` refuses `gaff trust` from any Bash
-call you make, so you cannot grant this through gaff. Do not route
-around it by writing the trusted file yourself. The operator decides which repos may run
-commands, and a handler's command runs with the repo as its working
-directory.
+The built-in guard in `gaff hook` refuses `gaff trust`. It reads your
+command as text, so it is a cost and not a boundary. Do not route
+around it, by quoting the subcommand or by writing the trusted file
+yourself. The grant is the operator's to make. The operator decides
+which directories may run commands, and a handler's command inherits
+the working directory gaff was called in.
 
 ## Git hooks
 

@@ -74,6 +74,17 @@ Every line goes in one git note on that commit:
 git notes --ref=reviews add -m '<the lines>' <sha>
 ```
 
+`add` writes the whole note in one call. That is the normal path,
+because one write holds every line. It refuses a commit that already
+carries a note.
+
+To put one more line on a note that exists, use `append`. The `gaff
+reviews check` refusal recommends that command, because it keeps the
+lines already there.
+
+Do not use `add -f`. It replaces the note and drops the lines another
+reviewer wrote.
+
 `.agents/skills/signoff-driver/SKILL.md` has the procedure. As a
 contributor from outside, open the pull request and stop there. The
 maintainer runs the reviews on its head commit and writes the note.

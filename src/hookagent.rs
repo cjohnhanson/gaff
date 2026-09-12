@@ -231,8 +231,9 @@ fn run_capturing(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
     // Clear the environment, then add back only a safe set. The context
-    // command and the runner run in an untrusted repo, and a repo can set
-    // a loader variable or a shadowing PATH entry through direnv or mise.
+    // command and the runner run in a directory nobody trusted, and a
+    // repo can set a loader variable or a shadowing PATH entry through
+    // direnv or mise.
     // This is the boundary a handler's child holds too.
     cmd.env_clear();
     for key in crate::handler::ENV_ALLOWLIST {
