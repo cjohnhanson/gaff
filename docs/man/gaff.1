@@ -14,8 +14,10 @@ manages session context for a coding agent through the harness hook
 system: counters, cadence reminders, one-shot reminders, and prime
 sections.
 A hook exits 0 or 1, so a gaff fault never blocks a session.
-Three things exit otherwise, on purpose: a guard refuses a tool call
-with 2, a stop hold refuses a stop with 2, and
+A guard refuses a tool call with 2, a hold or a blocking handler
+refuses a stop with 2,
+.Cm run
+refuses with 2, and
 .Cm githook
 returns the failing command's own code.
 .Sh COMMANDS
@@ -23,23 +25,37 @@ returns the failing command's own code.
 .It Cm hook
 Handle one hook event from stdin.
 The harness calls this; it is not for interactive use.
-.It Cm remind Ar text Fl -after Ar n
-Schedule a one-shot reminder that fires
+.It Cm remind Ar text Po Fl -after Ar n | Fl -at Cm stop Pc Op Fl -times Ar n
+Schedule a one-shot reminder.
+With
+.Fl -after Ar n
+it fires
 .Ar n
 tool calls ahead.
-.Fl -after
-is required.
+With
+.Fl -at Cm stop
+it fires at the stop and holds the stop open until it is cleared.
+.Fl -times Ar n
+lets the hold go on its own after
+.Ar n
+refused stops; it applies to
+.Fl -at Cm stop
+only.
 .Fl -id Ar id
 names the one-shot; scheduling the same id again re-arms it.
 .Fl -session Ar id
 selects the session; the default comes from the environment.
+.It Cm remind Fl -clear Fl -id Ar id
+Clear the one-shot with that id, and release the hold it carries.
 .It Cm status
 Show the counters, the pending entries, and the one-shots.
 .Fl -session Ar id
 selects the session.
 .It Cm init Oo Fl -host Ar name Oc Op Fl -uninstall
 Register the agent hooks in the host's settings file.
-Claude Code is the only implemented host, and it is the default.
+Two hosts are implemented, Claude Code and
+.Ic generic ;
+Claude Code is the default.
 .It Cm init Fl -git Op Fl -uninstall
 Write one script in
 .Pa .git/hooks
@@ -106,7 +122,9 @@ standard input, and reads a
 or
 .Ql gaff-verdict: fail
 line.
-The runner is a config choice, so gaff names no runtime.
+The runner is a config choice; the default is
+.Nm kersh ,
+a separate program.
 Every failure refuses: a fail verdict, a missing verdict, a non-zero
 runner, a timeout, a failed context, an unknown agent, and an untrusted
 repo all exit 2.
@@ -210,7 +228,7 @@ moves no ref lands no commit.
 The floor on the sha is what makes a prefix mean anything.
 One hex character matches one commit in sixteen, so a sign-off reading
 .Ql PASS 5
-signed off every commit whose sha starts with
+would name every commit whose sha starts with
 .Ql 5 .
 .Pp
 A pull request needs the branch head, because the commit CI checks out
@@ -247,7 +265,7 @@ It outranks the session state and
 Set it to
 .Ql off
 to disable every handler.
-Reach for this when a handler wedges a session.
+Use it when a handler wedges a session.
 .It Ev GAFF_HOST
 The host adapter for
 .Cm gaff hook .
@@ -260,8 +278,8 @@ The repo config: reminders, sections, profiles, and cadences.
 It never holds a command.
 .It Pa ~/.config/gaff/gaff.yml
 The same keys, for every repo.
-The repo config lays over it, and a repo entry wins the name it
-shadows.
+A repo entry under a name the user declared is refused with a warning,
+and the user's entry stands.
 The user value of
 .Va transitions
 wins, because a repo must not widen what an agent grants itself.
@@ -292,6 +310,7 @@ A batch of tool calls finished.
 A flush point.
 .It Ic stop
 The agent finished a turn.
+A flush point.
 .El
 .Pp
 A host event outside this set stays first-class.
@@ -317,22 +336,24 @@ The child's environment is an allowlist, not a denylist, so it receives
 no token unless a handler names one in
 .Va env_passthrough .
 Handlers run in sequence inside one deadline for each flush.
-See
-.Xr gaff-docs 1
-or run
+Run
 .Nm
 .Cm docs configuration
 for the full reference.
 .Sh EXIT STATUS
-An agent command exits 0 or 1, never 2.
+A gaff failure exits 0 or 1, never 2.
 Exit 2 is the agent host's blocking code, and no gaff failure may block
 a session.
 .Pp
+A refusal is not a failure, and a refusal exits 2 on purpose.
+A guard refuses a tool call, a hold or a blocking handler refuses a
+stop, and
+.Cm run
+reports an agent's refusal.
+.Pp
 .Cm githook
-is the exception, and it is deliberate.
-A git hook exists to block, so
-.Cm githook
-returns the exit code of the command that failed.
+returns the exit code of the command that failed, because a git hook
+exists to block.
 .Sh SEE ALSO
 .Xr missouri 1 ,
 .Xr tisket 1

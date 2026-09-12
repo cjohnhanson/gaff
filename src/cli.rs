@@ -1,14 +1,14 @@
 //! The command line surface.
 //!
-//! The exit-code rule: a gaff *failure* exits 0 or 1, never 2. The
-//! agent side treats exit 2 as the blocking code, and no gaff fault
-//! may block a session. This covers a config typo, an unwritable state
-//! directory, and a bad flag.
+//! A gaff failure exits 0 or 1, never 2. The agent side treats exit 2
+//! as the blocking code, and no gaff fault may block a session. A
+//! config typo, an unwritable state directory, and a bad flag each
+//! exit 1.
 //!
-//! Two paths exit otherwise, and both are deliberate. A guard refuses
-//! a tool call with 2, which is the only channel the harness listens
-//! on. `githook` returns the failing command's own code, because a git
-//! hook exists to block a commit.
+//! A refusal is not a failure. A guard refuses a tool call with 2, a
+//! hold or a blocking handler refuses a stop with 2, and `gaff run`
+//! returns 2 for an agent that refuses. `githook` returns the failing
+//! command's own code, because a git hook exists to block a commit.
 //!
 //! This module parses arguments by hand for that reason, because
 //! clap exits 2 on a usage error. It lives in the library rather than
@@ -106,10 +106,9 @@ Options:
   -h, --help       Print this help
   -V, --version    Print the version
 
-A hook exits 0 or 1, so a gaff fault never blocks a session. Three
-things exit otherwise, on purpose: a guard refuses a tool call with 2,
-a goal refuses a stop with 2, and githook returns the failing
-command's own code.";
+A hook exits 0 or 1, so a gaff fault never blocks a session. A guard
+refuses a tool call with 2, a hold refuses a stop with 2, run refuses
+with 2, and githook returns the failing command's own code.";
 
 /// Every command `run` dispatches. The usage test and the prime test
 /// both walk it, so a command that dispatches but is undocumented, or
@@ -135,7 +134,7 @@ pub fn prime() -> String {
          From the host's hooks, gaff runs guards on tool calls, injects sections and \
          reminders at session start and on a cadence, and can hold the stop until a \
          reminder clears. Each injected entry opens with a tag, gaff:<name> in square \
-         brackets, on its own line. A refused tool call names its guard. Repo config is \
+         brackets. A refused tool call names its guard. Repo config is \
          .gaff/gaff.yml; user config is $HOME/.config/gaff/gaff.yml.\n\
          Commands:\n\
          \x20 gaff doctor\n\
@@ -147,9 +146,9 @@ pub fn prime() -> String {
     )
 }
 
-/// How many stops in a row a goal may refuse before gaff gives up on
-/// it. A condition that can never be met would otherwise end the
-/// session's ability to end.
+/// How many stops in a row a hold may refuse before gaff lets the next
+/// one through. A condition that can never be met would otherwise end
+/// the session's ability to end.
 const MAX_STOP_REFUSALS: u32 = 12;
 
 fn fail(msg: &str) -> ExitCode {
@@ -203,11 +202,9 @@ fn run_hook(args: &[String]) -> ExitCode {
         Loaded::Ok(cfg) | Loaded::Degraded(cfg) => cfg,
         Loaded::Absent => config::Config::default(),
         Loaded::Broken(err) => {
-            // Guards live only in the user config, so a schema error
-            // anywhere in that file — in a section with nothing to do
-            // with guards — turns off every refusal. Saying "continuing
-            // without reminders" named the wrong subsystem and read
-            // like a cosmetic degradation.
+            // Guards live only in the user config. A schema error
+            // anywhere in that file turns off every refusal, even where
+            // the error is in a section that guards do not use.
             eprintln!(
                 "gaff: {err}. Continuing without reminders, and any guard declared there is NOT active."
             );
@@ -215,8 +212,7 @@ fn run_hook(args: &[String]) -> ExitCode {
         }
     };
 
-    // A guard is the one thing that may exit 2, and the base guards run
-    // first.
+    // The base guards run first.
     //
     // The base guards need only the envelope and the config. The built-ins
     // come first and no config drops them, then the user's base guards.
@@ -284,9 +280,8 @@ fn run_hook(args: &[String]) -> ExitCode {
 
     let handlers = crate::handler::load(profile.as_deref()).handlers;
 
-    // Stop is the last moment before the model walks away, so it is the
-    // one flush point that is a decision rather than a moment, and the
-    // one that can still be refused.
+    // Stop is the last flush point, and the only one that can be
+    // refused.
     if envelope.kind == crate::event::Kind::Stop
         && let Some(sid) = session.as_deref()
     {
@@ -312,14 +307,6 @@ fn run_hook(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Whether anything refuses this stop, and the code to exit with.
-///
-/// Two things can: a handler the user configured with `blocks: true`,
-/// whose command decides, and a hold the session set for itself, which
-/// is text the model judges. The first runs a command and lives in the
-/// user config, which is why it may run at all. The second runs nothing,
-/// which is why an agent may set one — `gaff trust` exists so an agent
-/// cannot schedule command execution for itself.
 /// Materialize the active bundle's stop rule as a hold, once per
 /// session. Materializing at stop time, not at session start, keeps a
 /// compaction or a resume from re-arming a hold the model released, and
@@ -342,6 +329,12 @@ fn materialize_profile_hold(
     }
 }
 
+/// Whether anything refuses this stop, and the code to exit with.
+///
+/// A handler the user configured with `blocks: true` decides by running
+/// a command, and it lives in the user config, which is why it may run
+/// at all. A hold the session set for itself is text the model judges,
+/// and it runs nothing, which is why an agent may set one.
 fn refuse_stop(
     handlers: &[crate::handler::Handler],
     store: &Store,
@@ -481,9 +474,10 @@ fn parse_remind(args: &[String]) -> Result<RemindArgs, String> {
     Ok(r)
 }
 
-/// `gaff remind <text> --after <N> [--id <id>] [--session <sid>]`
+/// `gaff remind <text> (--after <N> | --at stop) [--times <N>] [--id <id>] [--session <sid>]`
+/// and `gaff remind --clear --id <id>`.
 ///
-/// Schedule a one-shot reminder N tool calls into the session's future.
+/// Schedule a one-shot reminder N tool calls ahead, or at the stop.
 fn run_remind(args: &[String]) -> ExitCode {
     let RemindArgs {
         text,
@@ -513,7 +507,7 @@ fn run_remind(args: &[String]) -> ExitCode {
 
     let Some(text) = text else {
         return fail(
-            "usage: gaff remind <text> (--after <N> | --at stop) [--id <id>] [--session <sid>]",
+            "usage: gaff remind <text> (--after <N> | --at stop) [--times <N>] [--id <id>] [--session <sid>]",
         );
     };
 
@@ -673,8 +667,6 @@ fn run_init(args: &[String]) -> ExitCode {
     }
 }
 
-/// `gaff check` — validate `.gaff/gaff.yml`. Exit 1 for an invalid
-/// config. This command is the one place where a loud failure is correct.
 /// Validate a config's reminders and sections.
 ///
 /// Split out of `run_check` so each half stays readable. Every problem
@@ -760,12 +752,13 @@ fn entry_problems(cfg: &config::Config, cwd: &std::path::Path) -> Vec<String> {
         }
     }
 
-    // A guard with a pattern that does not compile blocks nothing, and
-    // silence there is the worst outcome: the operator believes a rule
-    // is enforced when it is not.
     problems
 }
 
+/// `gaff check` — validate `.gaff/gaff.yml`. Exit 1 for an invalid
+/// config. This command is the one place where a loud failure is
+/// correct. It also collects the guard problems, because a pattern that
+/// does not compile blocks nothing and reports nothing.
 fn run_check(args: &[String]) -> ExitCode {
     if args.iter().any(|a| a == "--handlers") {
         return check_handlers();
@@ -816,13 +809,9 @@ fn run_check(args: &[String]) -> ExitCode {
     // config the operator must fix, not a runtime that degrades.
     problems.extend(config::legacy_key_problems(&cwd));
 
-    // Git hooks never travel with a clone, so a fresh checkout of a
-    // repo that declares them has none installed. Nothing said so, and
-    // every commit skipped every check while check passed.
-    // `check` already reports a git hook that is declared but not
-    // installed, which sets the expectation that it covers install
-    // drift generally. A CI job running plain `check` was missing a
-    // hand-edited or orphaned workflow.
+    // `check` reports install drift for a workflow as well as for a git
+    // hook. A generated workflow can be hand-edited or orphaned, and a
+    // CI job that runs plain `check` must see that.
     for wf in &cfg.github {
         match crate::ghworkflow::drift(wf, &cfg.git, &cwd) {
             crate::ghworkflow::Drift::Match => {}
@@ -886,8 +875,7 @@ fn run_check(args: &[String]) -> ExitCode {
     }
 }
 
-/// `gaff doctor` — report what is live in this clone. This command
-/// always exits 0. It reports a problem; it never becomes one.
+/// Report the declared handlers and whether this repo is trusted.
 fn doctor_handlers() {
     let trusted = std::env::current_dir().is_ok_and(|d| crate::handler::is_trusted(&d));
     match crate::handler::load_checked() {
@@ -915,6 +903,8 @@ fn doctor_handlers() {
     }
 }
 
+/// `gaff doctor` — report what is live in this clone. This command
+/// always exits 0, so it never blocks a session.
 fn run_doctor() -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
@@ -955,12 +945,9 @@ fn run_doctor() -> ExitCode {
 /// Problems where one part of the config names another part that does
 /// not exist, or names the same thing twice.
 ///
-/// Each of these is a rule that never fires, and each was accepted
-/// silently before.
+/// Each of these is a rule that never fires.
 fn cross_reference_problems(cfg: &config::Config) -> Vec<String> {
     let mut problems = Vec::new();
-    // A name that points at nothing is a rule that never fires. Every
-    // one of these was accepted silently before.
     let entry_names: Vec<&String> = cfg
         .reminders
         .iter()
@@ -1066,11 +1053,9 @@ fn cross_reference_problems(cfg: &config::Config) -> Vec<String> {
 
 /// Report where gaff is registered, across every scope the host merges.
 ///
-/// A substring search of one file answered this before, so gaff read as
-/// unregistered whenever it was registered at the user scope, and the
-/// remedy it printed would have registered it a second time. It also
-/// read a file that merely mentioned the command, including one that
-/// banned it, as a registration.
+/// Read every scope, and read the JSON structure. A file that only
+/// mentions the command is not a registration, and a registration at
+/// the user scope counts.
 fn doctor_hooks(cwd: &std::path::Path) {
     // Only a self-registering host has hooks to report. A generic host
     // calls gaff directly and has no settings file, so reporting it as
@@ -1193,10 +1178,9 @@ fn registered_events(path: &std::path::Path) -> Vec<String> {
 
 /// Report whether guards are live.
 ///
-/// A guard that silently stops working is worse than no guard, and the
-/// ways it can stop are quiet: an unreadable user config, a typo in it,
-/// or a pattern that does not compile. This is the command that answers
-/// "is my refusal actually armed".
+/// A guard stops working quietly. An unreadable user config, a typo,
+/// and a pattern that does not compile each disarm it, and nothing else
+/// reports that.
 fn doctor_guards(loaded: &Loaded) {
     let (Loaded::Ok(cfg) | Loaded::Degraded(cfg)) = loaded else {
         println!("guards:  NONE ACTIVE — the config did not load");
@@ -1219,23 +1203,24 @@ fn doctor_guards(loaded: &Loaded) {
     }
 }
 
-/// `gaff docs [topic]` — print the bundled documentation.
 fn run_docs(args: &[String]) -> ExitCode {
-    args.first().map(String::as_str).map_or_else(
-        || {
+    let set = docs::set();
+    match diataxis::docs::request_from_args(args) {
+        // The listing carries gaff's own header, which names the
+        // command a reader types next.
+        Ok(diataxis::Request::List) => {
             print!("{}", docs::listing());
             ExitCode::SUCCESS
+        }
+        Ok(request) => match set.render(request) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&format!("{e}\n{}", docs::listing())),
         },
-        |name| {
-            docs::topic(name).map_or_else(
-                || fail(&format!("unknown topic `{name}`\n{}", docs::listing())),
-                |body| {
-                    print!("{body}");
-                    ExitCode::SUCCESS
-                },
-            )
-        },
-    )
+        Err(e) => fail(&format!("{e}\n{}", docs::listing())),
+    }
 }
 
 /// `gaff profile [show|list|set <name>] [--session <sid>]`
@@ -1457,12 +1442,11 @@ fn run_run(args: &[String]) -> ExitCode {
 /// Record consent for this repo to run handlers. A handler's child runs
 /// with the repo as its working directory, and many ordinary tools read
 /// executable settings from there, so consent is per-repo and explicit.
-/// Only a human may grant it. The boundary is structural, not a
-/// terminal check: every command an agent runs passes through `gaff
-/// hook` first, and the built-in guard there refuses this command. The
-/// human's shell — including the harness's `!` shell, which attaches
-/// no tty to stdin — has no hook, so this runs. A terminal check here
-/// blocked exactly the channel it was meant to admit.
+/// Only a human may grant it. Every command an agent runs passes
+/// through `gaff hook` first, and the built-in guard there refuses this
+/// command. A human's shell has no hook, so this runs. That includes
+/// the harness's `!` shell, which attaches no tty to stdin, so this
+/// command does not test for a terminal.
 fn run_trust() -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
         return fail("cannot resolve the working directory");
@@ -1486,9 +1470,9 @@ fn run_trust() -> ExitCode {
 /// behaves the same in CI as it does locally.
 fn check_handlers() -> ExitCode {
     let mut bad_guards = false;
-    // Guards live only in the user config, and this is the subcommand
-    // that reads it. Reporting handlers alone left the one blocking
-    // feature unvalidated by the command documented to check it.
+    // Guards live only in the user config, so this subcommand validates
+    // them alongside the handlers. `gaff check` reads them too, over
+    // the merged config.
     match config::user_config_path().map(|p| config::load_user(&p)) {
         Some(Err(e)) => {
             eprintln!("gaff: {e}");
@@ -1699,11 +1683,9 @@ fn check_github() -> ExitCode {
         }
         return ExitCode::FAILURE;
     }
-    // The orphan scan runs even when nothing is declared. Returning
-    // early here meant deleting the *last* workflow left its generated
-    // file on disk and running in CI, while this command reported a
-    // clean tree — the exact failure the orphan check exists to catch,
-    // reached by deleting rather than renaming.
+    // The orphan scan runs even when the config declares no workflow.
+    // Deleting the last declaration leaves its generated file on disk,
+    // and that file keeps running in CI.
     let mut drifted = false;
     if cfg.github.is_empty() {
         let orphans = crate::ghworkflow::orphans(&cwd, &cfg.github);
@@ -1743,12 +1725,12 @@ fn check_github() -> ExitCode {
 /// `gaff allow <guard> [--session <sid>]` — let the next call a guard
 /// would refuse through, once.
 ///
-/// This is the human's release valve for a guard. What keeps it out of
-/// an agent's hands is the built-in guard in the hook: every agent Bash
-/// call passes through `gaff hook`, and this command is refused there.
-/// The human's shell has no hook. That includes the harness's `!` shell,
-/// which attaches no tty to stdin — so a terminal check here refused
-/// the one channel it existed to admit.
+/// A human uses this to release one call. The built-in guard in the
+/// hook keeps it away from an agent, because every agent Bash call
+/// passes through `gaff hook` and this command is refused there. A
+/// human's shell has no hook. That includes the harness's `!` shell,
+/// which attaches no tty to stdin, so this command does not test for a
+/// terminal.
 fn run_allow(args: &[String]) -> ExitCode {
     let mut guard: Option<String> = None;
     let mut session_flag: Option<String> = None;
@@ -1864,11 +1846,6 @@ fn run_githook(args: &[String]) -> ExitCode {
     u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }
 
-/// The message of the first guard that refuses this call.
-///
-/// This is the only path in gaff that leads to exit 2. Every failure
-/// path, including a broken guard, still degrades, because a gaff
-/// fault must never block a session.
 /// Refuse a pre-tool call against the active bundle's own guards.
 ///
 /// Returns exit 2 on a refusal the human did not allow once. The base
@@ -1899,6 +1876,10 @@ fn bundle_guard_refusal(
     Some(ExitCode::from(2))
 }
 
+/// The name and the message of the first guard that refuses this call.
+///
+/// A broken guard degrades rather than refuses, because a gaff fault
+/// must never block a session.
 fn guard_refusal(
     guards: &[crate::guard::Guard],
     envelope: &crate::event::Envelope,
@@ -1912,8 +1893,8 @@ fn guard_refusal(
         let found = (adapter.tool_field)(&envelope.raw, field);
         if found.is_none() {
             // A guard names this tool and gaff could not read the field
-            // it matches on, so the guard did not run. Absent and
-            // wrong-type were both silent; only the second warned.
+            // it matches on, so the guard did not run. Say so, whether
+            // the field is absent or holds the wrong type.
             let raw_present = envelope
                 .raw
                 .get("tool_input")
@@ -1931,11 +1912,22 @@ fn guard_refusal(
         found
     };
     let hit = crate::guard::first_refusal(guards, tool, &value)?;
+    // The built-in guard's own message carries its remedy, and `gaff
+    // allow` knows no guard by that name, so the generic line would
+    // send the reader to a refusal.
+    let remedy = if hit.name == crate::guard::BUILTIN_NAME {
+        String::new()
+    } else {
+        format!(
+            "\n\nIf the user has approved this specific call, they can run `!gaff allow {}` to let it through once.",
+            hit.name
+        )
+    };
     Some((
         hit.name.clone(),
         format!(
-            "gaff: refused by the guard `{}`.\n\n{}\n\nIf the user has approved this specific call, they can run `!gaff allow {}` to let it through once.",
-            hit.name, hit.message, hit.name
+            "gaff: refused by the guard `{}`.\n\n{}{remedy}",
+            hit.name, hit.message
         ),
     ))
 }
@@ -1946,6 +1938,61 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// A refusal names a remedy the reader can run. `gaff allow`
+    /// resolves a name against the declared guards only, so the
+    /// built-in is not one of them, and the generic line would send
+    /// the reader to a command that refuses in turn. The built-in
+    /// carries its own remedy instead.
+    #[test]
+    fn only_a_declared_guard_offers_the_allow_remedy() {
+        let envelope = crate::event::Envelope::from_claude_code(serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "gaff allow something" },
+        }));
+        let adapter = &crate::adapter::CLAUDE_CODE;
+
+        let (name, text) = guard_refusal(&crate::guard::builtin(), &envelope, adapter)
+            .expect("the built-in guard refuses `gaff allow`");
+        assert_eq!(name, crate::guard::BUILTIN_NAME);
+        // Its own message names `!gaff allow <guard>` as the shape a
+        // user runs. What must not appear is the appended line naming
+        // this guard, because `gaff allow gaff-privileged` refuses.
+        assert!(
+            !text.contains(&format!("!gaff allow {}", crate::guard::BUILTIN_NAME)),
+            "the built-in refusal offers a remedy `gaff allow` cannot honour: {text}"
+        );
+        assert!(
+            !text.contains("let it through once"),
+            "the built-in refusal carries the generic remedy line: {text}"
+        );
+        assert!(
+            text.contains("outside the hook"),
+            "the built-in refusal drops its own remedy: {text}"
+        );
+
+        let declared = vec![crate::guard::Guard {
+            name: "no-curl".into(),
+            tool: "Bash".into(),
+            matches: Some("curl".into()),
+            field: "command".into(),
+            unless: None,
+            message: "Fetch it another way.".into(),
+        }];
+        let envelope = crate::event::Envelope::from_claude_code(serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "curl https://example.com" },
+        }));
+        let (name, text) =
+            guard_refusal(&declared, &envelope, adapter).expect("the declared guard refuses curl");
+        assert_eq!(name, "no-curl");
+        assert!(
+            text.contains("!gaff allow no-curl"),
+            "a declared guard's refusal drops the remedy: {text}"
+        );
     }
 
     /// The exit-code rule is the load-bearing invariant: exit 2 is the
@@ -2352,12 +2399,6 @@ fn run_reviews_check(args: &[String]) -> ExitCode {
     // commit CI checks out, and `gaff ci` supplies it by substituting
     // that sha into the ref line it synthesizes. So one mechanism
     // carries the head.
-    //
-    // An earlier version took `--head <sha>` as well. It replaced every
-    // pushed ref with one synthetic entry and suppressed the
-    // empty-stdin guard below, and nothing ever passed it. A second
-    // mechanism that weakens the first, with no caller, is worse than
-    // no mechanism.
     if let Some(arg) = args.first() {
         return fail(&format!(
             "unexpected argument `{arg}` (reviews check takes none, and reads refs on stdin)"
@@ -2382,10 +2423,8 @@ fn run_reviews_check(args: &[String]) -> ExitCode {
 
     // A line git did not write means the stream was cut. git writes
     // four fields per ref, so anything shorter is a truncation rather
-    // than a push. Dropping such a line silently defeated the guard
-    // below: one line reading `refs/heads/main` left no refs and
-    // non-empty stdin, so the check reported nothing to do and exited
-    // 0.
+    // than a push. A dropped line leaves no refs and non-empty stdin,
+    // and the check would then report nothing to do and exit 0.
     let truncated = crate::reviewnote::truncated_lines(&stdin);
     if truncated > 0 {
         return fail(&format!(
@@ -2397,14 +2436,12 @@ fn run_reviews_check(args: &[String]) -> ExitCode {
 
     // Empty stdin is a real push, not a wiring fault. git runs a
     // pre-push hook with no lines at all when the remote already holds
-    // everything, and `git push` on an up-to-date branch is a routine
-    // keystroke. An earlier version refused it and told the reader to
-    // hunt a pipeline bug that did not exist.
+    // everything.
     //
-    // Passing is safe because a push that moves no ref lands no
-    // commit. The stream that goes missing while refs still move is
-    // the dangerous case, and a partial read leaves a line with fewer
-    // than four fields, which `truncated_lines` above refuses.
+    // Passing is safe, because a push that moves no ref lands no
+    // commit. A stream that goes missing while refs still move is the
+    // dangerous case, and a partial read leaves a line with fewer than
+    // four fields, which `truncated_lines` above refuses.
     if refs.is_empty() {
         if stdin.split_whitespace().next().is_none() {
             println!("reviews: nothing to check. git sent no ref, so this push moves nothing.");
@@ -2621,12 +2658,26 @@ fn ci_head(cwd: &std::path::Path) -> Result<CiHead, String> {
         .map_err(|e| format!("cannot read HEAD: {e}"))?;
     let head_text = head_text.trim();
     let (branch, sha) = if let Some(refname) = head_text.strip_prefix("ref: ") {
-        let sha = resolve_ref(&git_dir, refname.trim()).ok_or_else(|| {
+        let refname = refname.trim();
+        // HEAD must name a branch. A gate exempts a notes ref, because
+        // pushing review records proposes no change, and the ref line
+        // here is synthesized from HEAD. So a HEAD pointing at
+        // `refs/notes/reviews` synthesized an exempt line and the whole
+        // gate reported success with nothing checked. One
+        // `git symbolic-ref` was the entire attack.
+        if !refname.starts_with("refs/heads/") {
+            return Err(format!(
+                "HEAD names {refname}, which is not a branch. `gaff ci` builds its ref line \
+                 from HEAD, and a line naming a notes ref is exempt from the review check, \
+                 so the run would certify nothing."
+            ));
+        }
+        let sha = resolve_ref(&git_dir, refname).ok_or_else(|| {
             format!(
                 "cannot resolve {refname}: the branch has no commit yet, or the ref is unreadable"
             )
         })?;
-        (refname.trim().to_string(), sha)
+        (refname.to_string(), sha)
     } else {
         // Detached HEAD holds the sha itself.
         ("refs/heads/detached".to_string(), head_text.to_string())

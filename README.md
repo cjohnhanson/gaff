@@ -4,7 +4,7 @@
 > drifting past.
 
 gaff is a context-lifecycle handler for coding agents. It counts the hook
-events of a session. It re-injects context on a cadence. It delivers
+events of a session and re-injects context on a cadence. It also delivers
 prime sections and advisory profiles.
 
 ## The problem
@@ -19,35 +19,38 @@ ends with its opening instructions effectively invisible.
 
 ## What gaff does
 
-- **Counters** — per-session tallies over the hook events: prompts and
-  tool calls. gaff keeps them in an append-only ledger, and a tool call
-  counts once across its Pre, Post, and failure events.
-- **Cadences** — re-inject a text every N tool calls or prompts. An
-  agent can also schedule a one-shot reminder N tool calls into its own
-  future. gaff re-arms a one-shot after a context compaction.
-- **Prime sections** — the session-start context, split into sections.
+- **Counters.** gaff tallies the prompts and the tool calls of each
+  session in an append-only ledger. A tool call counts once across its
+  Pre, Post, and failure events.
+- **Cadences.** A reminder re-injects its text every N tool calls or
+  prompts. An agent can also schedule a one-shot reminder N tool calls
+  into its own future, and gaff re-arms it after a context compaction.
+- **Prime sections.** The session-start context, split into sections.
   Each section refreshes on its own cadence.
-- **Handlers** — external commands whose output becomes context, on a
-  cadence. They live only in the user-scoped config, and a repo must be
-  trusted with `gaff trust` before any command runs in it.
-- **Guards** — refuse a tool call that matches a regular expression.
-  Declared once at user level, applied in every repo. This is the only
-  feature that blocks, and it blocks on purpose.
-- **Git hooks** — gaff writes the scripts in `.git/hooks/`, and they
-  call back into gaff. One config declares the agent side and the git
-  side. A hook gaff did not write is kept and called first.
-- **GitHub workflows** — generated from the same config, and checked
-  for drift. A check declared once runs in the git hook and in CI.
-- **Profiles** — named overlays that select which entries are active and
-  override their cadences. A transition policy states which profiles an
-  agent may select for itself. Profiles are advisory: gaff blocks
-  nothing.
+- **Handlers.** An external command whose output becomes context, on a
+  cadence. Handlers live only in the user-scoped config, and a repo must
+  be trusted with `gaff trust` before any command runs in it.
+- **Guards.** A guard refuses a tool call that matches a regular
+  expression. Declare one at user level and it applies in every repo.
+  This is the feature that blocks, and it blocks on purpose.
+- **Git hooks.** gaff writes the scripts in `.git/hooks/`, and they call
+  back into gaff. One config declares the agent side and the git side. A
+  hook gaff did not write is kept and called first.
+- **GitHub workflows.** gaff generates them from the same config and
+  checks them for drift. A check declared once runs in the git hook and
+  in CI.
+- **Profiles.** A profile is a named overlay that selects which entries
+  are active and overrides their cadences. A transition policy states
+  which profiles an agent may select for itself. Profiles are advisory,
+  and gaff blocks nothing through them.
 
 ## Where config lives
 
 `$HOME/.config/gaff/gaff.yml` holds what you want in every repo.
-`.gaff/gaff.yml` holds what belongs to one repo, and it wins the names
-it shadows. A repo never widens the profiles an agent may grant itself.
+`.gaff/gaff.yml` holds what belongs to one repo. A repo entry under a
+name the user already declared is refused with a warning, and the
+user's entry stands. A repo never widens the profiles an agent may
+grant itself.
 Handlers live only in `$HOME/.config/gaff/handlers.yml`.
 
 ## What gaff is not
@@ -56,16 +59,57 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
   the matching, the timeouts, and the parallelism there. gaff registers
   as one handler. gaff does dispatch its own git hooks, because git has
   no dispatcher of its own.
-- **Not an enforcement layer.** gaff blocks nothing. It injects context
+- **Not an enforcement layer.** gaff refuses a tool call through a
+  guard and a stop through a hold, and nothing else. It injects context
   only on the events whose output channel is the model's session
   framing. It never decorates a tool result.
-- **Not a way to run repo-declared code.** The repo-level config is
-  data: sections, text, and cadences. A handler's command can only be
-  declared in the user-scoped config. Note the limit of that claim. A
+- **Not a way to run repo-declared code from a hook.** On the agent
+  path the repo-level config is data: sections, text, and cadences. A
+  handler's command can only be declared in the user-scoped config. A
+  repo's `git:` and `github:` entries do name commands, and they run
+  only after a human runs `gaff init --git` or `gaff init --github` in
+  that repo. Note the limit of that claim. A
   handler's command still *runs in* the repo's working directory, and
   tools like `git`, `make`, and `just` read executable settings from
   there. Handlers are therefore deny-by-default, and they need
   `gaff trust` per repo.
+
+## Install
+
+The package is `gaffr` on PyPI and npm, because `gaff` was taken. The
+command is `gaff` everywhere, and both names install together.
+
+Not released yet. Until the first tag, build from source:
+
+```sh
+cargo install --locked --git https://github.com/cjohnhanson/gaff
+```
+
+Requires Rust 1.88 and a C compiler. macOS and Linux, x86-64 and arm64.
+
+From the first release onward:
+
+```sh
+cargo install --locked gaff
+brew install cjohnhanson/tap/gaff
+uv tool install gaffr
+npm install -g gaffr
+```
+
+Or run it without installing:
+
+```sh
+uvx gaffr status
+npx gaffr status
+```
+
+A release also carries prebuilt archives and a `.deb`, on the [releases
+page](https://github.com/cjohnhanson/gaff/releases). Each archive holds
+the binary and the man page. Install a `.deb` with `dpkg -i`: it is a
+file, not a repository, so `apt-get install` does not reach it.
+
+Check the install with `gaff --version`, and `gaff doctor` for what is
+live in a clone.
 
 ## Using it
 
@@ -88,24 +132,22 @@ gaff docs getting-started          # the bundled documentation
 
 ## Status
 
-These parts work: counters deduped by `tool_use_id`, cadence reminders,
-one-shot reminders with a compaction re-arm, prime sections with a
-mid-session refresh, profiles with a transition policy, the injection
-audit trail (`gaff log`), byte-capped injection with attribution
-prefixes, the `init`, `check`, `doctor`, `profile`, and `log` commands,
-and the bundled docs.
+Every feature and every command listed above is built and runs. Nothing
+is tagged yet, so the config keys and the output formats can still
+change.
 
-Claude Code is the only implemented host adapter. The adapter is a
-seam, not a hard-coded path. A host declares its payload mapping, its
-event names, and its settings path in `src/adapter.rs`. Nothing else in
-gaff changes. gaff does not ship a guessed schema for a host
-nobody has tested.
+Two host adapters ship: Claude Code, and `generic`, which reads gaff's
+own normalized field names for a host that speaks them. A host declares its
+payload mapping, its event names, and its settings path in
+`src/adapter.rs`, and nothing else in gaff changes. gaff ships no
+guessed schema for a host nobody has tested.
 
-A missouri state-graph suite of 15 paths and the cargo unit tests cover
-this. The suite's error-surface path checks that every failure exits 0
-or 1, never the blocking code 2. Exit 2 is reserved for the two places
-that mean it: a guard refusing a tool call, and `gaff githook` relaying
-the failing command's own code.
+A missouri state-graph suite of 28 paths and the cargo unit tests cover
+this. The suite's error-surface path checks that a gaff failure exits 0
+or 1, never the blocking code 2. Exit 2 belongs to a guard that refuses
+a tool call, a stop hook that refuses a stop, `gaff run` reporting an
+agent's refusal, and `gaff githook` relaying the failing command's own
+code.
 
 ## Related
 
@@ -114,6 +156,7 @@ the failing command's own code.
 - [almanac](https://github.com/cjohnhanson/almanac) — agent skill index, over pluggable sources
 - [missouri](https://github.com/cjohnhanson/missouri) — end-to-end tests as directed graphs of filesystem states
 - [mdstore](https://github.com/cjohnhanson/mdstore) — the frontmattered markdown library the other three store documents with
+- [kersh](https://github.com/cjohnhanson/kersh) — the declarative agent runner a hook agent calls by default
 
 ## License
 

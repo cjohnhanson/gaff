@@ -18,16 +18,13 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 /// Where an event comes from, and therefore who runs it.
 ///
-/// The three domains are not three flavors of the same thing. gaff
-/// executes only the agent domain. It cannot execute the others, and
-/// pretending otherwise would be a lie about what a config does.
+/// A domain names who runs the event.
 ///
-/// - `agent` — gaff runs as a hook handler. It counts and injects.
-/// - `git` — a local git hook. lefthook and pre-commit own the
-///   dispatch, so gaff describes these and never claims
-///   `core.hooksPath`.
-/// - `github` — a remote workflow trigger. gaff is not present when it
-///   fires, so gaff can only describe it.
+/// - `agent`. gaff runs as a hook handler. It counts and injects.
+/// - `git`. A local git hook. gaff writes one script per declared hook
+///   and dispatches it, and it never sets `core.hooksPath`.
+/// - `github`. A remote workflow trigger. gaff is not present when one
+///   fires, so it renders the workflow and checks it for drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Domain {
     Agent,
@@ -36,12 +33,6 @@ pub enum Domain {
 }
 
 impl Domain {
-    /// Whether gaff itself executes this domain's events.
-    #[must_use]
-    pub const fn is_executed(self) -> bool {
-        matches!(self, Self::Agent)
-    }
-
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -112,8 +103,8 @@ impl Kind {
         )
     }
 
-    /// The domain this event belongs to. Every event gaff executes is
-    /// an agent event.
+    /// The domain this event belongs to. Every [`Kind`] is an agent
+    /// event.
     #[must_use]
     pub const fn domain(&self) -> Domain {
         Domain::Agent
@@ -169,7 +160,7 @@ pub enum ContextSink {
     /// This is the only sink that is safe for a section or a reminder.
     AgentContext,
     /// The harness attaches the context to a tool result. The model reads
-    /// it as tool output. Never inject here (the qei8 bug class).
+    /// it as tool output. Never inject here.
     ToolResult,
     /// Stdout replaces the payload of the event. Prompt expansion uses
     /// this sink.
@@ -235,10 +226,9 @@ impl Capability {
 /// - `SessionEnd` shares a budget of 1.5 seconds.
 ///
 /// This table keys on Claude Code's event names, so a generic host's
-/// normalized names miss it and read as `UNVERIFIED`. That is dead on the
-/// live path: the flush gate reads [`Kind`], never this. A refactor that
-/// gated flushing on `injection_safe` would mute a generic host, so it
-/// must not.
+/// normalized names read as `UNVERIFIED`. The flush gate reads [`Kind`]
+/// instead, so a generic host still flushes. Do not gate flushing on
+/// `injection_safe`.
 #[must_use]
 pub fn capability(event_name: &str) -> Capability {
     match event_name {
