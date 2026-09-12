@@ -25,23 +25,29 @@ never blocks, and the git domain blocks by design.
 
 ## 2. Injection happens only at flush points
 
-`session_start`, `prompt`, and `tool_batch` are the only events whose
-context reaches the model's session framing. A `tool_call` event's
-context rides the tool result instead, so text injected there is not
-session framing.
+`session_start`, `prompt`, `tool_batch`, and `stop` are the only events
+whose context reaches the model's session framing. A `tool_call`
+event's context rides the tool result instead, so text injected there
+is not session framing.
 
 These are normalized names. `event::Kind` holds the set, and an adapter
 maps its host's names onto it. Nothing above `src/adapter.rs` may match
 on a host's own event name. Use `Kind::is_flush` or
 `engine::is_flush_event` rather than a second list.
 
-## 3. The repo config is data, and executables are user-scoped
+## 3. The agent path runs nothing a repo declares
 
-`.gaff/gaff.yml` declares sections, reminders, cadences, and profiles.
-It never names a command. Handlers live only in
-`~/.config/gaff/handlers.yml`. gaff does not read `GAFF_CONFIG_DIR` or
-`XDG_CONFIG_HOME` on the hook path. A repo can set an environment
-variable through direnv, mise, or a committed settings file.
+On the hook path, `.gaff/gaff.yml` is data: sections, reminders,
+cadences, profiles, guards. Handlers, the one thing a hook can execute,
+live only in `~/.config/gaff/handlers.yml`. gaff does not read
+`GAFF_CONFIG_DIR` or `XDG_CONFIG_HOME` on the hook path. A repo can set
+an environment variable through direnv, mise, or a committed settings
+file.
+
+The `git:` and `github:` entries in the repo config do name commands.
+They run only where a human installed them: `gaff init --git` writes
+the hooks, and `gaff init --github` writes the workflows. Cloning a
+repo runs nothing; the human who ran `init` in it is the consent.
 
 A handler's child still runs with the repo as its working directory,
 and tools such as git, make, and just read executable settings from

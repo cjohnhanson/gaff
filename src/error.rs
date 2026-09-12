@@ -1,8 +1,8 @@
 //! The error type.
 //!
-//! Every variant here is a message a person reads, never a control
-//! signal. gaff answers every failure the same way: it warns and
-//! continues. It never exits 2, because the agent side treats exit 2
+//! Every variant here is a message a person reads. On the hook path
+//! gaff warns and continues. On the command path it prints the message
+//! and exits 1. No variant exits 2, because the agent side treats exit 2
 //! as the blocking code and no gaff failure may block a session.
 
 #[derive(Debug, thiserror::Error)]

@@ -1,14 +1,13 @@
 //! The github domain: generate workflows, and check them for drift.
 //!
-//! gaff cannot run a GitHub event. It is not present when one fires.
-//! So this domain is generated, not executed: gaff renders a workflow
-//! from the config, and `gaff check --github` compares the render
-//! against the file that is committed.
+//! gaff is not present when a GitHub event fires, so it generates this
+//! domain instead of running it. gaff renders a workflow from the
+//! config, and `gaff check --github` compares the render against the
+//! committed file.
 //!
-//! The point is one declaration. A check you run in `pre-commit` and a
-//! check you run in CI should be the same command, written once. A
-//! step may name a git entry with `use`, and gaff renders that entry's
-//! command into the workflow.
+//! A step names a git entry with `use_git`, and gaff renders that
+//! entry's command into the workflow. One check then runs in a git hook
+//! and in CI from one declaration.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -135,11 +134,9 @@ impl Workflow {
         // quoting does not save it. Refuse here, so a broken file is
         // never written and the command exits non-zero.
         //
-        // A newline survives only where a block scalar carries it, and
-        // a step command is the one such position. Everywhere else the
-        // value renders as a flow scalar: a continuation line lands at
-        // column 0, so YAML either folds it into the value or reads it
-        // as a new node and the file stops parsing.
+        // Only a step command renders as a block scalar, which carries
+        // a newline. A newline in a flow scalar puts a continuation
+        // line at column 0, and the file stops parsing.
         let mut check = |what: &str, v: &str, block: bool| {
             if v.chars().any(is_yaml_control) {
                 out.push(format!(
@@ -219,11 +216,9 @@ impl Workflow {
                         "workflow `{}`: no git entry named `{name}` to reuse",
                         self.name
                     )),
-                    // A user workflow may reuse a user entry only. A
-                    // dangling reference in a user workflow was filled
-                    // by whatever a cloned repo declared under that
-                    // name, so repo-authored argv ran in CI under a
-                    // workflow the user wrote.
+                    // A user workflow reuses a user entry only. A cloned
+                    // repo must not supply the command a user workflow
+                    // runs.
                     Some(entry) if self.user != entry.user => out.push(format!(
                         "workflow `{}`: it is {} and the git entry `{name}` it reuses is {}. A workflow reuses an entry from its own layer only.",
                         self.name,

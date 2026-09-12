@@ -1,3 +1,9 @@
+<!-- metadata
+title: "How gaff works"
+description: "Why injected context decays, and how counting, arming, and flushing answer it"
+type: explanation
+-->
+
 # How it works
 
 ## Count, arm, flush
@@ -11,10 +17,10 @@ event goes through up to three stages:
 2. **Arm.** When a cadence divides the new count, gaff writes a pending
    marker. gaff emits nothing here. The crossing usually happens on
    PostToolUse, whose output channel is unsafe to decorate.
-3. **Flush.** The safe events are SessionStart, UserPromptSubmit, and
-   PostToolBatch. At the next one, gaff merges the pending entries under
-   the byte cap. It emits them as `additionalContext`. gaff consumes an entry only when it
-   emits the entry.
+3. **Flush.** The safe events are SessionStart, UserPromptSubmit, Stop,
+   and PostToolBatch. At the next one, gaff merges the pending entries
+   under the byte cap and emits them as `additionalContext`. gaff
+   consumes an entry only when it emits that entry.
 
 ## Sessions
 
@@ -34,8 +40,8 @@ cadences continue.
 
 ## Failure posture
 
-gaff blocks nothing. Every internal failure degrades to a silent
-passthrough at exit 0, or to a non-blocking error at exit 1. gaff never
-emits the blocking exit code 2, and the tests enforce that. The
-degradation is loud: a warning on stderr, a `degraded` state marker, and
-the `gaff doctor` report.
+No gaff failure blocks a session. Every internal failure degrades to a
+silent passthrough at exit 0, or to a non-blocking error at exit 1. No
+failing path emits the blocking exit code 2, and the tests enforce that.
+A degradation is loud. It writes a warning on stderr and a `degraded`
+marker in the state directory, and `gaff doctor` reports it.

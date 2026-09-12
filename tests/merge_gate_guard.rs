@@ -24,11 +24,19 @@ const NOTELESS: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /// a directory is the whole seam. The script needs none of its own.
 fn run_gate_in(required: &[&str], vendored: &[&str]) -> (i32, String) {
     let root = env!("CARGO_MANIFEST_DIR");
+    // The names are the key. Two fixtures with one count each ran in one
+    // directory at the same time and read each other's files.
     let dir = std::env::temp_dir().join(format!(
-        "merge-gate-policy-{}-{}",
+        "merge-gate-policy-{}-{}-{}",
         std::process::id(),
-        required.len() * 10 + vendored.len()
+        required.join("+"),
+        vendored.join("+")
     ));
+    assert!(
+        dir.starts_with(std::env::temp_dir()),
+        "the fixture must live under the temp directory, not at {}",
+        dir.display()
+    );
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(".gaff")).expect("the fixture directory is made");
     std::fs::create_dir_all(dir.join("scripts")).expect("the scripts directory is made");
@@ -93,6 +101,12 @@ fn a_required_review_with_no_criteria_refuses() {
         out.contains("review-tets is required and has no criteria"),
         "expected the missing-criteria refusal, got: {out}"
     );
+    // The note check refuses this fixture too, so a nonzero exit proves
+    // nothing on its own. The gate has to stop here, before it runs.
+    assert!(
+        !out.contains("no review note on"),
+        "the gate printed the refusal and carried on to the note check: {out}"
+    );
 }
 
 #[test]
@@ -104,6 +118,24 @@ fn a_vendored_review_nobody_requires_refuses() {
     assert_ne!(code, 0, "a vendored review nobody requires passed: {out}");
     assert!(
         out.contains("review-docs is vendored and required by nothing"),
+        "expected the orphan refusal, got: {out}"
+    );
+    assert!(
+        !out.contains("no review note on"),
+        "the gate printed the refusal and carried on to the note check: {out}"
+    );
+}
+
+#[test]
+fn a_review_name_is_a_fixed_string() {
+    // The orphan check greps the required list for each vendored name.
+    // A vendored `review-.ests` read as a regular expression matches the
+    // required `review-tests`, so the orphan once passed as required. A
+    // name matches as a fixed string.
+    let (code, out) = run_gate_in(&["review-tests"], &["review-tests", "review-.ests"]);
+    assert_ne!(code, 0, "a name that matched by pattern passed: {out}");
+    assert!(
+        out.contains("review-.ests is vendored and required by nothing"),
         "expected the orphan refusal, got: {out}"
     );
 }
