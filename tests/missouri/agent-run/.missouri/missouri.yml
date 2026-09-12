@@ -1,7 +1,7 @@
 doc: |
   `gaff run` dispatches a hook agent through an agnostic runner and maps
   the agent's verdict to an exit code. A pass admits with 0. A fail, a
-  missing verdict, a runner that exits non-zero, an untrusted repo, and an
+  missing verdict, a runner that exits non-zero, an untrusted directory, and an
   unknown agent all refuse with 2, so the gate fails closed. The runner is
   a fake script driven by files, so no model and no network. The runtime
   is never named: the runner comes from config.
@@ -71,11 +71,11 @@ transitions:
       gaff run nobody >/dev/null 2>&1
       [ "$?" = 2 ] || { echo "FAIL: an unknown agent must refuse with 2"; rm -rf "$T"; exit 1; }
 
-      # An untrusted repo refuses before any dispatch.
+      # An untrusted directory refuses before any dispatch.
       verdict "gaff-verdict: pass"
       mkdir -p "$T/untrusted"
       ( cd "$T/untrusted" && gaff run reviewer >/dev/null 2>&1; [ "$?" = 2 ] ) \
-        || { echo "FAIL: an untrusted repo must refuse with 2"; rm -rf "$T"; exit 1; }
+        || { echo "FAIL: an untrusted directory must refuse with 2"; rm -rf "$T"; exit 1; }
 
       rm -rf "$T"
       echo AGENT_RUN_OK

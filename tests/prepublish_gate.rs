@@ -20,7 +20,12 @@ const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 /// A fixture with the script, the toolchain pin, and one stub per
 /// program the script calls. Returns the fixture and its stub dir.
 fn fixture(name: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("gaff_prepublish_{name}"));
+    // The process id keeps two concurrent runs of this binary apart.
+    // Without it they shared one directory, and a `Drop` in one removed
+    // the working directory of another: four of five tests failed with
+    // `getcwd: cannot access parent directories` when the binary ran
+    // alone, and the full suite flaked between runs.
+    let dir = std::env::temp_dir().join(format!("gaff_prepublish_{name}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("scripts")).expect("fixture dir");
     std::fs::copy(

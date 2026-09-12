@@ -1,4 +1,4 @@
-.Dd August 16, 2026
+.Dd September 11, 2026
 .Dt GAFF 1
 .Os
 .Sh NAME
@@ -127,22 +127,28 @@ The runner is a config choice; the default is
 a separate program.
 Every failure refuses: a fail verdict, a missing verdict, a non-zero
 runner, a timeout, a failed context, an unknown agent, and an untrusted
-repo all exit 2.
+directory all exit 2.
 .It Cm trust
-Allow handlers to run in this repo.
+Allow handlers to run in this directory.
 Every agent tool call passes through
 .Cm gaff hook
-first, and a built-in guard there refuses this command, so an agent
-cannot grant consent through gaff.
+first, and a built-in guard there refuses this command.
+The guard matches the command as text, so a form it does not match
+reaches the shell unrefused.
+A quoted subcommand is one such form.
 The user's shell has no hook, so it runs there.
 An agent that can write the home directory can still edit the file, so
 this raises the cost and makes the grant visible; it is not a sandbox.
-A handler's command runs with the repo as its working directory, and
-tools such as
+A handler's command inherits the working directory gaff was called in,
+and tools such as
 .Xr git 1 ,
 .Xr make 1 ,
 and just read executable settings from there.
-So handlers are refused by default, and consent is per repo.
+So handlers are refused by default, and consent is per directory.
+The record holds the working directory this command ran in, and a
+handler runs only where that path matches.
+Another directory needs its own
+.Cm trust .
 Consent is recorded in
 .Pa ~/.config/gaff/trusted ,
 outside every repo tree.
@@ -290,7 +296,7 @@ and neither drops a name from the other.
 The handlers.
 Only this file may declare a command.
 .It Pa ~/.config/gaff/trusted
-The repos that may run handlers.
+The directories that may run handlers.
 .El
 .Sh EVENTS
 gaff names an event for what it means, not for what a host calls it.

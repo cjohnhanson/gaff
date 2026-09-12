@@ -21,7 +21,7 @@ gaff reads two data configs and lays one over the other.
 | `$HOME/.config/gaff/gaff.yml` | every repo | The keys below |
 | `.gaff/gaff.yml` | this repo | The keys below |
 | `$HOME/.config/gaff/handlers.yml` | every repo | Handlers only |
-| `$HOME/.config/gaff/trusted` | every repo | The repos that may run handlers |
+| `$HOME/.config/gaff/trusted` | every repo | The directories that may run handlers |
 
 A person works in many repos and wants some reminders everywhere. Put
 those in the user config. A repo adds to what the user declared, and it
@@ -403,26 +403,34 @@ profiles:
 
 ### What runs, and what that costs you
 
-A handler's command runs with the repo as its working directory, and
-many ordinary tools read executable settings from there. `git` honors
+A handler's command inherits the working directory gaff was called in,
+and many ordinary tools read executable settings from there. `git` honors
 `core.pager` and `core.fsmonitor` from `.git/config`. `make`, `just`,
 and `npm` read their own repo files. gaff cannot close that, so handlers
 are deny-by-default:
 
 ```
-gaff trust          # from a terminal, in the repo you want to allow
+gaff trust          # from a terminal, in the directory you want to allow
 ```
 
 Consent is recorded in `$HOME/.config/gaff/trusted`, outside every repo
 tree, and that file must not be writable by other users. Without
 consent, no handler runs and gaff says so once.
 
+The record holds one path: the working directory the command ran in. A
+handler runs where that path matches and nowhere else, so a
+subdirectory of a trusted directory is not itself trusted. Run `gaff
+trust` where you start the agent. `gaff doctor` reports the state for
+the directory it runs in, for the same reason.
+
 Note the limit of the gate. Every command an agent runs passes through
-`gaff hook` first, and a built-in guard there refuses `gaff trust`, so
-an agent cannot grant consent *through gaff*. The command itself tests
-for no terminal, because a human's `!` shell attaches none. An agent
-that can write your home directory can still edit the file. The gate
-raises the cost and makes the grant visible. It is not a sandbox.
+`gaff hook` first, and a built-in guard there refuses `gaff trust`. The
+guard matches the command as text, so a form it does not match reaches
+the shell unrefused: a quoted subcommand is one. The command itself
+tests for no terminal, because a human's `!` shell attaches none. An
+agent that can write your home directory can edit the file directly.
+The gate raises the cost and makes the grant visible. It is not a
+sandbox, and it is not a boundary.
 
 `command[0]` must be an absolute path. gaff never searches `PATH`,
 because a repo can prepend its own `bin/` and shadow the binary you
@@ -485,7 +493,7 @@ regardless of `every`. Every other flush point waits for a crossing.
 `gaff check --handlers` validates the user config and exits 1 on a
 problem, including a config it cannot parse. It covers handlers and
 guards, which both live only in that layer. `gaff doctor` lists the
-declared handlers and whether this repo is trusted.
+declared handlers and whether this directory is trusted.
 
 Plain `gaff check` validates the **effective** config, which is the
 user layer with the repo layer over it. That is what a hook will
@@ -550,10 +558,12 @@ wants one specific call to go through, without editing the file, runs
 The next call that guard would refuse passes instead, once, with a note
 on stderr saying so. The call after that is refused again.
 
-One thing stands between an agent and its own grant. gaff carries a
-built-in guard, which no config declares and no config removes, that
-refuses `gaff allow` and `gaff trust` from any Bash call an agent
-makes. Neither command tests for a terminal on stdin, because a human's
+One thing stands between an agent and its own grant, and it is a cost
+rather than a wall. gaff carries a built-in guard, which no config
+declares and no config removes, that refuses `gaff allow` and `gaff
+trust`. It matches the command as text, so a form it does not match,
+such as a quoted subcommand, still reaches the shell. Neither command
+tests for a terminal on stdin, because a human's
 `!` shell attaches none. Every agent command passes through `gaff hook`
 first, and a human's shell has no hook. `!gaff allow` in the harness
 runs in the human's shell.
@@ -621,9 +631,9 @@ that reads a credential from the environment names it in
 The gate fails closed. `gaff run` exits 0 only on a pass verdict from a
 runner that also exited 0. A fail verdict, a missing verdict, a non-zero
 runner, a timeout, a failed or over-cap context, an unknown agent, and an
-untrusted repo all exit 2. The context command and the runner execute in
-the repo, so the repo must be trusted first, as a handler's is. A repo
-config may not declare an agent; agents are user-scoped, because `gaff
+untrusted directory all exit 2. The context command and the runner
+execute in the working directory, so that directory must be trusted
+first, as a handler's is. A repo config may not declare an agent; agents are user-scoped, because `gaff
 run` executes their commands.
 
 ## Git hooks

@@ -74,6 +74,9 @@ jobs:
           if ! printf 'refs/heads/head %s refs/heads/main %s\n' "$HEAD_SHA" "$zero" | gaff reviews check; then
             echo "review-gate: $HEAD_SHA is refused. Record every line in one note, then push refs/notes/reviews:" >&2
             echo "    git notes --ref=reviews add -m '<the lines>' $HEAD_SHA" >&2
+            echo "  Where the commit already carries a note, add one line to it instead:" >&2
+            echo "    git notes --ref=reviews append -m '<the line>' $HEAD_SHA" >&2
+            echo "  Never use add -f. It replaces the note and drops another reviewer's line." >&2
             exit 1
           fi
 
