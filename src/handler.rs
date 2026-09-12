@@ -2,8 +2,9 @@
 //!
 //! # The threat model
 //!
-//! gaff runs with the agent's privileges, and a handler's child runs
-//! with the repo as its working directory. That repo may be hostile.
+//! gaff runs with the agent's privileges, and a handler's child
+//! inherits the working directory gaff was called in. That directory
+//! may be hostile.
 //!
 //! A repo does not choose which handlers exist. gaff reads the config
 //! from `$HOME/.config/gaff/handlers.yml` and nowhere else. It does not
@@ -20,8 +21,8 @@
 //! gaff cannot close that. `git status` honors `core.pager` from the
 //! repo's own `.git/config`, and `make`, `just`, and `npm` all read
 //! executable settings from the working directory. Handlers are
-//! therefore deny-by-default. Consent is per repo, and it is recorded
-//! outside every repo tree in `$HOME/.config/gaff/trusted`.
+//! therefore deny-by-default. Consent is per directory, and it is
+//! recorded outside every repo tree in `$HOME/.config/gaff/trusted`.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -281,26 +282,40 @@ fn owner_only(path: &Path) -> bool {
     }
 }
 
-/// Whether this repo is trusted to run handlers.
+/// Whether this directory is trusted to run handlers.
 ///
 /// A handler's child runs with `cwd` as its working directory, and many
-/// ordinary tools read executable settings from there. Consent is
-/// per-repo and lives outside every repo tree.
+/// ordinary tools read executable settings from there. So consent is
+/// per directory, not per repository: the record holds one path and
+/// this compares against that path. It lives outside every repo tree.
 #[must_use]
 pub fn is_trusted(cwd: &Path) -> bool {
     let Some(list) = config_dir().map(|d| d.join("trusted")) else {
         return false;
     };
-    // An absent list is the ordinary case: no repo is trusted yet. Only
+    // An absent list is the ordinary case: no directory is trusted yet. Only
     // an existing file with loose permissions is worth a warning, and
     // saying "writable by other users" about a missing file is simply
     // wrong.
     if !list.exists() {
         return false;
     }
+    // The directory holding the record counts too. A 0600 file inside a
+    // group-writable directory can be unlinked and replaced by another
+    // user, so checking the file alone closed one hole and left its
+    // sibling one level up.
+    if let Some(parent) = list.parent()
+        && !owner_only(parent)
+    {
+        eprintln!(
+            "gaff: {} is writable by other users. Refusing to trust any directory.",
+            parent.display()
+        );
+        return false;
+    }
     if !owner_only(&list) {
         eprintln!(
-            "gaff: {} is writable by other users. Refusing to trust any repo.",
+            "gaff: {} is writable by other users. Refusing to trust any directory.",
             list.display()
         );
         return false;
@@ -317,24 +332,101 @@ pub fn is_trusted(cwd: &Path) -> bool {
         .any(|l| Path::new(l) == here)
 }
 
-/// Record consent for a repo. `gaff trust` calls this.
-pub fn trust(cwd: &Path) -> std::io::Result<bool> {
+/// Record consent for a directory. `gaff trust` calls this.
+///
+/// Returns whether the record is new, and the path that was recorded.
+/// The caller prints that path, so it must be the one written here
+/// rather than a second guess at it.
+pub fn trust(cwd: &Path) -> std::io::Result<(bool, PathBuf)> {
     let dir = config_dir()
         .ok_or_else(|| std::io::Error::other("no HOME, so there is no user-scoped config"))?;
     std::fs::create_dir_all(&dir)?;
     let here = cwd.canonicalize()?;
-    if is_trusted(cwd) {
-        return Ok(false);
-    }
     let path = dir.join("trusted");
+    // Refuse a loose list rather than rewrite it. `is_trusted` returns
+    // false both for "this directory is not recorded" and for "the list
+    // is writable by other users", and those need different answers.
+    // Writing the list back at 0600 keeps whatever it held, so a grant
+    // here would adopt every path another user appended and hand them
+    // command execution. The check belongs in this function, because it
+    // is the distinction `is_trusted` collapses.
+    if path.exists() && !owner_only(&path) {
+        return Err(std::io::Error::other(format!(
+            "{p} is writable by other users, so nothing in it can be trusted. \
+             Read it, delete any path you did not grant, then run `chmod 600 {p}` \
+             and try again.",
+            p = path.display()
+        )));
+    }
+    // The record holds one path to a line, and `is_trusted` splits it
+    // on lines. Only `/` and NUL are forbidden in a directory name, so
+    // a name carrying a line break would write two records from one
+    // grant, and the second path becomes trusted. An agent that can
+    // make a directory could name it to pick that second path and then
+    // ask for a grant in the first. Refuse instead of recording
+    // something the person granting it never saw.
+    //
+    // `to_str` rather than `to_string_lossy` for the same reason: a
+    // name that is not valid UTF-8, which Linux permits, would be
+    // written with replacement characters and never match again, so
+    // the grant would report success and do nothing.
+    let line = here.to_str().ok_or_else(|| {
+        std::io::Error::other(format!(
+            "{} is not valid UTF-8, so it cannot be recorded. Rename the directory.",
+            here.display()
+        ))
+    })?;
+    if line.contains('\n') || line.contains('\r') {
+        return Err(std::io::Error::other(format!(
+            "{} holds a line break in its name, and the record keeps one path to a line. \
+             Rename the directory, then run `gaff trust` again.",
+            here.display()
+        )));
+    }
+    if is_trusted(cwd) {
+        return Ok((false, here));
+    }
     let mut text = std::fs::read_to_string(&path).unwrap_or_default();
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(here.to_string_lossy().as_ref());
+    text.push_str(line);
     text.push('\n');
-    std::fs::write(&path, text)?;
-    Ok(true)
+    write_owner_only(&path, &text)?;
+    Ok((true, here))
+}
+
+/// Write the record so `owner_only` accepts it.
+///
+/// `std::fs::write` creates at `0666 & ~umask`. Under a umask of 002,
+/// common on Linux and in container images, that is group-writable,
+/// and `is_trusted` refuses a group-writable list. The grant was then
+/// inert while `gaff trust` reported success on every run, because the
+/// already-trusted branch is gated on `is_trusted` too.
+fn write_owner_only(path: &Path, text: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(text.as_bytes())?;
+        // An existing file keeps its old mode, because `mode` applies
+        // only at creation. Set it either way.
+        let mut perms = f.metadata()?.permissions();
+        perms.set_mode(0o600);
+        f.set_permissions(perms)?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, text)
+    }
 }
 
 /// Whether every declared predicate passes.
@@ -455,7 +547,7 @@ pub fn run_due(
     }
     if !is_trusted(cwd) {
         eprintln!(
-            "gaff: this repo is not trusted, so no handler ran. Run `gaff trust` from a terminal to allow it."
+            "gaff: this directory is not trusted, so no handler ran. Run `gaff trust` from a terminal to allow it."
         );
         return Vec::new();
     }

@@ -28,8 +28,8 @@ ends with its opening instructions effectively invisible.
 - **Prime sections.** The session-start context, split into sections.
   Each section refreshes on its own cadence.
 - **Handlers.** An external command whose output becomes context, on a
-  cadence. Handlers live only in the user-scoped config, and a repo must
-  be trusted with `gaff trust` before any command runs in it.
+  cadence. Handlers live only in the user-scoped config, and a directory
+  must be trusted with `gaff trust` before any command runs in it.
 - **Guards.** A guard refuses a tool call that matches a regular
   expression. Declare one at user level and it applies in every repo.
   This is the feature that blocks, and it blocks on purpose.
@@ -69,31 +69,31 @@ Handlers live only in `$HOME/.config/gaff/handlers.yml`.
   repo's `git:` and `github:` entries do name commands, and they run
   only after a human runs `gaff init --git` or `gaff init --github` in
   that repo. Note the limit of that claim. A
-  handler's command still *runs in* the repo's working directory, and
-  tools like `git`, `make`, and `just` read executable settings from
-  there. Handlers are therefore deny-by-default, and they need
-  `gaff trust` per repo.
+  handler's command still inherits the working directory gaff was
+  called in, and tools like `git`, `make`, and `just` read executable
+  settings from there. Handlers are therefore deny-by-default, and they need
+  `gaff trust` in each directory the agent starts in.
 
 ## Install
 
 The package is `gaffr` on PyPI and npm, because `gaff` was taken. The
 command is `gaff` everywhere, and both names install together.
 
-Not released yet. Until the first tag, build from source:
-
-```sh
-cargo install --locked --git https://github.com/cjohnhanson/gaff
-```
-
-Requires Rust 1.88 and a C compiler. macOS and Linux, x86-64 and arm64.
-
-From the first release onward:
-
 ```sh
 cargo install --locked gaff
 brew install cjohnhanson/tap/gaff
 uv tool install gaffr
 npm install -g gaffr
+```
+
+`cargo install` builds from source. It needs Rust 1.88 and a C
+compiler. The other three carry a prebuilt binary for macOS and Linux,
+x86-64 and arm64, published by a tagged release.
+
+To build the unreleased `main` branch:
+
+```sh
+cargo install --locked --git https://github.com/cjohnhanson/gaff
 ```
 
 Or run it without installing:
@@ -122,7 +122,7 @@ gaff doctor                        # what is live in this clone
 gaff init --git                    # write the git hook scripts
 gaff init --github                 # generate the workflows
 gaff check --github                # report a workflow that drifted
-gaff trust                         # allow handlers to run in this repo
+gaff trust                         # allow handlers in this directory
 gaff check --handlers              # validate ~/.config/gaff/handlers.yml
 gaff profile list                  # the declared profiles and who may set them
 gaff profile set focus             # switch, and re-prime the sections
@@ -132,9 +132,9 @@ gaff docs getting-started          # the bundled documentation
 
 ## Status
 
-Every feature and every command listed above is built and runs. Nothing
-is tagged yet, so the config keys and the output formats can still
-change.
+Every feature and every command listed above is built and runs. The
+version is below 1.0, so the config keys and the output formats can
+still change.
 
 Two host adapters ship: Claude Code, and `generic`, which reads gaff's
 own normalized field names for a host that speaks them. A host declares its

@@ -27,8 +27,8 @@ guard, injects text into a session, holds a stop, and runs the commands
 the user-scoped config declares.
 
 On the hook path, only the user-scoped config may name a command, and
-gaff runs no handler until a person trusts the repository from their
-own shell. A repository's `git:` and `github:` entries name commands
+gaff runs no handler until a person trusts the working directory from
+their own shell. Consent holds for that one directory. A repository's `git:` and `github:` entries name commands
 too, and those run only after a person runs `gaff init --git` or
 `gaff init --github` in that repository. Cloning a repository therefore
 never runs its code. A guard decides whether an agent's tool call
@@ -41,7 +41,7 @@ In scope:
 - A fetch reaching a host or a path that no declaration named.
 - Reading untrusted content leading to code execution.
 - A repository's config causing a command to run, or causing one to run
-  before a person trusted the repository.
+  before a person trusted the working directory.
 - An agent granting itself a right the trust boundary withholds.
 - A guard that can be evaded by the shape of a command it should refuse.
 
@@ -54,12 +54,14 @@ Out of scope:
 
 ## Known boundaries
 
-Documented limits are not vulnerabilities. `gaff trust` and `gaff allow`
-are kept from an agent by the built-in guard in `gaff hook`, which
-refuses both from any Bash call an agent makes; neither command tests
-for a terminal, and neither is a sandbox. An agent that can write your
-home directory can still edit the files that record the grant.
-`gaff docs configuration` states both limits.
+Documented limits are not vulnerabilities. The built-in guard in `gaff
+hook` refuses `gaff trust` and `gaff allow`, which raises the cost of a
+self-grant and makes one visible. It is not a boundary. The guard reads
+a command as text, so a form it does not match reaches the shell
+unrefused, and a quoted subcommand is one such form. Neither command
+tests for a terminal. An agent that can write your home directory can
+edit the files that record the grant directly. `gaff docs
+configuration` states these limits.
 
 `src/config.rs` documents what the section-path confinement covers, in
 the comments on `read_section_body` and `read_confined`. Read those

@@ -49,10 +49,10 @@ They run only where a human installed them: `gaff init --git` writes
 the hooks, and `gaff init --github` writes the workflows. Cloning a
 repo runs nothing; the human who ran `init` in it is the consent.
 
-A handler's child still runs with the repo as its working directory,
-and tools such as git, make, and just read executable settings from
-there. That is why handlers are deny-by-default per repo. Never weaken
-`handler::is_trusted` for convenience.
+A handler's child still inherits the working directory gaff was called
+in, and tools such as git, make, and just read executable settings from
+there. That is why handlers are deny-by-default per directory. Never
+weaken `handler::is_trusted` for convenience.
 
 ## 4. Host knowledge lives behind the adapter seam
 

@@ -1,5 +1,5 @@
 doc: |
-  A handler runs only in a trusted repo. Its output cannot forge a gaff
+  A handler runs only in a trusted directory. Its output cannot forge a gaff
   entry, a relative command never runs, and a slow command is killed
   rather than hanging the session.
 transitions:
@@ -35,7 +35,7 @@ transitions:
       OUT=$(flush s-h)
       case "$OUT" in *"HANDLER RAN"*) echo "FAIL: ran while untrusted"; exit 1 ;; esac
 
-      # Trust this repo, then the handler runs.
+      # Trust this directory, then the handler runs.
       printf '%s\n' "$(pwd -P)" > "$HOME/.config/gaff/trusted"
       tick s-h c; tick s-h d
       OUT=$(flush s-h)

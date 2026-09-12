@@ -702,7 +702,7 @@ pub const BUILTIN_NAME: &str = "gaff-privileged";
 /// commands unrunnable from an agent. A terminal check on the command
 /// itself is a second line, not the first.
 ///
-/// `gaff trust` grants a repo the right to run commands. `gaff allow`
+/// `gaff trust` grants a directory the right to run commands. `gaff allow`
 /// grants an exception to a guard. Neither is the agent's to grant.
 #[must_use]
 pub fn builtin() -> Vec<Guard> {

@@ -17,10 +17,10 @@
 		"url": "git+https://github.com/cjohnhanson/gaff.git"
 	},
 	"optionalDependencies": {
-		"@cjohnhanson/gaffr-darwin-arm64": "0.1.0",
-		"@cjohnhanson/gaffr-darwin-x64": "0.1.0",
-		"@cjohnhanson/gaffr-linux-arm64-musl": "0.1.0",
-		"@cjohnhanson/gaffr-linux-x64-musl": "0.1.0"
+		"@cjohnhanson/gaffr-darwin-arm64": "0.1.1",
+		"@cjohnhanson/gaffr-darwin-x64": "0.1.1",
+		"@cjohnhanson/gaffr-linux-arm64-musl": "0.1.1",
+		"@cjohnhanson/gaffr-linux-x64-musl": "0.1.1"
 	},
-	"version": "0.1.0"
+	"version": "0.1.1"
 }

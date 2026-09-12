@@ -37,9 +37,9 @@ pub enum Error {
     UnknownHost { name: String, known: String },
 
     #[error(
-        "this repo is not trusted, so no handler ran. Run `gaff trust` from a terminal to allow it."
+        "this directory is not trusted, so no handler ran. Run `gaff trust` from a terminal to allow it."
     )]
-    UntrustedRepo,
+    UntrustedDirectory,
 
     #[error(
         "gaff trust must be run from a terminal. An agent may not grant itself the right to run commands."
@@ -66,7 +66,7 @@ mod tests {
             Error::NoStateDir,
             Error::NoWorkingDir,
             Error::NoSession,
-            Error::UntrustedRepo,
+            Error::UntrustedDirectory,
             Error::TrustNeedsTerminal,
             Error::UnknownProfile("x".into()),
             Error::HumanOnlyProfile("x".into()),
@@ -75,6 +75,21 @@ mod tests {
             let msg = e.to_string();
             assert!(!msg.is_empty(), "{e:?}");
             assert!(!msg.contains("Error::"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn no_message_scopes_consent_to_a_repository() {
+        // Consent is per directory: `handler::trust` records one path
+        // and `is_trusted` compares that path, with no prefix match.
+        // A message saying repo teaches the wrong model. This variant
+        // is reached by no call site today, so only a unit assertion
+        // can pin its wording.
+        for e in [Error::UntrustedDirectory, Error::TrustNeedsTerminal] {
+            let msg = e.to_string();
+            for phrase in ["this repo", "the repo", "a repo", "per repo"] {
+                assert!(!msg.contains(phrase), "{msg} says {phrase:?}");
+            }
         }
     }
 
