@@ -1,0 +1,21 @@
+Carried from e34a61d, which the pull request squashed to 249dbdb. Both
+commits name the same tree, so these sign-offs read what main holds.
+
+Review record for the 0.1.1 patch release.
+
+Five independent agents read bd42a12, the commit one step behind this
+one. Three returned PASS: review-docs, review-deps, review-usability.
+Two returned FAIL, and both findings are fixed in 249dbdb: a directory
+name holding a line break wrote two records from one grant, and the
+guard against the false security claim read the four prose pages and
+not the binary's own help text.
+
+The driver verified 249dbdb directly and signs off on that basis. Each
+line below states what was run. Where an independent agent's finding is
+carried, it is named.
+
+signoff[review-tests] PASS 249dbdb ran `cargo test --workspace --all-features` green across 16 suites and the 28-transition missouri suite; killed four mutations by hand: the line-break refusal, the prefix-match in `is_trusted`, the 0600 record write, and the false-claim guard once `trust --help` joined the surfaces it reads; minor: the `docgen` and `report` style call sites and the `-h`/`help` aliases have no case, and `flake.nix` is read by no gate
+signoff[review-code] PASS 249dbdb carried the independent FAIL at bd42a12 and fixed it: `trust` now refuses a directory name holding a line break or invalid UTF-8, rather than writing two records from one grant, and `is_trusted` checks the mode of the directory holding the record as well as the record; built clean under `clippy --workspace --all-targets --all-features -D warnings` and `cargo fmt --check`; minor: `run_trust` holds its help as eleven `println!` calls where the file uses a `const`, and `Error::UntrustedDirectory` reaches no call site
+signoff[review-docs] PASS 249dbdb carried the independent PASS at bd42a12, which swept 17 prose surfaces and confirmed by probe that `gaff "trust"` is admitted while `gaff trust` is refused; the two survivors it named, one in README.md and one in this crate's module header, are fixed here and the phrase guard widened to the phrasings that escaped it
+signoff[review-deps] PASS 249dbdb carried the independent PASS at bd42a12: cargo audit over 322 locked crates against a 2026-09-09 database found no advisory, every licence is permissive against the project's MIT, and the packaged tarball's own suite ran green, which is what the new exclude line exists to make true; the flake test flake it named is fixed here, the fixture path now carrying the process id
+signoff[review-usability] PASS 249dbdb carried the independent PASS at bd42a12, which drove fourteen consent states under a scratch HOME including a group-writable record, a umask of 002, a symlinked path and a deleted working directory, and found every refusal named a file, a flag or a command; the umask fix reproduces, and the record is created at 0600
