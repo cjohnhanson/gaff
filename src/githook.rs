@@ -835,7 +835,7 @@ mod stdin_tests {
         // no longer does, the check silently stopped running.
         let d = repo("stale");
         let entries: Vec<GitHook> =
-            serde_yaml_ng::from_str("- name: scan\n  on: [pre-commit]\n  command: [/bin/true]\n")
+            yaml_serde::from_str("- name: scan\n  on: [pre-commit]\n  command: [/bin/true]\n")
                 .unwrap();
         install(&d, &entries, "gaff hook").unwrap();
         assert!(
@@ -869,7 +869,7 @@ mod stdin_tests {
         let d = repo("atomic");
         std::fs::write(d.join(".git/hooks/pre-push"), "#!/bin/sh\n# theirs\n").unwrap();
         std::fs::write(d.join(".git/hooks/pre-push.local"), "#!/bin/sh\n# taken\n").unwrap();
-        let entries: Vec<GitHook> = serde_yaml_ng::from_str(
+        let entries: Vec<GitHook> = yaml_serde::from_str(
             "- name: a\n  on: [pre-commit]\n  command: [/bin/true]\n- name: b\n  on: [pre-push]\n  command: [/bin/true]\n",
         )
         .unwrap();

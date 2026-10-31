@@ -94,8 +94,8 @@ On Debian or Ubuntu, download the `.deb` from the [releases
 page](https://github.com/cjohnhanson/gaff/releases) and install it:
 
 ```
-wget https://github.com/cjohnhanson/gaff/releases/download/v0.1.4/gaff_0.1.4-1_amd64.deb
-sudo dpkg -i gaff_0.1.4-1_amd64.deb
+wget https://github.com/cjohnhanson/gaff/releases/download/v0.1.5/gaff_0.1.5-1_amd64.deb
+sudo dpkg -i gaff_0.1.5-1_amd64.deb
 ```
 
 To run it once without installing anything:
