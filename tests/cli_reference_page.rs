@@ -74,12 +74,26 @@ fn rendered() -> String {
     format!("{HEADER}\n{}\n", body.trim_end())
 }
 
+/// Whether a missing pinned pandoc fails the check rather than skipping
+/// it: in CI, and when asked to rewrite the page.
+const fn missing_pandoc_fails(update: bool, ci: bool) -> bool {
+    update || ci
+}
+
+#[test]
+fn a_missing_pandoc_fails_in_ci_and_on_update_and_skips_otherwise() {
+    assert!(missing_pandoc_fails(false, true));
+    assert!(missing_pandoc_fails(true, false));
+    assert!(missing_pandoc_fails(true, true));
+    assert!(!missing_pandoc_fails(false, false));
+}
+
 #[test]
 fn the_cli_reference_page_matches_the_man_page() {
     let update = std::env::var_os("UPDATE_CLI_REFERENCE").is_some();
     if let Err(why) = pinned_pandoc() {
         assert!(
-            !update && std::env::var_os("CI").is_none(),
+            !missing_pandoc_fails(update, std::env::var_os("CI").is_some()),
             "pandoc {PANDOC_VERSION} is needed to render the CLI reference page: {why}. \
              Install it from https://github.com/jgm/pandoc/releases/tag/{PANDOC_VERSION}"
         );
