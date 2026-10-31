@@ -1,6 +1,6 @@
 [package]
 name = "gaff"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 # 1.88, read from the graph rather than from the edition. Edition 2024
 # needs 1.85, and that floor is too low here: a locked dependency asks
@@ -80,7 +80,10 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 # `preserve_order` keeps the key order of a settings file gaff edits.
 serde_json = { version = "1", features = ["preserve_order"] }
-serde_yaml_ng = "0.10"
+# The YAML organization's maintained serde_yaml successor, as tisket,
+# zettel, almanac and mdstore use. serde_yaml_ng pulled in
+# unsafe-libyaml, which is unmaintained (RUSTSEC-2024-0449).
+yaml_serde = "0.10"
 thiserror = "2"
 # Finds the git dir from a working directory, including a worktree's
 # `.git` file. Pure filesystem; it spawns nothing.

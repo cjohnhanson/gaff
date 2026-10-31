@@ -71,6 +71,15 @@ jobs:
         with:
           run: "false"
 
+      # tests/cli_reference_page.rs renders the man page with this
+      # pandoc, and fails in CI without it. The pull request workflows
+      # install the same pinned release.
+      - name: install pandoc
+        run: >-
+          curl -fsSL -o /tmp/pandoc.deb https://github.com/jgm/pandoc/releases/download/3.7.0.2/pandoc-3.7.0.2-1-amd64.deb
+          && echo '4db8bad3d9f8451a3d52171664f3c58b08af6450fbd54a28dd05f6b00b0bbb04  /tmp/pandoc.deb' | sha256sum -c -
+          && sudo dpkg -i /tmp/pandoc.deb
+
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
