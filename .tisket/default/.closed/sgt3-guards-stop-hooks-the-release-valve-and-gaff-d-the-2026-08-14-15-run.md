@@ -10,7 +10,7 @@ labels:
 - retro
 depends_on: []
 created: 2026-08-16T13:57:16Z
-updated: 2026-08-16T13:57:16Z
+updated: 2026-11-09T15:41:26Z
 ---
 
 Forty commits over 2026-08-14 and 2026-08-15, filed after the fact. The Working Notes rule says non-trivial work has an issue; this run did not, and an audit found the gap.
@@ -28,3 +28,7 @@ Forty commits over 2026-08-14 and 2026-08-15, filed after the fact. The Working 
 - `gaff remind --clear` resolves against the caller's cwd, so from the wrong directory it clears nothing and prints "released".
 - The built-in guard fires on its own command names inside a quoted argument to another binary.
 - `gaff doctor` has no git-hook line, so an uninstalled declared hook is invisible.
+
+## Scratch Notes
+
+> closed in triage 2026-11-09: status already done; an after-the-fact record of the 2026-08-14/15 commits, all on main
