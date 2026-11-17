@@ -555,14 +555,24 @@ The next call that guard would refuse passes instead, once, with a note
 on stderr saying so. The call after that is refused again.
 
 Note the limit, which is the one `gaff trust` carries. gaff does not
-refuse `gaff allow` from an agent. To keep an agent from granting
-itself an exception, declare a guard that refuses `gaff allow`. `gaff
-allow` records the grant in gaff's state directory, so an agent that
-can write that directory can arm the one-shot without running the
+refuse `gaff allow` or `gaff trust` from an agent. To keep an agent
+from granting itself an exception or consent, declare a guard:
+
+```yaml
+guards:
+  - name: no-gaff-grants
+    tool: Bash
+    matches: '(^|[;&|(\n`]|\$\()[ \t]*(\S*/)?gaff[ \t]+(trust|allow)\b'
+    message: >-
+      `gaff trust` and `gaff allow` are the user's to run.
+```
+
+`gaff allow` records the grant in gaff's state directory, so an agent
+that can write that directory can arm the one-shot without running the
 command. The grant is visible. It is not a sandbox.
 
-The `!` prefix runs the command in the harness's own shell. That is what
-puts a terminal on stdin and keeps the call out of the hook.
+The `!` prefix runs the command in the harness's own shell, which keeps
+the call out of the hook.
 
 ### A guard exits 2 on purpose
 

@@ -87,10 +87,9 @@ Commands:
   check            Validate .gaff/gaff.yml
                    (--handlers checks the user config;
                     --github reports a workflow that drifted)
-  trust            Allow handlers in this directory (the hook refuses
-                   it from an agent; run it from your shell)
+  trust            Allow handlers in this directory
   allow <guard>    Let the next call that guard would refuse through,
-                   once (the hook refuses it from an agent)
+                   once
   doctor           Show what is live in this clone
   profile          Show, list, or set the active profile
   run <agent>      Dispatch a hook agent through its runner and map its
@@ -1442,11 +1441,8 @@ fn run_run(args: &[String]) -> ExitCode {
 /// runs with that directory as its working directory, and many ordinary
 /// tools read executable settings from there, so consent is per
 /// directory and explicit.
-/// Only a human may grant it. Every command an agent runs passes
-/// through `gaff hook` first, and the built-in guard there refuses this
-/// command. A human's shell has no hook, so this runs. That includes
-/// the harness's `!` shell, which attaches no tty to stdin, so this
-/// command does not test for a terminal.
+/// The harness's `!` shell attaches no tty to stdin, so this command
+/// does not test for a terminal.
 fn run_trust(args: &[String]) -> ExitCode {
     // A consent command must not grant consent because the reader asked
     // for help. Every argument refuses, and `--help` explains instead.
@@ -1460,10 +1456,9 @@ fn run_trust(args: &[String]) -> ExitCode {
             println!();
             println!("To revoke, remove that directory's line from that file.");
             println!();
-            println!("Run this from your shell. The built-in guard in `gaff hook`");
-            println!("refuses it from an agent. That raises the cost and makes the");
-            println!("grant visible. It is not a sandbox: an agent that can write");
-            println!("your home directory can still edit the record.");
+            println!("gaff does not refuse this from an agent. To refuse it, declare");
+            println!("a guard for it. The grant is visible, but it is not a sandbox:");
+            println!("an agent that can write your home directory can edit the record.");
             return ExitCode::SUCCESS;
         }
         return fail(&format!(
@@ -1757,11 +1752,8 @@ fn check_github() -> ExitCode {
 /// `gaff allow <guard> [--session <sid>]` — let the next call a guard
 /// would refuse through, once.
 ///
-/// A human uses this to release one call. The built-in guard in the
-/// hook keeps it away from an agent, because every agent Bash call
-/// passes through `gaff hook` and this command is refused there. A
-/// human's shell has no hook. That includes the harness's `!` shell,
-/// which attaches no tty to stdin, so this command does not test for a
+/// A human uses this to release one call. The harness's `!` shell
+/// attaches no tty to stdin, so this command does not test for a
 /// terminal.
 fn run_allow(args: &[String]) -> ExitCode {
     let mut guard: Option<String> = None;
