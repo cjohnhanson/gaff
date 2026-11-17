@@ -214,13 +214,11 @@ fn run_hook(args: &[String]) -> ExitCode {
 
     // The base guards run first.
     //
-    // The base guards need only the envelope and the config. The built-ins
-    // come first and no config drops them, then the user's base guards.
-    // A bundle's guards need the profile, which needs the session state,
-    // so they run after the store and the profile resolve, below. Base
-    // guards never depend on state gaff might fail to reach.
-    let mut base_guards = crate::guard::builtin();
-    base_guards.extend(cfg.guards.iter().cloned());
+    // The base guards need only the envelope and the config. A bundle's
+    // guards need the profile, which needs the session state, so they
+    // run after the store and the profile resolve, below. Base guards
+    // never depend on state gaff might fail to reach.
+    let base_guards = cfg.guards.clone();
     if envelope.kind == crate::event::Kind::PreToolCall
         && let Some((guard, refusal)) = guard_refusal(&base_guards, &envelope, adapter)
     {
@@ -1946,17 +1944,10 @@ fn guard_refusal(
         found
     };
     let hit = crate::guard::first_refusal(guards, tool, &value)?;
-    // The built-in guard's own message carries its remedy, and `gaff
-    // allow` knows no guard by that name, so the generic line would
-    // send the reader to a refusal.
-    let remedy = if hit.name == crate::guard::BUILTIN_NAME {
-        String::new()
-    } else {
-        format!(
-            "\n\nIf the user has approved this specific call, they can run `!gaff allow {}` to let it through once.",
-            hit.name
-        )
-    };
+    let remedy = format!(
+        "\n\nIf the user has approved this specific call, they can run `!gaff allow {}` to let it through once.",
+        hit.name
+    );
     Some((
         hit.name.clone(),
         format!(
@@ -1974,39 +1965,10 @@ mod tests {
         list.iter().map(|s| (*s).to_string()).collect()
     }
 
-    /// A refusal names a remedy the reader can run. `gaff allow`
-    /// resolves a name against the declared guards only, so the
-    /// built-in is not one of them, and the generic line would send
-    /// the reader to a command that refuses in turn. The built-in
-    /// carries its own remedy instead.
+    /// A refusal names a remedy the reader can run.
     #[test]
-    fn only_a_declared_guard_offers_the_allow_remedy() {
-        let envelope = crate::event::Envelope::from_claude_code(serde_json::json!({
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": { "command": "gaff allow something" },
-        }));
+    fn a_declared_guard_offers_the_allow_remedy() {
         let adapter = &crate::adapter::CLAUDE_CODE;
-
-        let (name, text) = guard_refusal(&crate::guard::builtin(), &envelope, adapter)
-            .expect("the built-in guard refuses `gaff allow`");
-        assert_eq!(name, crate::guard::BUILTIN_NAME);
-        // Its own message names `!gaff allow <guard>` as the shape a
-        // user runs. What must not appear is the appended line naming
-        // this guard, because `gaff allow gaff-privileged` refuses.
-        assert!(
-            !text.contains(&format!("!gaff allow {}", crate::guard::BUILTIN_NAME)),
-            "the built-in refusal offers a remedy `gaff allow` cannot honour: {text}"
-        );
-        assert!(
-            !text.contains("let it through once"),
-            "the built-in refusal carries the generic remedy line: {text}"
-        );
-        assert!(
-            text.contains("outside the hook"),
-            "the built-in refusal drops its own remedy: {text}"
-        );
-
         let declared = vec![crate::guard::Guard {
             name: "no-curl".into(),
             tool: "Bash".into(),

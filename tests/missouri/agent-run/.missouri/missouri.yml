@@ -34,8 +34,7 @@ transitions:
           runner: ['$T/runner']
       EOF
 
-      # Consent, as a handler's child needs. From a plain shell this works;
-      # from an agent the built-in guard refuses it.
+      # Consent, as a handler's child needs.
       gaff trust >/dev/null 2>&1
 
       verdict() { printf '%s\n' "$1" > "$T/verdict"; printf '%s' "${2:-0}" > "$T/exit"; }
