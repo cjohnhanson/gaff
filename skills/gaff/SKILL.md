@@ -82,7 +82,7 @@ cadence. Handlers are declared only in the operator's user-scoped config at
 directory the operator trusted with `gaff trust`.
 
     gaff check --handlers    # validate the handler config
-    gaff trust               # a human at a terminal only
+    gaff trust               # the operator runs this
 
 Do not run `gaff trust` or write the trusted file yourself. The grant
 is the operator's to make. The operator decides

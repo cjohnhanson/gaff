@@ -411,7 +411,7 @@ and `npm` read their own repo files. gaff cannot close that, so handlers
 are deny-by-default:
 
 ```
-gaff trust          # from a terminal, in the directory you want to allow
+gaff trust          # in the directory you want to allow
 ```
 
 Consent is recorded in `$HOME/.config/gaff/trusted`, outside every repo
@@ -502,7 +502,9 @@ user layer.
 ## Guards
 
 A guard refuses a tool call before it runs. Declare it once in the
-user-level config and it applies in every repo.
+user-level config and it applies in every repo. A guard matches the
+tool input as text, so a form its pattern does not match, such as a
+quoted word, passes.
 
 ```yaml
 guards:
@@ -555,22 +557,9 @@ wants one specific call to go through, without editing the file, runs
 The next call that guard would refuse passes instead, once, with a note
 on stderr saying so. The call after that is refused again.
 
-Note the limit, which is the one `gaff trust` carries. gaff does not
-refuse `gaff allow` or `gaff trust` from an agent. To keep an agent
-from granting itself an exception or consent, declare a guard:
-
-```yaml
-guards:
-  - name: no-gaff-grants
-    tool: Bash
-    matches: '(^|[;&|(\n`]|\$\()[ \t]*(\S*/)?gaff[ \t]+(trust|allow)\b'
-    message: >-
-      `gaff trust` and `gaff allow` are the user's to run.
-```
-
-`gaff allow` records the grant in gaff's state directory, so an agent
-that can write that directory can arm the one-shot without running the
-command. The grant is visible. It is not a sandbox.
+`gaff allow` records the grant in gaff's state directory. An agent can
+run the command, or write that directory, and arm the one-shot itself.
+The grant is visible. It is not a sandbox.
 
 The `!` prefix runs the command in the harness's own shell, which keeps
 the call out of the hook.

@@ -36,13 +36,8 @@ pub enum Error {
     #[error("unknown host `{name}` (implemented: {known})")]
     UnknownHost { name: String, known: String },
 
-    #[error(
-        "this directory is not trusted, so no handler ran. Run `gaff trust` from a terminal to allow it."
-    )]
+    #[error("this directory is not trusted, so no handler ran. Run `gaff trust` to allow it.")]
     UntrustedDirectory,
-
-    #[error("gaff trust must be run from a terminal.")]
-    TrustNeedsTerminal,
 
     #[error("{0}")]
     Io(#[from] std::io::Error),
@@ -65,7 +60,6 @@ mod tests {
             Error::NoWorkingDir,
             Error::NoSession,
             Error::UntrustedDirectory,
-            Error::TrustNeedsTerminal,
             Error::UnknownProfile("x".into()),
             Error::HumanOnlyProfile("x".into()),
         ];
@@ -80,14 +74,10 @@ mod tests {
     fn no_message_scopes_consent_to_a_repository() {
         // Consent is per directory: `handler::trust` records one path
         // and `is_trusted` compares that path, with no prefix match.
-        // A message saying repo teaches the wrong model. This variant
-        // is reached by no call site today, so only a unit assertion
-        // can pin its wording.
-        for e in [Error::UntrustedDirectory, Error::TrustNeedsTerminal] {
-            let msg = e.to_string();
-            for phrase in ["this repo", "the repo", "a repo", "per repo"] {
-                assert!(!msg.contains(phrase), "{msg} says {phrase:?}");
-            }
+        // A message saying repo teaches the wrong model.
+        let msg = Error::UntrustedDirectory.to_string();
+        for phrase in ["this repo", "the repo", "a repo", "per repo"] {
+            assert!(!msg.contains(phrase), "{msg} says {phrase:?}");
         }
     }
 

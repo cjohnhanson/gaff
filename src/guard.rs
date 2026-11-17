@@ -1659,7 +1659,7 @@ mod heredoc_tests {
 
     fn refused(cmd: &str) -> bool {
         let guards = [Guard {
-            name: "no-gaff-grants".into(),
+            name: "no-grants".into(),
             tool: "Bash".into(),
             matches: Some(r"(^|[;&|(\n`]|\$\()[ \t]*(\S*/)?gaff[ \t]+(trust|allow)\b".into()),
             field: "command".into(),
@@ -1672,9 +1672,9 @@ mod heredoc_tests {
 
     #[test]
     fn a_mention_inside_a_heredoc_body_is_data_not_a_call() {
-        // A commit message documenting the guard was refused by the
-        // guard. The body of a heredoc is stdin for the command that
-        // opened it, and the shell never executes it.
+        // A commit message that mentions a guarded command is data. The
+        // body of a heredoc is stdin for the command that opened it, and
+        // the shell never executes it.
         for cmd in [
             "git commit -q -F - <<'MSG'\nfix: thing\n\ngaff allow is the valve\nMSG",
             "cat <<EOF\ngaff trust\nEOF",

@@ -57,7 +57,8 @@ Out of scope:
 Documented limits are not vulnerabilities. gaff does not refuse `gaff
 trust` or `gaff allow` from an agent, and neither command tests for a
 terminal. An agent that can write your home directory can edit the
-files that record the grant directly. `gaff docs
+files that record the grant directly. A guard matches a command as
+text, so a form its pattern does not match passes. `gaff docs
 configuration` states these limits.
 
 `src/config.rs` documents what the section-path confinement covers, in

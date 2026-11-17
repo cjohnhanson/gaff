@@ -547,7 +547,7 @@ pub fn run_due(
     }
     if !is_trusted(cwd) {
         eprintln!(
-            "gaff: this directory is not trusted, so no handler ran. Run `gaff trust` from a terminal to allow it."
+            "gaff: this directory is not trusted, so no handler ran. Run `gaff trust` to allow it."
         );
         return Vec::new();
     }

@@ -1427,7 +1427,7 @@ fn run_run(args: &[String]) -> ExitCode {
     // here, as it is for a handler.
     if !crate::handler::is_trusted(&cwd) {
         eprintln!(
-            "gaff: this directory is not trusted, so `{name}` did not run. Run `gaff trust` from a terminal to allow it."
+            "gaff: this directory is not trusted, so `{name}` did not run. Run `gaff trust` to allow it."
         );
         return block;
     }
@@ -1456,9 +1456,9 @@ fn run_trust(args: &[String]) -> ExitCode {
             println!();
             println!("To revoke, remove that directory's line from that file.");
             println!();
-            println!("gaff does not refuse this from an agent. To refuse it, declare");
-            println!("a guard for it. The grant is visible, but it is not a sandbox:");
-            println!("an agent that can write your home directory can edit the record.");
+            println!("gaff does not refuse this from an agent. The grant is visible,");
+            println!("but it is not a sandbox: an agent that can write your home");
+            println!("directory can edit the record.");
             return ExitCode::SUCCESS;
         }
         return fail(&format!(

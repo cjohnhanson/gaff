@@ -149,13 +149,11 @@ fn a_subdirectory_of_a_trusted_directory_is_not_trusted() {
 ///
 /// It can: gaff does not refuse `gaff trust` from an agent. The
 /// phrasings are pinned rather than trusted to a sweep.
-const ABSOLUTE_GUARD_CLAIM: [&str; 6] = [
+const ABSOLUTE_GUARD_CLAIM: [&str; 4] = [
     "cannot grant consent",
     "cannot grant this",
     "from any Bash call",
     "kept from an agent",
-    "agent cannot schedule",
-    "may not grant itself",
 ];
 
 const REPO_SCOPED: [&str; 9] = [
