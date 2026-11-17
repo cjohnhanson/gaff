@@ -301,8 +301,9 @@ gaff remind --clear --id goal
 
 gaff refuses the stop and delivers the text. The model reads it and
 decides whether the work is done, then releases the hold. Nothing runs,
-so an agent may set one. `gaff trust` exists so an agent cannot schedule
-command execution for itself, and a hold needs no such right.
+so an agent may set one. A handler runs a command, so it needs the
+directory's consent from `gaff trust`. A hold runs nothing and needs no
+consent.
 
 A session may hold several times under different ids. The first one
 still held refuses the stop.
@@ -410,7 +411,7 @@ and `npm` read their own repo files. gaff cannot close that, so handlers
 are deny-by-default:
 
 ```
-gaff trust          # from a terminal, in the directory you want to allow
+gaff trust          # in the directory you want to allow
 ```
 
 Consent is recorded in `$HOME/.config/gaff/trusted`, outside every repo
@@ -423,14 +424,10 @@ subdirectory of a trusted directory is not itself trusted. Run `gaff
 trust` where you start the agent. `gaff doctor` reports the state for
 the directory it runs in, for the same reason.
 
-Note the limit of the gate. Every command an agent runs passes through
-`gaff hook` first, and a built-in guard there refuses `gaff trust`. The
-guard matches the command as text, so a form it does not match reaches
-the shell unrefused: a quoted subcommand is one. The command itself
-tests for no terminal, because a human's `!` shell attaches none. An
-agent that can write your home directory can edit the file directly.
-The gate raises the cost and makes the grant visible. It is not a
-sandbox, and it is not a boundary.
+Note the limit of this consent. An agent can run `gaff trust` itself,
+and an agent that can write your home directory can edit the file
+directly. The record makes the grant visible. It is not a sandbox, and
+it is not a boundary.
 
 `command[0]` must be an absolute path. gaff never searches `PATH`,
 because a repo can prepend its own `bin/` and shadow the binary you
@@ -505,7 +502,9 @@ user layer.
 ## Guards
 
 A guard refuses a tool call before it runs. Declare it once in the
-user-level config and it applies in every repo.
+user-level config and it applies in every repo. A guard matches the
+tool input as text, so a form its pattern does not match, such as a
+quoted word, passes.
 
 ```yaml
 guards:
@@ -546,9 +545,7 @@ does not, and that exact gap let a private key reach a public repo.
 
 ### Letting one call through: `gaff allow`
 
-A guard is config, and nothing at runtime lifts one, because an agent
-that could lift a guard would lift the mass-stage guard. A human who
-wants one specific call to go through, without editing the file, runs
+To let one specific call go through without editing the config, run
 `gaff allow`:
 
 ```
@@ -558,24 +555,12 @@ wants one specific call to go through, without editing the file, runs
 The next call that guard would refuse passes instead, once, with a note
 on stderr saying so. The call after that is refused again.
 
-One thing stands between an agent and its own grant, and it is a cost
-rather than a wall. gaff carries a built-in guard, which no config
-declares and no config removes, that refuses `gaff allow` and `gaff
-trust`. It matches the command as text, so a form it does not match,
-such as a quoted subcommand, still reaches the shell. Neither command
-tests for a terminal on stdin, because a human's
-`!` shell attaches none. Every agent command passes through `gaff hook`
-first, and a human's shell has no hook. `!gaff allow` in the harness
-runs in the human's shell.
+`gaff allow` records the grant in gaff's state directory. An agent can
+run the command, or write that directory, and arm the one-shot itself.
+The grant is visible. It is not a sandbox.
 
-Note the limit, which is the one `gaff trust` carries. `gaff allow`
-records the grant in gaff's state directory. An agent that can write
-that directory can arm the one-shot without running the command, and an
-agent that can allocate a terminal passes the stdin check. The gate
-raises the cost and makes the grant visible. It is not a sandbox.
-
-The `!` prefix runs the command in the harness's own shell. That is what
-puts a terminal on stdin and keeps the call out of the hook.
+The `!` prefix runs the command in the harness's own shell, which keeps
+the call out of the hook.
 
 ### A guard exits 2 on purpose
 

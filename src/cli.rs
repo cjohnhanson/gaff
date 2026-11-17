@@ -87,10 +87,9 @@ Commands:
   check            Validate .gaff/gaff.yml
                    (--handlers checks the user config;
                     --github reports a workflow that drifted)
-  trust            Allow handlers in this directory (the hook refuses
-                   it from an agent; run it from your shell)
+  trust            Allow handlers in this directory
   allow <guard>    Let the next call that guard would refuse through,
-                   once (the hook refuses it from an agent)
+                   once
   doctor           Show what is live in this clone
   profile          Show, list, or set the active profile
   run <agent>      Dispatch a hook agent through its runner and map its
@@ -214,13 +213,11 @@ fn run_hook(args: &[String]) -> ExitCode {
 
     // The base guards run first.
     //
-    // The base guards need only the envelope and the config. The built-ins
-    // come first and no config drops them, then the user's base guards.
-    // A bundle's guards need the profile, which needs the session state,
-    // so they run after the store and the profile resolve, below. Base
-    // guards never depend on state gaff might fail to reach.
-    let mut base_guards = crate::guard::builtin();
-    base_guards.extend(cfg.guards.iter().cloned());
+    // The base guards need only the envelope and the config. A bundle's
+    // guards need the profile, which needs the session state, so they
+    // run after the store and the profile resolve, below. Base guards
+    // never depend on state gaff might fail to reach.
+    let base_guards = cfg.guards.clone();
     if envelope.kind == crate::event::Kind::PreToolCall
         && let Some((guard, refusal)) = guard_refusal(&base_guards, &envelope, adapter)
     {
@@ -1430,7 +1427,7 @@ fn run_run(args: &[String]) -> ExitCode {
     // here, as it is for a handler.
     if !crate::handler::is_trusted(&cwd) {
         eprintln!(
-            "gaff: this directory is not trusted, so `{name}` did not run. Run `gaff trust` from a terminal to allow it."
+            "gaff: this directory is not trusted, so `{name}` did not run. Run `gaff trust` to allow it."
         );
         return block;
     }
@@ -1444,11 +1441,8 @@ fn run_run(args: &[String]) -> ExitCode {
 /// runs with that directory as its working directory, and many ordinary
 /// tools read executable settings from there, so consent is per
 /// directory and explicit.
-/// Only a human may grant it. Every command an agent runs passes
-/// through `gaff hook` first, and the built-in guard there refuses this
-/// command. A human's shell has no hook, so this runs. That includes
-/// the harness's `!` shell, which attaches no tty to stdin, so this
-/// command does not test for a terminal.
+/// The harness's `!` shell attaches no tty to stdin, so this command
+/// does not test for a terminal.
 fn run_trust(args: &[String]) -> ExitCode {
     // A consent command must not grant consent because the reader asked
     // for help. Every argument refuses, and `--help` explains instead.
@@ -1462,10 +1456,9 @@ fn run_trust(args: &[String]) -> ExitCode {
             println!();
             println!("To revoke, remove that directory's line from that file.");
             println!();
-            println!("Run this from your shell. The built-in guard in `gaff hook`");
-            println!("refuses it from an agent. That raises the cost and makes the");
-            println!("grant visible. It is not a sandbox: an agent that can write");
-            println!("your home directory can still edit the record.");
+            println!("gaff does not refuse this from an agent. The grant is visible,");
+            println!("but it is not a sandbox: an agent that can write your home");
+            println!("directory can edit the record.");
             return ExitCode::SUCCESS;
         }
         return fail(&format!(
@@ -1759,11 +1752,8 @@ fn check_github() -> ExitCode {
 /// `gaff allow <guard> [--session <sid>]` — let the next call a guard
 /// would refuse through, once.
 ///
-/// A human uses this to release one call. The built-in guard in the
-/// hook keeps it away from an agent, because every agent Bash call
-/// passes through `gaff hook` and this command is refused there. A
-/// human's shell has no hook. That includes the harness's `!` shell,
-/// which attaches no tty to stdin, so this command does not test for a
+/// A human uses this to release one call. The harness's `!` shell
+/// attaches no tty to stdin, so this command does not test for a
 /// terminal.
 fn run_allow(args: &[String]) -> ExitCode {
     let mut guard: Option<String> = None;
@@ -1946,17 +1936,10 @@ fn guard_refusal(
         found
     };
     let hit = crate::guard::first_refusal(guards, tool, &value)?;
-    // The built-in guard's own message carries its remedy, and `gaff
-    // allow` knows no guard by that name, so the generic line would
-    // send the reader to a refusal.
-    let remedy = if hit.name == crate::guard::BUILTIN_NAME {
-        String::new()
-    } else {
-        format!(
-            "\n\nIf the user has approved this specific call, they can run `!gaff allow {}` to let it through once.",
-            hit.name
-        )
-    };
+    let remedy = format!(
+        "\n\nIf the user has approved this specific call, they can run `!gaff allow {}` to let it through once.",
+        hit.name
+    );
     Some((
         hit.name.clone(),
         format!(
@@ -1974,39 +1957,10 @@ mod tests {
         list.iter().map(|s| (*s).to_string()).collect()
     }
 
-    /// A refusal names a remedy the reader can run. `gaff allow`
-    /// resolves a name against the declared guards only, so the
-    /// built-in is not one of them, and the generic line would send
-    /// the reader to a command that refuses in turn. The built-in
-    /// carries its own remedy instead.
+    /// A refusal names a remedy the reader can run.
     #[test]
-    fn only_a_declared_guard_offers_the_allow_remedy() {
-        let envelope = crate::event::Envelope::from_claude_code(serde_json::json!({
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": { "command": "gaff allow something" },
-        }));
+    fn a_declared_guard_offers_the_allow_remedy() {
         let adapter = &crate::adapter::CLAUDE_CODE;
-
-        let (name, text) = guard_refusal(&crate::guard::builtin(), &envelope, adapter)
-            .expect("the built-in guard refuses `gaff allow`");
-        assert_eq!(name, crate::guard::BUILTIN_NAME);
-        // Its own message names `!gaff allow <guard>` as the shape a
-        // user runs. What must not appear is the appended line naming
-        // this guard, because `gaff allow gaff-privileged` refuses.
-        assert!(
-            !text.contains(&format!("!gaff allow {}", crate::guard::BUILTIN_NAME)),
-            "the built-in refusal offers a remedy `gaff allow` cannot honour: {text}"
-        );
-        assert!(
-            !text.contains("let it through once"),
-            "the built-in refusal carries the generic remedy line: {text}"
-        );
-        assert!(
-            text.contains("outside the hook"),
-            "the built-in refusal drops its own remedy: {text}"
-        );
-
         let declared = vec![crate::guard::Guard {
             name: "no-curl".into(),
             tool: "Bash".into(),

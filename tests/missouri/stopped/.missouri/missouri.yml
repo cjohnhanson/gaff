@@ -5,9 +5,9 @@ doc: |
 
   Two things may refuse it. A handler the user configured with
   `blocks: true`, whose command decides. And a hold the session set for
-  itself, which is text the model judges. The difference is who may run
-  a command: `gaff trust` exists so an agent cannot schedule command
-  execution for itself, and a hold needs no such right.
+  itself, which is text the model judges. A handler runs a command, so
+  it needs the directory's consent from `gaff trust`. A hold runs
+  nothing and needs no consent.
 transitions:
   - name: "a stop hook refuses a stop, and neither kind can wedge the session"
     command: |

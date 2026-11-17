@@ -130,15 +130,9 @@ runner, a timeout, a failed context, an unknown agent, and an untrusted
 directory all exit 2.
 .It Cm trust
 Allow handlers to run in this directory.
-Every agent tool call passes through
-.Cm gaff hook
-first, and a built-in guard there refuses this command.
-The guard matches the command as text, so a form it does not match
-reaches the shell unrefused.
-A quoted subcommand is one such form.
-The user's shell has no hook, so it runs there.
-An agent that can write the home directory can still edit the file, so
-this raises the cost and makes the grant visible; it is not a sandbox.
+gaff does not refuse this command from an agent, and an agent that can
+write the home directory can edit the file, so the grant is visible but
+it is not a sandbox.
 A handler's command inherits the working directory gaff was called in,
 and tools such as
 .Xr git 1 ,
@@ -159,9 +153,6 @@ session, with the byte count and the entry names.
 Let the next tool call that
 .Ar guard
 would refuse through, once.
-The built-in guard in
-.Cm gaff hook
-refuses this command from an agent; run it from your shell.
 .It Cm ci Op Fl -hook Ar name
 Run the declared git gates against HEAD, as CI does: the config must
 load, no declared workflow may drift, then each hook's entries run,

@@ -54,13 +54,11 @@ Out of scope:
 
 ## Known boundaries
 
-Documented limits are not vulnerabilities. The built-in guard in `gaff
-hook` refuses `gaff trust` and `gaff allow`, which raises the cost of a
-self-grant and makes one visible. It is not a boundary. The guard reads
-a command as text, so a form it does not match reaches the shell
-unrefused, and a quoted subcommand is one such form. Neither command
-tests for a terminal. An agent that can write your home directory can
-edit the files that record the grant directly. `gaff docs
+Documented limits are not vulnerabilities. gaff does not refuse `gaff
+trust` or `gaff allow` from an agent, and neither command tests for a
+terminal. An agent that can write your home directory can edit the
+files that record the grant directly. A guard matches a command as
+text, so a form its pattern does not match passes. `gaff docs
 configuration` states these limits.
 
 `src/config.rs` documents what the section-path confinement covers, in

@@ -82,12 +82,10 @@ cadence. Handlers are declared only in the operator's user-scoped config at
 directory the operator trusted with `gaff trust`.
 
     gaff check --handlers    # validate the handler config
-    gaff trust               # a human at a terminal only
+    gaff trust               # the operator runs this
 
-The built-in guard in `gaff hook` refuses `gaff trust`. It reads your
-command as text, so it is a cost and not a boundary. Do not route
-around it, by quoting the subcommand or by writing the trusted file
-yourself. The grant is the operator's to make. The operator decides
+Do not run `gaff trust` or write the trusted file yourself. The grant
+is the operator's to make. The operator decides
 which directories may run commands, and a handler's command inherits
 the working directory gaff was called in.
 

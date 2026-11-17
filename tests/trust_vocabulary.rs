@@ -145,12 +145,10 @@ fn a_subdirectory_of_a_trusted_directory_is_not_trusted() {
 /// One term for one concept. Two literal strings were not enough: the
 /// rename reached the strings a guard happened to name and left the
 /// rest, which is the shape this file exists to stop.
-/// Claims that the built-in guard stops a self-grant outright.
+/// Claims that an agent cannot grant itself consent.
 ///
-/// It does not. The guard matches the command as text, and `gaff
-/// "trust"` reaches the shell unrefused. Five prose surfaces carried
-/// the absolute form, and correcting one left four, so the phrasings
-/// are pinned rather than trusted to a sweep.
+/// It can: gaff does not refuse `gaff trust` from an agent. The
+/// phrasings are pinned rather than trusted to a sweep.
 const ABSOLUTE_GUARD_CLAIM: [&str; 4] = [
     "cannot grant consent",
     "cannot grant this",
@@ -227,7 +225,7 @@ fn check_vocabulary(p: &Probe, cwd: &str, args: &[&str]) {
     for phrase in ABSOLUTE_GUARD_CLAIM {
         assert!(
             !out.contains(phrase),
-            "`gaff {}` says {phrase:?}, which claims the guard stops a self-grant outright: {out}",
+            "`gaff {}` says {phrase:?}, which claims an agent cannot grant itself consent: {out}",
             args.join(" ")
         );
     }
@@ -460,7 +458,7 @@ fn the_shipped_prose_agrees_with_the_binary() {
         for phrase in ABSOLUTE_GUARD_CLAIM {
             assert!(
                 !text.contains(phrase),
-                "{page} says {phrase:?}, which claims the guard stops a self-grant outright"
+                "{page} says {phrase:?}, which claims an agent cannot grant itself consent"
             );
         }
     }
