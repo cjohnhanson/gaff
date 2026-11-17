@@ -225,7 +225,7 @@ fn check_vocabulary(p: &Probe, cwd: &str, args: &[&str]) {
     for phrase in ABSOLUTE_GUARD_CLAIM {
         assert!(
             !out.contains(phrase),
-            "`gaff {}` says {phrase:?}, which claims the guard stops a self-grant outright: {out}",
+            "`gaff {}` says {phrase:?}, which claims an agent cannot grant itself consent: {out}",
             args.join(" ")
         );
     }
@@ -458,7 +458,7 @@ fn the_shipped_prose_agrees_with_the_binary() {
         for phrase in ABSOLUTE_GUARD_CLAIM {
             assert!(
                 !text.contains(phrase),
-                "{page} says {phrase:?}, which claims the guard stops a self-grant outright"
+                "{page} says {phrase:?}, which claims an agent cannot grant itself consent"
             );
         }
     }

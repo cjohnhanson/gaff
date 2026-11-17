@@ -424,10 +424,10 @@ subdirectory of a trusted directory is not itself trusted. Run `gaff
 trust` where you start the agent. `gaff doctor` reports the state for
 the directory it runs in, for the same reason.
 
-Note the limit of the gate. An agent can run `gaff trust` itself, and
-an agent that can write your home directory can edit the file directly.
-The gate makes the grant visible. It is not a sandbox, and it is not a
-boundary.
+Note the limit of this consent. An agent can run `gaff trust` itself,
+and an agent that can write your home directory can edit the file
+directly. The record makes the grant visible. It is not a sandbox, and
+it is not a boundary.
 
 `command[0]` must be an absolute path. gaff never searches `PATH`,
 because a repo can prepend its own `bin/` and shadow the binary you
@@ -545,9 +545,7 @@ does not, and that exact gap let a private key reach a public repo.
 
 ### Letting one call through: `gaff allow`
 
-A guard is config, and nothing at runtime lifts one, because an agent
-that could lift a guard would lift the mass-stage guard. A human who
-wants one specific call to go through, without editing the file, runs
+To let one specific call go through without editing the config, run
 `gaff allow`:
 
 ```
