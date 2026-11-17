@@ -553,9 +553,8 @@ impl Store {
 
     /// Let the next call a named guard would refuse through instead.
     ///
-    /// The human grants this from a terminal; `gaff allow` refuses an
-    /// agent, on the same terminal check `gaff trust` uses. It is a
-    /// one-shot: `take_allowance` removes it.
+    /// `gaff allow` grants this. It is a one-shot: `take_allowance`
+    /// removes it.
     ///
     /// # Errors
     /// Returns the IO error when the session directory cannot be

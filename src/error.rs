@@ -41,9 +41,7 @@ pub enum Error {
     )]
     UntrustedDirectory,
 
-    #[error(
-        "gaff trust must be run from a terminal. An agent may not grant itself the right to run commands."
-    )]
+    #[error("gaff trust must be run from a terminal.")]
     TrustNeedsTerminal,
 
     #[error("{0}")]

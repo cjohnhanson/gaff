@@ -301,8 +301,9 @@ gaff remind --clear --id goal
 
 gaff refuses the stop and delivers the text. The model reads it and
 decides whether the work is done, then releases the hold. Nothing runs,
-so an agent may set one. `gaff trust` exists so an agent cannot schedule
-command execution for itself, and a hold needs no such right.
+so an agent may set one. A handler runs a command, so it needs the
+directory's consent from `gaff trust`. A hold runs nothing and needs no
+consent.
 
 A session may hold several times under different ids. The first one
 still held refuses the stop.
