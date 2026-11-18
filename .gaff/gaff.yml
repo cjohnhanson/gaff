@@ -96,3 +96,18 @@ github:
       # set.
       - name: missouri suite
         command: [sh, -c, "[ -d tests/missouri ] || exit 0; cd tests/missouri && MISSOURI_SANDBOX=preinstalled missouri run"]
+
+  # The flake package runs every cargo test in its check phase, inside
+  # a sandbox that holds only the tracked tree and the declared inputs.
+  # A test that reads an undeclared file or program passes under cargo
+  # and fails here, so this job builds the package on every pull
+  # request. `nix flake check` evaluates the package but does not build
+  # it, so the job runs `nix build`.
+  - name: nix
+    on:
+      - pull_request
+    steps:
+      - name: install nix
+        uses: cachix/install-nix-action@v31
+      - name: build the flake package
+        command: [nix, build, .#default, -L, --no-link]
