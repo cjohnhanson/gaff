@@ -43,21 +43,13 @@
           toolchain = pkgs.rust-bin.stable.latest.default;
           craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
 
-          # cleanCargoSource removes the non-Rust files. The bundled docs
-          # and the missouri fixtures must survive the filter.
-          src = pkgs.lib.cleanSourceWith {
-            src = ./.;
-            filter =
-              path: type:
-              (craneLib.filterCargoSources path type)
-              || (builtins.match ".*tests/missouri/.*" path != null)
-              || (builtins.match ".*\\.yml$" path != null)
-              || (builtins.match ".*\\.missouri.*" path != null)
-              || (builtins.match ".*/docs$" path != null)
-              || (builtins.match ".*/docs/.*" path != null)
-              || (builtins.match ".*/skills$" path != null)
-              || (builtins.match ".*/skills/.*" path != null);
-          };
+          # The check runs every integration test, and those tests read
+          # files across the tree: scripts/, npm/, homebrew/, .github/,
+          # docs/. The build takes the whole tracked tree, so a new test
+          # cannot fail here on a file a filter dropped. A flake copies
+          # only tracked files, and buildDepsOnly makes its own source
+          # from the manifests, so the dependency build does not rerun.
+          src = ./.;
 
           commonArgs = {
             # The version is read from the manifest rather than
@@ -93,8 +85,13 @@
               # check input, because strictDeps keeps host-platform
               # inputs off PATH, so checkInputs reaches nothing and the
               # same eight tests fail. gitMinimal carries every builtin
-              # the fixtures use, at a tenth of the closure.
-              nativeCheckInputs = [ pkgs.gitMinimal ];
+              # the fixtures use, at a tenth of the closure. The
+              # prepublish test keeps python3 real and needs only its
+              # json module, which python3Minimal carries.
+              nativeCheckInputs = [
+                pkgs.gitMinimal
+                pkgs.python3Minimal
+              ];
               # The nix check runs cargo test, so the unit tests and the
               # integration tests both run here. The missouri suite is not
               # a cargo target at all: tests/missouri holds state
