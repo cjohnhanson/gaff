@@ -89,6 +89,7 @@ page, the README and the licence. There is no Windows build.
 | [Cargo](https://doc.rust-lang.org/cargo/) | [gaff](https://crates.io/crates/gaff) | `cargo install --locked gaff` |
 | [uv](https://docs.astral.sh/uv/) | [gaffr](https://pypi.org/project/gaffr/) | `uv tool install gaffr` |
 | [npm](https://www.npmjs.com) | [gaffr](https://www.npmjs.com/package/gaffr) | `npm install -g gaffr` |
+| [Nix](https://nixos.org) | [github:cjohnhanson/gaff](https://github.com/cjohnhanson/gaff) | `nix profile install github:cjohnhanson/gaff` |
 
 On Debian or Ubuntu, download the `.deb` from the [releases
 page](https://github.com/cjohnhanson/gaff/releases) and install it:
@@ -103,6 +104,7 @@ To run it once without installing anything:
 ```
 uvx gaffr status
 npx gaffr status
+nix run github:cjohnhanson/gaff -- status
 ```
 
 ### Building

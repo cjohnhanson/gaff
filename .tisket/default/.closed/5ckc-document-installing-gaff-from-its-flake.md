@@ -1,13 +1,13 @@
 ---
 title: Document installing gaff from its flake
-status: todo
+status: done
 priority: null
 assignee: null
 due_date: null
 labels: []
 depends_on: []
 created: 2026-11-18T15:43:49Z
-updated: 2026-11-18T15:43:49Z
+updated: 2026-11-18T16:05:20Z
 ---
 
 No document shows how to install gaff from its flake. The README and `docs/` cover other install routes but omit the flake route.
