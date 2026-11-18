@@ -63,9 +63,21 @@ fn run_gate_in(required: &[&str], vendored: &[&str]) -> (i32, String) {
         .expect("a criteria file is written");
     }
 
+    // The gate calls gaff from PATH. The binary under test goes first, so
+    // the result does not depend on an installed gaff, and a build
+    // sandbox with none still runs the gate.
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_gaff"))
+        .parent()
+        .expect("the gaff binary has a directory")
+        .to_owned();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .expect("PATH joins");
     let mut child = Command::new("sh")
         .arg("scripts/merge-gate.sh")
         .current_dir(&dir)
+        .env("PATH", path)
         .env_remove("GITHUB_ACTIONS")
         .env_remove("GITHUB_EVENT_NAME")
         .env_remove("GITHUB_EVENT_PATH")

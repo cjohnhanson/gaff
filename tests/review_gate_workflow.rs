@@ -121,9 +121,21 @@ fn run_gate(repo: &Path, head: &str) -> (String, i32) {
         step_script("every declared review signed off on the head commit"),
     )
     .expect("write script");
+    // The step calls gaff from PATH. The binary under test goes first, so
+    // the result does not depend on an installed gaff, and a build
+    // sandbox with none still runs the step.
+    let bin = Path::new(env!("CARGO_BIN_EXE_gaff"))
+        .parent()
+        .expect("the gaff binary has a directory")
+        .to_owned();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .expect("PATH joins");
     let out = Command::new("sh")
         .arg(&script)
         .current_dir(repo)
+        .env("PATH", path)
         .env("HEAD_SHA", head)
         .output()
         .expect("sh runs");
