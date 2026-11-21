@@ -28,6 +28,11 @@ transitions:
       EOF
       printf 'HOUSE RULES\n' > "$HOME/.config/gaff/conv.md"
 
+      # A bare --host is refused for the missing value, before stdin.
+      printf '{"hook_event_name":"SessionStart","session_id":"s-x"}' | gaff hook --host > /dev/null 2>"$HOME/err"
+      [ "$?" = "1" ] || { echo "FAIL: a bare --host must fail"; exit 1; }
+      grep -q -- '--host requires a value' "$HOME/err" || { echo "FAIL: a bare --host must say what is missing"; exit 1; }
+
       # With no host registered, doctor says so once and names the fix.
       [ "$(gaff doctor 2>/dev/null | grep -c 'NOT registered (run `gaff init --host')" = "1" ] || { echo "FAIL: doctor must report an unregistered repo once"; exit 1; }
 
