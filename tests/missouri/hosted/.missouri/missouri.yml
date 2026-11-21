@@ -41,6 +41,11 @@ transitions:
       [ "$(jq -r '.gaff.PreInvocation[0].command' .agents/hooks.json)" = "gaff hook --host agy --event PreInvocation" ] || { echo "FAIL: agy entry"; exit 1; }
       [ "$(jq -r '.gaff.PreToolUse[0].matcher' .agents/hooks.json)" = "*" ] || { echo "FAIL: agy matcher"; exit 1; }
       gaff doctor 2>/dev/null | grep -q 'hooks (agy): registered' || { echo "FAIL: doctor must read the agy file"; exit 1; }
+      # Codex's repo and local scopes are one file, read once. doctor
+      # names the flush points each host cannot carry.
+      gaff doctor 2>/dev/null | grep -qF 'hooks (codex): registered (repo (5)), all 5 events' || { echo "FAIL: doctor must read the codex file once"; exit 1; }
+      gaff doctor 2>/dev/null | grep -qF 'codex has no context channel at: tool_batch, stop' || { echo "FAIL: doctor must name codex's missing flush points"; exit 1; }
+      gaff doctor 2>/dev/null | grep -qF 'agy has no context channel at: stop' || { echo "FAIL: doctor must name agy's missing flush point"; exit 1; }
       # A repo registered for Codex and agy only is not missing Claude
       # Code, so doctor must not send its user to a plain `gaff init`.
       if gaff doctor 2>/dev/null | grep -q 'NOT registered'; then echo "FAIL: doctor must not call a registered repo unregistered"; exit 1; fi

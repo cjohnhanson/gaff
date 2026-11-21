@@ -2187,6 +2187,7 @@ mod tests {
             vec!["log", "--bogus"],
             vec!["hook", "--bogus"],
             vec!["hook", "--event"],
+            vec!["hook", "--host"],
             vec!["hook", "--host", "claude-code", "--bogus"],
         ];
         for case in bad {
