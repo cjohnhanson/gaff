@@ -1,0 +1,11 @@
+signoff[review-tests] PASS 7d05e08 cargo test --test docs 17 passed; three mutations (README yaml diverging from fixture, wrong gaff reviews output, invalid on: value) each turned a docs test red; minor: install commands are unexecuted by design
+signoff[review-docs] PASS 7d05e08 swept README, CONTRIBUTING, SECURITY, docs, man page, skills, package descriptions, CLI help; docs and trust_vocabulary tests pass; highlight and install claims checked against source; minor: one concept named three ways (review sign-offs, review skills, reviews), registry descriptions keep the old tagline
+signoff[review-code] PASS 7d05e08 no Rust source changed; fixture matches the README example; docs, trust_vocabulary and docs_pages suites green (33 passed); CONTRIBUTING install wording matches diataxis check scripts; minor: Cargo.toml description keeps the old wording
+signoff[review-deps] PASS 7d05e08 not applicable to manifests: no Cargo.toml, Cargo.lock, flake or package manifest change, no dependency, no spawn; install commands match the base README; docs test 17/17; minor: Nix and .deb routes now only on the unpublished installation guide
+signoff[review-usability] PASS 7d05e08 ran the README walkthrough cold in an isolated HOME and git repo, output matched byte for byte; wrong turns (no config, no repo, missing and empty reviews, unknown topic and command) each refuse with a fix and distinct exit; first success in four steps; minor: project instructions and section name one concept
+
+Round 2 of 2. All five checks re-ran against 7d05e08 after the round-1 fixes (host adapter line, topic wording, review term, CONTRIBUTING install heading, .lycheeignore comment).
+
+Declined in round 1, with reasons:
+- Dead gaff.eng.rip guide and installation links (review-docs, review-usability): the owner accepted them until the pages are published ("get these live, don't block on me approving, we don't really have an audience yet so we can iterate in prod"). .lycheeignore skips those paths until then.
+- Tagline differs from gaff --help; Homebrew absent from the package-name sentence; mixed verb and noun Highlights; pre-1.0 notice and Rust 1.88 note removed: README style decisions; the installation page and a follow-up on --help carry the rest.
