@@ -36,13 +36,58 @@ them with `cat`, or with [tisket](https://github.com/cjohnhanson/tisket)
 (`tisket issue list`, `tisket issue show <id>`). Do not edit them in a
 pull request.
 
+## The docs are tests
+
+`cargo test --test docs` runs every `console` block in README.md and
+docs/*.md against the built binary and fails on any difference in
+output. Each page runs in its own scratch directory, with its own
+`HOME`; fixtures for a page live in `tests/docs/<page>/` (see the top of
+`tests/docs.rs`). The same test fails when docs/cli-reference.md differs
+from the binary's help, and when a `yaml` config example fails `gaff
+check` (`gaff check --handlers` for a `handlers:` example). The docs
+test needs `git`, `env`, and `/bin/sh`.
+
+Write a gaff command in a `console` block, so the test runs it. A
+command in a `sh`, `text`, or indented block is never checked. Install
+sections are the exception, because their commands change the reader's
+machine.
+
+The `docs` workflow calls `.github/workflows/family-checks.yml` in the
+diataxis repository, which every tool of the eng.rip family (tundish,
+gaff, tisket, zettel, almanac, diataxis, missouri) shares. It reads
+README.md and docs/, and fails when:
+
+- a command of any of those tools sits outside a `console` block, except
+  under Install;
+- a fence has no language, or is a `trycmd` fence;
+- the README's title does not name gaff, it has no paragraph before its
+  first section, it has no `## Install` section, or it does not end with
+  `## License`;
+- a link to a file or heading in the repository is broken (a push to
+  `main` checks web links too);
+- typos finds a misspelling.
+
+The scripts and their rules are in the diataxis repository under
+`scripts/family/`; each one prints its rules with `--help`.
+
+After changing a command's output or the help text in `src/cli.rs`,
+write the new output into the docs and read the diff. The first command
+rewrites the examples, and the second rewrites the CLI reference. Run
+them one at a time:
+
+```sh
+TRYCMD=overwrite cargo test --test docs
+SNAPSHOTS=overwrite cargo test --test docs
+```
+
 ## What CI checks
 
-Three workflows check a change, and `release.yml` publishes a tag.
+Five workflows check a change, and `release.yml` publishes a tag.
 `verify` runs on every push. `gate` runs on a pull request, and `main`
 requires it. `review-gate` runs on a pull request too. It hands the
 sign-off note to `gaff reviews check` under the policy on `main`, so a
-branch cannot weaken the check that judges it.
+branch cannot weaken the check that judges it. `nix` builds the flake
+package, and `docs` runs the docs checks listed above.
 
 `verify` and `gate` run the commands the local git hooks run:
 

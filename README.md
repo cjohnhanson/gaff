@@ -94,17 +94,17 @@ page, the README and the licence. There is no Windows build.
 On Debian or Ubuntu, download the `.deb` from the [releases
 page](https://github.com/cjohnhanson/gaff/releases) and install it:
 
-```
+```sh
 wget https://github.com/cjohnhanson/gaff/releases/download/v0.1.4/gaff_0.1.4-1_amd64.deb
 sudo dpkg -i gaff_0.1.4-1_amd64.deb
 ```
 
 To run it once without installing anything:
 
-```
-uvx gaffr status
-npx gaffr status
-nix run github:cjohnhanson/gaff -- status
+```sh
+uvx gaffr doctor
+npx gaffr doctor
+nix run github:cjohnhanson/gaff -- doctor
 ```
 
 ### Building
@@ -116,7 +116,7 @@ with Rust 1.88 or newer. A C compiler is needed as well, which
 
 To build gaff:
 
-```
+```sh
 git clone https://github.com/cjohnhanson/gaff
 cd gaff
 cargo build --release
@@ -125,21 +125,117 @@ cargo build --release
 
 ## Using it
 
+A repo with this `.gaff/gaff.yml` keeps a section and a reminder alive,
+runs `cargo fmt --check` before each commit and on each pull request,
+and offers a `focus` profile that drops the reminder:
+
+```yaml
+sections:
+  - name: conventions
+    file: sections/conventions.md
+    refresh: {tool_calls: 25}
+
+reminders:
+  - name: scratch
+    every: {tool_calls: 20}
+    text: "Update your working notes before they go stale."
+
+profiles:
+  focus:
+    disable: [scratch]
+transitions:
+  agent_may_set: [focus]
+
+git:
+  - name: fmt
+    on: [pre-commit]
+    command: ["cargo", "fmt", "--check"]
+
+github:
+  - name: ci
+    on: [pull_request]
+    steps:
+      - use_git: fmt
 ```
-gaff init                          # register the hooks in the host's settings file
-gaff remind "check CI" --after 10  # one-shot, N tool calls into the future
-gaff status --session <id>         # counters, pending entries, one-shots
-gaff check                         # validate .gaff/gaff.yml
-gaff doctor                        # what is live in this clone
-gaff init --git                    # write the git hook scripts
-gaff init --github                 # generate the workflows
-gaff check --github                # report a workflow that drifted
-gaff trust                         # allow handlers in this directory
-gaff check --handlers              # validate ~/.config/gaff/handlers.yml
-gaff profile list                  # the declared profiles and who may set them
-gaff profile set focus             # switch, and re-prime the sections
-gaff log                           # what gaff injected into this session
-gaff docs getting-started          # the bundled documentation
+
+The section's text lives in `.gaff/sections/conventions.md`:
+
+```markdown
+Stage files by name. Run the tests before every commit.
+```
+
+Register the agent hooks, write the git hook and the workflow, and
+check the result:
+
+```console
+$ gaff init
+gaff hooks registered in .claude/settings.local.json
+
+$ gaff init --git
+installed: pre-commit
+
+$ gaff init --github
+generated: .github/workflows/ci.yml
+
+$ gaff check
+config ok: 1 reminder(s), 1 section(s), 0 guard(s), cap 4096 bytes
+
+$ gaff check --github
+ok      ci
+
+$ gaff doctor
+config:  ok (1 reminder(s), 1 section(s))
+state:   [..]/.local/state/gaff/[..]
+hooks:   registered (local (7)), all 7 events
+guards:  none active
+         (a broken or unreadable user config disarms every guard)
+handlers: none declared
+
+```
+
+Inside a session, the host sets the session id. From a terminal, pass
+it with `--session`:
+
+```console
+$ gaff remind "check CI" --after 10 --session demo
+
+$ gaff status --session demo
+{"oneshots":[{"at":10,"fired":false,"id":"r1"}],"pending":[],"prompts":0,"tool_calls":0}
+
+$ gaff profile list
+focus	agent or human
+
+$ gaff profile set focus --session demo
+profile set to `focus`; the next flush re-primes the sections
+
+$ gaff log --session demo
+no injections recorded for session demo
+
+```
+
+Handlers run only in a directory you trust:
+
+```console
+$ gaff trust
+this directory may now run handlers: [CWD]
+consent is per directory. Another directory needs its own `gaff trust`.
+
+$ gaff check --handlers
+no handlers declared
+
+```
+
+`gaff docs` lists the bundled documentation, and `gaff docs <topic>`
+prints a topic:
+
+```console
+$ gaff docs
+Topics (gaff docs <topic>):
+  getting-started      Install gaff, wire the hooks, and watch a section fire
+  cli-reference        The help gaff prints, for each command that has its own
+  configuration        Every key in .gaff/gaff.yml: sections, reminders, guards, and cadences
+  how-it-works         Why injected context decays, and how counting, arming, and flushing answer it
+
 ```
 
 ## Status
