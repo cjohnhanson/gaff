@@ -51,7 +51,7 @@ recurring entries), and `oneshots` (with their `fired` flags).
 ## Set up a repo
 
     gaff init          # register the hooks in .claude/settings.local.json
-    gaff check         # validate .gaff/gaff.yml
+    gaff check         # validate the user config and .gaff/gaff.yml
     gaff doctor        # what is live in this clone
 
 The repo config `.gaff/gaff.yml` holds data only. It declares sections,
@@ -81,7 +81,7 @@ cadence. Handlers are declared only in the operator's user-scoped config at
 `~/.config/gaff/handlers.yml`, never in a repo. They run only in a
 directory the operator trusted with `gaff trust`.
 
-    gaff check --handlers    # validate the handler config
+    gaff check --handlers    # validate the user guards and handlers
     gaff trust               # the operator runs this
 
 Do not run `gaff trust` or write the trusted file yourself. The grant

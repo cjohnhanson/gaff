@@ -45,8 +45,11 @@ only.
 names the one-shot; scheduling the same id again re-arms it.
 .Fl -session Ar id
 selects the session; the default comes from the environment.
-.It Cm remind Fl -clear Fl -id Ar id
-Clear the one-shot with that id, and release the hold it carries.
+.It Cm remind Fl -clear Op Fl -id Ar id
+Release the hold with that id, or every hold when no id is given.
+A one-shot scheduled with
+.Fl -after
+is not cleared.
 .It Cm status
 Show the counters, the pending entries, and the one-shots.
 .Fl -session Ar id
@@ -77,24 +80,29 @@ Run one git hook.
 The installed scripts call this.
 It returns the failing command's exit code, because a git hook exists
 to block the commit or the push.
-.It Cm check Op Fl -handlers
-Validate
+.It Cm check Op Fl -handlers | Fl -github
+Validate the effective config, which is
+.Pa ~/.config/gaff/gaff.yml
+with
 .Pa .gaff/gaff.yml
-and report every problem.
+over it, and report every problem.
 With
 .Fl -handlers ,
-validate
-.Pa ~/.config/gaff/handlers.yml
-instead.
+validate the user layer alone: the guards in
+.Pa ~/.config/gaff/gaff.yml
+and the handlers in
+.Pa ~/.config/gaff/handlers.yml .
 With
 .Fl -github ,
 report a workflow that drifted from the config.
 It exits 1 on a drift, so CI can run it.
-The plain form stays repo-only, so it behaves the same in CI.
 .It Cm doctor
 Show what is live in this clone: config, hooks, and state.
 .It Cm profile Oo Cm show | list | set Ar name Oc Op Fl -session Ar id
 Show, list, or set the active profile.
+.Fl -session
+follows the subcommand, so showing a session's profile is
+.Cm profile show Fl -session Ar id .
 A profile is a named overlay: it selects which reminders and sections
 are active and may override their cadences.
 The resolution path is the environment
@@ -235,11 +243,14 @@ substitutes that sha into the ref line it synthesizes on the hook's
 standard input.
 So one mechanism carries the head, and this command takes no flag that
 names a commit.
-.It Cm docs Op Ar page
+.It Cm docs Op Ar topic
 Print the bundled documentation.
 Without
-.Ar page ,
-list the available pages.
+.Ar topic ,
+list the available topics.
+.It Cm docs search Ar word
+List the topics that hold
+.Ar word .
 .It Cm prime
 Print what gaff is and how to use it, for an agent's context.
 The output depends only on the binary version: no arguments, config,

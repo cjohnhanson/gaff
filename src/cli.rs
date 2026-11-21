@@ -71,37 +71,65 @@ pub fn run(args: &[String]) -> ExitCode {
 /// prints it, and a test holds the two byte-equal.
 pub const ABOUT: &str = "a context-lifecycle handler for coding agents";
 
+// The help for every command: only `trust` prints help of its own
+// (`run_trust`). docs/cli-reference.md is generated from this text, so
+// each line states what its handler in this file does:
+// remind: `parse_remind` and `run_remind` (`--clear` calls
+//   `Store::clear_hold`, which drops every hold when no id is given);
+// status: `run_status` prints JSON;
+// init: `run_init`, `run_init_git` (`--uninstall`), `run_init_github`;
+// check: `run_check` loads the layered config, and `check_handlers`
+//   reads the user layer alone;
+// profile: `run_profile` shows the active profile with no subcommand
+//   or `show`, and reads `--session` only after the subcommand;
+// docs: `run_docs` hands `search <word>` to diataxis;
+// --session: `session_from` in remind, status, allow, profile, and log.
 const USAGE: &str = "gaff — a context-lifecycle handler for coding agents
 
 Usage: gaff <command> [options]
 
 Commands:
   hook             Handle one hook event from stdin (the harness calls this)
-  remind <text>    Schedule a one-shot reminder N tool calls ahead
-                   (--at stop holds the stop; --times N lets go after N)
-  status           Show counters, pending entries, and one-shots
+  remind <text> --after N [--id ID]
+                   Schedule a one-shot reminder N tool calls ahead
+  remind <text> --at stop [--times N] [--id ID]
+                   Hold the stop until cleared, or for N refusals
+  remind --clear [--id ID]
+                   Release one hold, or every hold when no id is given
+  status           Print the counters, pending entries, and one-shots as JSON
   init [--host H]  Register the agent hooks in the host's settings file
+                   (--uninstall removes them)
   init --git       Write the git hook scripts declared in the config
+                   (--uninstall removes them)
   init --github    Generate the workflows declared in the config
   githook <name>   Run one git hook (the installed scripts call this)
-  check            Validate .gaff/gaff.yml
-                   (--handlers checks the user config;
+  check            Validate the user config and .gaff/gaff.yml together
+                   (--handlers checks the user guards and handlers.yml;
                     --github reports a workflow that drifted)
-  trust            Allow handlers in this directory
+  trust            Allow handlers in this directory (--help says more)
   allow <guard>    Let the next call that guard would refuse through,
                    once
   doctor           Show what is live in this clone
-  profile          Show, list, or set the active profile
+  profile [show]   Show the active profile
+  profile list     List the declared profiles and who may set each
+  profile set <name>
+                   Switch this session to a profile
   run <agent>      Dispatch a hook agent through its runner and map its
                    verdict to an exit code (0 admits, 2 refuses)
   log              Show the injection audit trail for a session
-  docs [page]      Print the bundled documentation
+  docs [topic]     Print the bundled documentation
+                   (search <word>: the topics that hold the word)
   ci [--hook H]    Run the declared git gates against HEAD, as CI does
   reviews          Print the reviews a change must pass, one to a line
   reviews check    Refuse a push whose tips name no review (reads stdin)
   prime            Print what gaff is and how to use it, for an agent's context
 
 Options:
+  --session ID     The session for remind, status, allow, profile, and log,
+                   after the command and any subcommand
+                   (gaff profile show --session ID). Without it,
+                   GAFF_SESSION_ID or the host's variable
+                   (CLAUDE_CODE_SESSION_ID for Claude Code) names it.
   -h, --help       Print this help
   -V, --version    Print the version
 
@@ -472,7 +500,7 @@ fn parse_remind(args: &[String]) -> Result<RemindArgs, String> {
 }
 
 /// `gaff remind <text> (--after <N> | --at stop) [--times <N>] [--id <id>] [--session <sid>]`
-/// and `gaff remind --clear --id <id>`.
+/// and `gaff remind --clear [--id <id>]`.
 ///
 /// Schedule a one-shot reminder N tool calls ahead, or at the stop.
 fn run_remind(args: &[String]) -> ExitCode {
@@ -752,7 +780,8 @@ fn entry_problems(cfg: &config::Config, cwd: &std::path::Path) -> Vec<String> {
     problems
 }
 
-/// `gaff check` — validate `.gaff/gaff.yml`. Exit 1 for an invalid
+/// `gaff check` — validate the user config with `.gaff/gaff.yml` over
+/// it (`config::load_layered`). Exit 1 for an invalid
 /// config. This command is the one place where a loud failure is
 /// correct. It also collects the guard problems, because a pattern that
 /// does not compile blocks nothing and reports nothing.
@@ -1493,8 +1522,9 @@ fn run_trust(args: &[String]) -> ExitCode {
 
 /// Validate the user-scoped handler config.
 ///
-/// This is separate from `gaff check`, which stays repo-only so it
-/// behaves the same in CI as it does locally.
+/// Plain `gaff check` validates the layered config (`run_check` calls
+/// `config::load_layered`). This reads the user layer alone: the guards
+/// in the user `gaff.yml` and the handlers in `handlers.yml`.
 fn check_handlers() -> ExitCode {
     let mut bad_guards = false;
     // Guards live only in the user config, so this subcommand validates

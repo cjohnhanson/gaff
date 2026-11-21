@@ -91,6 +91,12 @@ a remaining pending marker) over asserting on output text.
 Machine-specific or timing-coupled bytes belong in `.missouri/ignore`,
 not in a fixture.
 
+`cargo test --test docs` runs every `console` block in README.md and
+docs/*.md, validates every `yaml` example, and compares
+docs/cli-reference.md with the help. After a change to the help or to
+a command's output, run `TRYCMD=overwrite cargo test --test docs`, then
+`SNAPSHOTS=overwrite cargo test --test docs`, and read the diff.
+
 ## Prose
 
 All prose, including code comments, follows ASD-STE100: short
