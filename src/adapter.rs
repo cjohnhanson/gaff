@@ -597,21 +597,48 @@ fn claude_code_kind(event: &str) -> Kind {
 }
 
 /// The session id for a command run inside a session: the flag, then
-/// gaff's own `GAFF_SESSION_ID`, then whichever host variable is set.
+/// gaff's own `GAFF_SESSION_ID`, then the host variable that is set.
 /// Nothing above the adapter knows what any host calls it.
 #[must_use]
 pub fn session_from_env(flag: Option<&str>) -> Option<String> {
+    let set = |name: &str| std::env::var(name).ok().filter(|s| !s.is_empty());
+    let hosts: Vec<(&str, String)> = ADAPTERS
+        .iter()
+        .filter(|a| a.session_env != "GAFF_SESSION_ID")
+        .filter_map(|a| set(a.session_env).map(|v| (a.session_env, v)))
+        .collect();
+    resolve_session(flag, set("GAFF_SESSION_ID"), &hosts)
+}
+
+/// Choose the session from the flag, gaff's variable, and the host
+/// variables that are set.
+///
+/// A host started inside another host inherits the outer host's
+/// variable, so two host variables with different values name two
+/// sessions. gaff cannot tell which one is this session, and a guess
+/// writes a reminder or a hold into the other one. It refuses to guess,
+/// says why, and the caller asks for `--session`.
+fn resolve_session(
+    flag: Option<&str>,
+    gaff: Option<String>,
+    hosts: &[(&str, String)],
+) -> Option<String> {
     if let Some(f) = flag {
         return Some(f.to_string());
     }
-    if let Ok(s) = std::env::var("GAFF_SESSION_ID")
-        && !s.is_empty()
-    {
-        return Some(s);
+    if gaff.is_some() {
+        return gaff;
     }
-    ADAPTERS
-        .iter()
-        .find_map(|a| std::env::var(a.session_env).ok().filter(|s| !s.is_empty()))
+    let first = hosts.first()?;
+    if hosts.iter().any(|(_, v)| v != &first.1) {
+        let names: Vec<&str> = hosts.iter().map(|(n, _)| *n).collect();
+        eprintln!(
+            "gaff: {} name different sessions, so gaff cannot tell which session this is. Pass --session or set GAFF_SESSION_ID.",
+            names.join(" and ")
+        );
+        return None;
+    }
+    Some(first.1.clone())
 }
 
 /// The one-line hint for a missing session, naming every host's variable.
@@ -678,6 +705,38 @@ pub fn detect(explicit: Option<&str>, payload: &Value) -> &'static Adapter {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn two_host_sessions_that_disagree_resolve_to_none() {
+        // A real agy hook ran with CLAUDE_CODE_SESSION_ID inherited from
+        // the Claude Code session that started it. Taking the first
+        // variable wrote the agy session's reminder into the parent.
+        let nested = [
+            ("CLAUDE_CODE_SESSION_ID", "parent".to_string()),
+            ("ANTIGRAVITY_CONVERSATION_ID", "child".to_string()),
+        ];
+        assert_eq!(resolve_session(None, None, &nested), None);
+        // The flag and gaff's own variable still decide.
+        assert_eq!(
+            resolve_session(Some("f"), None, &nested).as_deref(),
+            Some("f")
+        );
+        assert_eq!(
+            resolve_session(None, Some("g".into()), &nested).as_deref(),
+            Some("g")
+        );
+        // One host variable, or two that agree, name one session.
+        assert_eq!(
+            resolve_session(None, None, &nested[..1]).as_deref(),
+            Some("parent")
+        );
+        let same = [
+            ("CODEX_THREAD_ID", "s".to_string()),
+            ("CLAUDE_CODE_SESSION_ID", "s".to_string()),
+        ];
+        assert_eq!(resolve_session(None, None, &same).as_deref(), Some("s"));
+        assert_eq!(resolve_session(None, None, &[]), None);
+    }
 
     #[test]
     fn an_explicit_name_wins_over_the_shape() {
