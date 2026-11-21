@@ -392,11 +392,13 @@ fn merge(entries: Vec<Entry>, config: &Config, store: &Store, session: &str) -> 
             // A held-back prime section waits for the next flush, which
             // delivers pending sections in declared order. A section
             // larger than the cap alone can never fit, so gaff does not
-            // arm it. The marker would retry it on every flush.
+            // arm it. A pending marker would retry it on every flush.
+            // `gaff check` reports such a section.
             if let EntryKind::Prime { name } = &entry.kind
                 && entry.text.len() <= config.max_inject_bytes
+                && store.write_pending(session, name, 0).is_err()
             {
-                store.write_pending(session, name, 0).ok();
+                eprintln!("gaff: section `{name}` was held back and could not be armed.");
             }
             continue;
         };
@@ -887,6 +889,59 @@ mod tests {
         let out = handle(&event(start), &config, &store, &dir);
         assert!(!out.unwrap_or_default().contains("[gaff:a]"));
         assert_eq!(store.pending_multiple("s", "a"), None);
+    }
+
+    #[test]
+    fn a_held_section_exactly_the_cap_is_armed() {
+        // A section of exactly `max_inject_bytes` fits by itself, so it
+        // must arrive at the next flush.
+        let store = temp_store("prime-boundary");
+        let dir = std::env::temp_dir().join(format!("gaff-prime-boundary-{}", std::process::id()));
+        let mut config = overflow_config(&dir);
+        // c comes first and takes the room, so a is held.
+        config.sections = vec![config.sections[2].clone(), config.sections[0].clone()];
+        let a = format!("[gaff:a]\n{}", "a".repeat(51));
+        config.max_inject_bytes = a.len();
+        let start =
+            json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
+        let out = handle(&event(start), &config, &store, &dir).unwrap();
+        assert!(!out.contains("[gaff:a]"), "{out}");
+        let prompt =
+            json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "x"});
+        assert_eq!(
+            handle(&event(prompt), &config, &store, &dir).as_deref(),
+            Some(a.as_str())
+        );
+    }
+
+    #[test]
+    fn a_section_the_cap_holds_back_at_a_profile_switch_arrives_at_the_next_flush() {
+        let store = temp_store("prime-profile");
+        let dir = std::env::temp_dir().join(format!("gaff-prime-profile-{}", std::process::id()));
+        let config = overflow_config(&dir);
+        let a = format!("[gaff:a]\n{}", "a".repeat(51));
+        let held = format!(
+            "[gaff:b]\n{}{SEPARATOR}[gaff:c]\n{}",
+            "b".repeat(16),
+            "c".repeat(16)
+        );
+        let start =
+            json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
+        let prompt =
+            json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "x"});
+        let _ = handle(&event(start), &config, &store, &dir);
+        let _ = handle(&event(prompt.clone()), &config, &store, &dir);
+        assert!(store.set_profile("s", "focus").unwrap());
+        assert_eq!(
+            handle(&event(prompt.clone()), &config, &store, &dir).as_deref(),
+            Some(a.as_str()),
+            "the switch re-primes"
+        );
+        assert_eq!(
+            handle(&event(prompt), &config, &store, &dir).as_deref(),
+            Some(held.as_str()),
+            "the held sections arrive at the next flush"
+        );
     }
 
     #[test]
