@@ -50,7 +50,10 @@ test needs `git`, `env`, and `/bin/sh`.
 Write a gaff command in a `console` block, so the test runs it. A
 command in a `sh`, `text`, or indented block is never checked. Install
 sections are the exception, because their commands change the reader's
-machine.
+machine. The `docs` workflow runs the family docs checks from the
+diataxis repository on every pull request: it fails a command outside a
+`console` block, a fence with no language, a README that leaves the
+family shape, a broken internal link, and a misspelling.
 
 After changing a command's output or the help text in `src/cli.rs`,
 write the new output into the docs and read the diff. The first command
