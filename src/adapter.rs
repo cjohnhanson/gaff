@@ -287,16 +287,29 @@ fn from_codex(json: Value) -> Envelope {
 
 /// Codex's tool input is Claude Code's, except for a patch. A patch has
 /// no `file_path`, so the field is the path of each file the patch
-/// adds, updates, or deletes, one per line, in patch order.
+/// adds, updates, deletes, or moves a file to, one per line, in patch
+/// order.
+///
+/// The headers follow Codex's patch grammar
+/// (`codex-rs/core/assets/tools/apply_patch.lark` in openai/codex), and
+/// each line is trimmed first, as Codex's parser does. A header the
+/// parser applies and this reader misses lets a write pass a guard.
 fn codex_tool_field(raw: &Value, field: &str) -> Option<String> {
     if field == "file_path" && raw.get("tool_name").and_then(Value::as_str) == Some("apply_patch") {
         let patch = raw.pointer("/tool_input/command")?.as_str()?;
         let paths: Vec<&str> = patch
             .lines()
             .filter_map(|line| {
-                ["*** Add File: ", "*** Update File: ", "*** Delete File: "]
-                    .iter()
-                    .find_map(|head| line.strip_prefix(head))
+                let line = line.trim();
+                [
+                    "*** Add File: ",
+                    "*** Update File: ",
+                    "*** Delete File: ",
+                    "*** Move to: ",
+                ]
+                .iter()
+                .find_map(|head| line.strip_prefix(head))
+                .map(str::trim)
             })
             .collect();
         return (!paths.is_empty()).then(|| paths.join("\n"));
@@ -1068,6 +1081,18 @@ mod host_payload_tests {
         );
         // A shell call has no file path, patch or not.
         assert_eq!((CODEX.tool_field)(&codex_pre_tool_use(), "file_path"), None);
+        // Codex trims a header line before it matches it, and an update
+        // can move the file. The destination is a path the patch writes,
+        // so a guard must see it.
+        let mut moved = codex_pre_tool_use();
+        moved["tool_name"] = json!("apply_patch");
+        moved["tool_input"] = json!({
+            "command": "*** Begin Patch\n  *** Update File: a.txt\n*** Move to: /x/secret.txt  \n@@\n-a\n+b\n*** End Patch"
+        });
+        assert_eq!(
+            (CODEX.tool_field)(&moved, "file_path").as_deref(),
+            Some("a.txt\n/x/secret.txt")
+        );
         // A patch with no file header names no path.
         let mut bare = codex_pre_tool_use();
         bare["tool_name"] = json!("apply_patch");
