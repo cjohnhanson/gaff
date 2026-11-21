@@ -7,9 +7,10 @@ type: reference
 # CLI reference
 
 `gaff --help` lists every command. Of the commands, only `gaff trust`
-prints help of its own. `man gaff` describes each command's options,
-and [the configuration reference](configuration.md) describes the
-config each one reads.
+prints help of its own. The man page describes each command's options:
+`man gaff` where the package installs it (Homebrew and Nix; the
+release archives carry it as `man/gaff.1`), or `docs/man/gaff.1` in the repository. `gaff docs
+configuration` describes the config each command reads.
 
 <!-- Begin generated CLI help: cargo test --test docs -->
 

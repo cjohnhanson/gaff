@@ -102,9 +102,9 @@ sudo dpkg -i gaff_0.1.4-1_amd64.deb
 To run it once without installing anything:
 
 ```sh
-uvx gaffr status
-npx gaffr status
-nix run github:cjohnhanson/gaff -- status
+uvx gaffr doctor
+npx gaffr doctor
+nix run github:cjohnhanson/gaff -- doctor
 ```
 
 ### Building

@@ -516,21 +516,19 @@ fn a_shorter_fence_inside_a_longer_one_does_not_close_it() {
     assert!(commands(Path::new("p.md"), page).is_empty());
 }
 
-/// Every flag the help names appears in the man page, which the CLI
-/// reference sends readers to for each command's options.
-#[test]
-fn the_man_page_names_every_flag_the_help_names() {
-    let (ok, help) = run_isolated(&["--help"]);
-    assert!(ok);
-    let page = std::fs::read_to_string(root().join("docs/man/gaff.1")).unwrap();
-    // The COMMANDS section alone, as tests/man_page_covers_the_cli.rs
-    // reads it: a flag named only under FILES documents no command.
+/// The COMMANDS section of an mdoc page, as
+/// `tests/man_page_covers_the_cli.rs` reads it: a flag named only under
+/// FILES documents no command.
+fn commands_section(page: &str) -> &str {
     let start = page.find("\n.Sh COMMANDS\n").expect("a COMMANDS section") + 1;
     let rest = &page[start..];
-    let man = rest[1..].find("\n.Sh ").map_or(rest, |end| &rest[..=end]);
-    // Whole flags, so `Fl -github` does not count for `--git`.
-    let documented: std::collections::BTreeSet<&str> = man
-        .split("Fl -")
+    rest[1..].find("\n.Sh ").map_or(rest, |end| &rest[..=end])
+}
+
+/// The whole flags an mdoc text names with `Fl`, so `Fl -github` does
+/// not count for `--git`.
+fn man_flags(man: &str) -> std::collections::BTreeSet<&str> {
+    man.split("Fl -")
         .skip(1)
         .map(|s| {
             let end = s
@@ -538,7 +536,26 @@ fn the_man_page_names_every_flag_the_help_names() {
                 .unwrap_or(s.len());
             &s[..end]
         })
-        .collect();
+        .collect()
+}
+
+#[test]
+fn a_flag_outside_commands_or_inside_a_longer_flag_does_not_count() {
+    let page = ".Dd x\n.Sh COMMANDS\n.It Cm init Fl -github\n.Sh FILES\n.Fl -git\n";
+    let flags = man_flags(commands_section(page));
+    assert!(flags.contains("github"));
+    assert!(!flags.contains("git"), "{flags:?}");
+}
+
+/// Every flag the help names appears in the man page, which the CLI
+/// reference sends readers to for each command's options.
+#[test]
+fn the_man_page_names_every_flag_the_help_names() {
+    let (ok, help) = run_isolated(&["--help"]);
+    assert!(ok);
+    let page = std::fs::read_to_string(root().join("docs/man/gaff.1")).unwrap();
+    let man = commands_section(&page);
+    let documented = man_flags(man);
     let flags: std::collections::BTreeSet<&str> = help
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
         .filter_map(|w| w.strip_prefix("--"))

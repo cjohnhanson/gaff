@@ -48,8 +48,9 @@ check` (`gaff check --handlers` for a `handlers:` example). The docs
 test needs `git`, `env`, and `/bin/sh`.
 
 Write a gaff command in a `console` block, so the test runs it. A
-command in any other kind of block is never checked. Install sections
-are the exception, because their commands change the reader's machine.
+command in a `sh`, `text`, or indented block is never checked. Install
+sections are the exception, because their commands change the reader's
+machine.
 
 After changing a command's output or the help text in `src/cli.rs`,
 write the new output into the docs and read the diff. The first command
