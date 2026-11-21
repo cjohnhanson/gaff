@@ -346,7 +346,7 @@ fn help_paths() -> Vec<Vec<String>> {
 /// The generated part of the CLI reference: one section per command
 /// with help of its own, as a `console` transcript. A `text` fence would
 /// do, but help lines open with `gaff`, and the fence lint shared by the
-/// eng.rip tools (`scripts/family/check-fences.py` in cjohnhanson/eng.rip)
+/// eng.rip tools (`scripts/family/check-fences.py` in cjohnhanson/diataxis)
 /// reads such a line in a `text` fence as a command; the transcript also
 /// runs in `console_examples`.
 fn generated_reference() -> String {
