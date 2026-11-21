@@ -1,0 +1,6 @@
+signoff[review-tests] PASS 436573a README-only change adds no guard and no console block; every added line matches 3f8c59e:README.md; cargo test --test docs --test trust_vocabulary passes 29/29
+signoff[review-docs] PASS 436573a all 36 added lines match the 3f8c59e Install section exactly; restored facts checked against Cargo.toml, Cargo.lock, flake.nix, src/cli.rs and the v0.1.4 release assets
+signoff[review-code] PASS 436573a all 36 added lines match 3f8c59e:README.md; heading nesting checked; version, rust-version, aws-lc-sys, flake.nix and the debs release job confirmed; no code touched
+signoff[review-deps] PASS 436573a not applicable to criteria 1-5: no manifest, lockfile or spawn changed; fresh-install walk confirmed flake packages.default, the v0.1.4 .deb asset, rust-version 1.88 and aws-lc-sys
+signoff[review-usability] PASS 436573a added lines match 3f8c59e character for character; each restored route target checked: v0.1.4 .deb asset, Cargo.toml version and rust-version, flake packages, doctor subcommand
+Minor findings recorded, not blocking: one-row Nix table beside the sh block; pinned v0.1.4 amd64 .deb goes stale at the next release; installation guide link 404 predates this change. Wording findings on copied lines declined: verbatim restore of previously published text; the install page rewrite follows.
