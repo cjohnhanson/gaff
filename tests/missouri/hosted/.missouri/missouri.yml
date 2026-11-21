@@ -28,6 +28,9 @@ transitions:
       EOF
       printf 'HOUSE RULES\n' > "$HOME/.config/gaff/conv.md"
 
+      # With no host registered, doctor says so once and names the fix.
+      [ "$(gaff doctor 2>/dev/null | grep -c 'NOT registered (run `gaff init --host')" = "1" ] || { echo "FAIL: doctor must report an unregistered repo once"; exit 1; }
+
       # Registration: each host's file, each host's shape.
       # Codex runs a project hook only after the user trusts it, so init
       # must say so, or the hooks stay off and nothing tells the user.

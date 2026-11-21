@@ -798,8 +798,9 @@ default path.
 Codex sends file edits as `apply_patch`. gaff maps this tool to `Edit`
 and extracts `file_path` from the patch headers, with one path per
 line. Guards on `Edit` or `Edit|Write` therefore apply to Codex edits.
-For a path pattern with an end anchor, use `(?m)` to match each path
-in a patch that changes several files.
+A guard checks each path in the patch on its own, so `matches`,
+`unless`, and their anchors apply to one path at a time. A patch that
+writes one guarded path is refused, whatever its other paths are.
 
 Codex has no tool-batch event. Cadence reminders wait for the next user
 prompt. A single `codex exec` turn cannot receive a reminder armed

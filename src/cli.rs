@@ -2066,7 +2066,27 @@ fn guard_refusal(
         }
         found
     };
-    let hit = crate::guard::first_refusal(guards, tool, &value)?;
+    // A `file_path` can name several files, one per line, as a patch
+    // does. Each guard checks each path on its own: one regex over the
+    // joined text let an `unless` that exempts one path exempt them
+    // all, and an anchor held for only the first or last path.
+    let paths: Vec<String> = (adapter.tool_field)(&envelope.raw, "file_path")
+        .map(|v| v.lines().map(str::to_string).collect())
+        .unwrap_or_default();
+    let hit = if paths.len() > 1 {
+        paths.iter().find_map(|path| {
+            let one = |field: &str| {
+                if field == "file_path" {
+                    Some(path.clone())
+                } else {
+                    value(field)
+                }
+            };
+            crate::guard::first_refusal(guards, tool, &one)
+        })?
+    } else {
+        crate::guard::first_refusal(guards, tool, &value)?
+    };
     let remedy = format!(
         "\n\nIf the user has approved this specific call, they can run `!gaff allow {}` to let it through once.",
         hit.name
@@ -2111,6 +2131,37 @@ mod tests {
         assert!(
             text.contains("!gaff allow no-curl"),
             "a declared guard's refusal drops the remedy: {text}"
+        );
+    }
+
+    /// A `file_path` that names several files, one per line, is checked
+    /// one path at a time. An `unless` that exempts one path must not
+    /// exempt the others, and an anchor must hold for each path.
+    #[test]
+    fn a_guard_checks_each_path_of_a_multi_file_value() {
+        let adapter = &crate::adapter::CLAUDE_CODE;
+        let declared = vec![crate::guard::Guard {
+            name: "no-env".into(),
+            tool: "Edit".into(),
+            matches: Some(r"^\.env$".into()),
+            field: "file_path".into(),
+            unless: Some(r"\.example$".into()),
+            message: "Not the env file.".into(),
+        }];
+        let call = |paths: &str| {
+            crate::event::Envelope::from_claude_code(serde_json::json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Edit",
+                "tool_input": { "file_path": paths },
+            }))
+        };
+        assert!(
+            guard_refusal(&declared, &call(".env.example\n.env"), adapter).is_some(),
+            "the exempt path must not exempt the guarded one"
+        );
+        assert!(
+            guard_refusal(&declared, &call("src/a.rs\n.env.example"), adapter).is_none(),
+            "no path is guarded, so nothing refuses"
         );
     }
 
