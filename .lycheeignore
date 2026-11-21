@@ -1,3 +1,8 @@
 # npmjs.com answers automated requests with 403, so the link check on
 # main cannot read it. The package pages exist.
 ^https://www\.npmjs\.com/
+
+# Pages not published yet on gaff.eng.rip: the guides and the
+# installation guide the README links. Remove this entry once they are.
+# The site root stays checked.
+^https://gaff\.eng\.rip/(guides|getting-started)/

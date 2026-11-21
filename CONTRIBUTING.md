@@ -48,9 +48,9 @@ check` (`gaff check --handlers` for a `handlers:` example). The docs
 test needs `git`, `env`, and `/bin/sh`.
 
 Write a gaff command in a `console` block, so the test runs it. A
-command in a `sh`, `text`, or indented block is never checked. Install
-sections are the exception, because their commands change the reader's
-machine.
+command in a `sh`, `text`, or indented block is never checked. A
+`## Install` or `## Installation` section is the exception, because its
+commands change the reader's machine.
 
 The `docs` workflow calls `.github/workflows/family-checks.yml` in the
 diataxis repository, which every tool of the eng.rip family (tundish,
@@ -58,11 +58,11 @@ gaff, tisket, zettel, almanac, diataxis, missouri) shares. It reads
 README.md and docs/, and fails when:
 
 - a command of any of those tools sits outside a `console` block, except
-  under Install;
+  under `## Install` or `## Installation`;
 - a fence has no language, or is a `trycmd` fence;
 - the README's title does not name gaff, it has no paragraph before its
-  first section, it has no `## Install` section, or it does not end with
-  `## License`;
+  first section, it has no `## Install` or `## Installation` section, or
+  it does not end with `## License`;
 - a link to a file or heading in the repository is broken (a push to
   `main` checks web links too);
 - typos finds a misspelling.
