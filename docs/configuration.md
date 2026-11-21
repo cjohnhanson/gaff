@@ -789,26 +789,95 @@ Write these names in a config, and read them in `gaff log`. A host's own
 name, such as Claude Code's `PostToolBatch`, never appears above the
 adapter.
 
-An adapter owns its host's facts. It owns the payload mapping and the map
-from its event names onto the set above. It owns how injected context is
-rendered back: Claude Code gets its hook JSON, and a host reads context
-in its own shape, so that rendering is a host fact. It owns its event
-names for registration and the settings path that `gaff init` writes.
-`gaff hook` selects the adapter from `GAFF_HOST`, or from the payload
-shape when that variable is absent. `gaff init --host <name>` targets a
-named host.
+An adapter owns its host's facts. It maps the payload fields and event
+names onto gaff's vocabulary. It renders context in the host's format.
+It also owns the registration events and the settings path that
+`gaff init` writes. `gaff hook --host <name>` selects an adapter.
+Without `--host`, gaff uses `GAFF_HOST`, then the payload shape.
+`gaff hook --event <Event>` supplies an event name when the host's
+payload has none.
 
-A refusal is not a host fact. Every host reads exit 2 as a refusal and
-the child's stderr as the reason, so a guard and a hold need no per-host
-rendering. A host that gaff governs must block on exit 2 and forward the
-child's stderr to its model.
+Four adapters ship: `claude-code`, `codex`, `agy`, and `generic`.
+`gaff init` defaults to `claude-code` and writes
+`.claude/settings.local.json`. Claude Code supports context at session
+start, user prompt, tool batch, and stop. It supports guards and holds.
 
-Two adapters ship. Claude Code is the host a person installs against. The
-`generic` host speaks gaff's own normalized vocabulary: it reads the
-event from `gaff_event` and the rest from gaff's own field names, and it
-renders context as `{"event": <name>, "context": <text>}`. It suits a
-host, such as an agent runner, that calls `gaff hook` itself. It does not
-self-register, so `gaff init --host generic` is refused.
+`gaff init --host codex` writes `.codex/hooks.json` under `hooks`.
+It registers `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+`PostToolUse`, and `Stop`. Each entry runs `gaff hook --host codex`.
+Codex runs a project hook only after the user trusts it in `/hooks`.
+`gaff init` prints this step. Codex also loads `$CODEX_HOME/hooks.json`,
+which is `~/.codex/hooks.json` by default. `gaff doctor` reads only the
+default path.
+
+Codex sends file edits as `apply_patch`. gaff maps this tool to `Edit`
+and extracts `file_path` from the patch headers, with one path per
+line. Guards on `Edit` or `Edit|Write` therefore apply to Codex edits.
+A guard checks each path in the patch on its own, so `matches`,
+`unless`, and their anchors apply to one path at a time. A patch that
+writes one guarded path is refused, whatever its other paths are.
+
+Codex has no tool-batch event. Cadence reminders wait for the next user
+prompt. A single `codex exec` turn cannot receive a reminder armed
+during that turn. Holds from `gaff remind --at stop` do work: gaff
+refuses the stop, and Codex sends the hold text as the next prompt.
+Codex cannot receive context at `Stop`, so gaff keeps that context for
+the next prompt.
+
+Codex replaces hook context above about 2,500 tokens with a preview.
+gaff sets `additionalContextLimit: 0` on `SessionStart` and
+`UserPromptSubmit` to disable this host limit. `max_inject_bytes`
+remains the context cap.
+
+`gaff init --host agy` writes `.agents/hooks.json` under a single hook
+named `gaff`. gaff owns that whole hook. It registers `SessionStart`,
+`PreToolUse`, `PostToolUse`, and `PreInvocation`. Each entry runs
+`gaff hook --host agy --event <Event>`. The `--event` argument supplies
+the event name that agy omits from its payload. agy also loads
+`~/.gemini/config/hooks.json`. It does not load hooks from
+`~/.gemini/antigravity-cli/settings.json`. A gaff build without the
+`--event` flag rejects these entries, and on agy that rejection blocks
+every tool call. Install this gaff on every machine that reads the
+file.
+
+gaff maps agy's `run_command` to `Bash` with the `command` field.
+It maps `read_file`, `write_file`, and `edit_file` to `Read`, `Write`,
+and `Edit`, with the `file_path` field. Other tool names stay as agy
+sends them. agy starts workspace hooks inside `.agents/`. gaff changes
+to the workspace path from the payload before it reads `.gaff/`.
+
+On agy, `PreInvocation` delivers cadence reminders before the next
+model call after a tool batch. Holds and blocking stop handlers do
+not run. agy requires JSON with `decision: continue` to refuse a stop.
+gaff does not send that response and does not register agy's `Stop`
+event.
+
+Refusal behavior depends on the host. Claude Code and Codex read exit
+2 as a refusal and forward the reason to the model. agy refuses a tool
+call on any non-zero exit. gaff therefore exits 0 on its own faults on
+agy. On the other hosts, a gaff fault exits 1. A guard refusal exits 2.
+
+The `generic` host speaks gaff's normalized vocabulary. It reads the
+event from `gaff_event` and the rest from gaff's own field names.
+It renders context as `{"event": <name>, "context": <text>}`.
+It suits a host, such as an agent runner, that calls `gaff hook`
+itself. The caller must supply events, deliver the returned context,
+and honor exit 2 with stderr as the refusal reason. All four context
+flush points are available when the caller sends those events.
+`generic` does not self-register, so gaff refuses
+`gaff init --host generic`.
+
+For a registered host, `gaff init --host <name> --uninstall` removes
+only gaff's entries.
+
+`max_inject_bytes` caps context injection. Its default is 4096 bytes.
+Context cost depends on the configuration. In a measurement with seven
+sections and one reminder, session-start context totaled 9,632 bytes,
+or about 2,400 tokens, on both Codex and agy. Claude Code receives the
+same context for that configuration. The host envelope added less than
+100 bytes. One reminder flush contained 49 bytes of context plus the
+envelope. `codex exec resume` fires `SessionStart` again and resends
+every section, as a Claude Code resume does.
 
 gaff ships no guessed schema for an untested host. Adding one means
 adding an `Adapter` constant with that host's real field names, taken

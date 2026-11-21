@@ -1,0 +1,112 @@
+doc: |
+  Codex and agy register through `gaff init --host`, and each hook call
+  names its host on the command line. agy sends no event name, so its
+  registration passes `--event`. Codex gets Claude Code's context JSON
+  and no flush at `Stop`. agy gets injected steps, reads its first model
+  call as a prompt, and a gaff fault on agy exits 0, because agy refuses
+  a tool call on any non-zero code. The payloads are the shapes real
+  sessions sent.
+transitions:
+  - name: "codex and agy register, flush, and refuse in their own shapes"
+    command: |
+      export HOME="$PWD/home"
+      mkdir -p "$HOME/.config/gaff"
+      cat > "$HOME/.config/gaff/gaff.yml" <<'EOF'
+      sections:
+        - name: conventions
+          file: conv.md
+      reminders:
+        - name: cadence
+          every:
+            tool_calls: 1
+          text: CADENCE TEXT
+      guards:
+        - name: no-rm
+          tool: Bash
+          matches: 'rm\s+-rf'
+          message: Not that.
+      EOF
+      printf 'HOUSE RULES\n' > "$HOME/.config/gaff/conv.md"
+
+      # A bare --host is refused for the missing value, before stdin.
+      printf '{"hook_event_name":"SessionStart","session_id":"s-x"}' | gaff hook --host > /dev/null 2>"$HOME/err"
+      [ "$?" = "1" ] || { echo "FAIL: a bare --host must fail"; exit 1; }
+      grep -q -- '--host requires a value' "$HOME/err" || { echo "FAIL: a bare --host must say what is missing"; exit 1; }
+
+      # With no host registered, doctor says so once and names the fix.
+      [ "$(gaff doctor 2>/dev/null | grep -c 'NOT registered (run `gaff init --host')" = "1" ] || { echo "FAIL: doctor must report an unregistered repo once"; exit 1; }
+
+      # Registration: each host's file, each host's shape.
+      # Codex runs a project hook only after the user trusts it, so init
+      # must say so, or the hooks stay off and nothing tells the user.
+      gaff init --host codex > "$HOME/init.out" || { echo "FAIL: init codex"; exit 1; }
+      grep -q 'only after you trust it' "$HOME/init.out" || { echo "FAIL: init codex must print the trust step"; exit 1; }
+      gaff init --host agy > /dev/null || { echo "FAIL: init agy"; exit 1; }
+      [ "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' .codex/hooks.json)" = "gaff hook --host codex" ] || { echo "FAIL: codex entry"; exit 1; }
+      [ "$(jq -r '.gaff.PreInvocation[0].command' .agents/hooks.json)" = "gaff hook --host agy --event PreInvocation" ] || { echo "FAIL: agy entry"; exit 1; }
+      [ "$(jq -r '.gaff.PreToolUse[0].matcher' .agents/hooks.json)" = "*" ] || { echo "FAIL: agy matcher"; exit 1; }
+      gaff doctor 2>/dev/null | grep -q 'hooks (agy): registered' || { echo "FAIL: doctor must read the agy file"; exit 1; }
+      # Codex's repo and local scopes are one file, read once. doctor
+      # names the flush points each host cannot carry.
+      gaff doctor 2>/dev/null | grep -qF 'hooks (codex): registered (repo (5)), all 5 events' || { echo "FAIL: doctor must read the codex file once"; exit 1; }
+      gaff doctor 2>/dev/null | grep -qF 'codex has no context channel at: tool_batch, stop' || { echo "FAIL: doctor must name codex's missing flush points"; exit 1; }
+      gaff doctor 2>/dev/null | grep -qF 'agy has no context channel at: stop' || { echo "FAIL: doctor must name agy's missing flush point"; exit 1; }
+      # A repo registered for Codex and agy only is not missing Claude
+      # Code, so doctor must not send its user to a plain `gaff init`.
+      if gaff doctor 2>/dev/null | grep -q 'NOT registered'; then echo "FAIL: doctor must not call a registered repo unregistered"; exit 1; fi
+
+      # Codex: Claude Code's context JSON at session start.
+      OUT=$(printf '{"session_id":"s-c1","cwd":"%s","hook_event_name":"SessionStart","model":"m","source":"startup"}' "$PWD" | gaff hook --host codex)
+      [ "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.hookEventName')" = "SessionStart" ] || { echo "FAIL: codex shape: $OUT"; exit 1; }
+      # A tool call arms the reminder. Codex cannot carry context at
+      # Stop, so the stop prints nothing and the reminder waits.
+      printf '{"session_id":"s-c1","turn_id":"t","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"u1"}' | gaff hook --host codex > /dev/null
+      OUT=$(printf '{"session_id":"s-c1","turn_id":"t","hook_event_name":"Stop","stop_hook_active":false}' | gaff hook --host codex)
+      [ -z "$OUT" ] || { echo "FAIL: codex must print nothing at Stop: $OUT"; exit 1; }
+      OUT=$(printf '{"session_id":"s-c1","turn_id":"t2","hook_event_name":"UserPromptSubmit","prompt":"p"}' | gaff hook --host codex)
+      case "$OUT" in *"CADENCE TEXT"*) ;; *) echo "FAIL: the reminder must wait for the prompt: $OUT"; exit 1 ;; esac
+      # A Codex guard refuses with exit 2.
+      printf '{"session_id":"s-c1","turn_id":"t2","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf x"},"tool_use_id":"u2"}' | gaff hook --host codex > /dev/null 2>&1
+      [ "$?" = "2" ] || { echo "FAIL: the codex guard must refuse"; exit 1; }
+      # A hold refuses a Codex stop with exit 2 and the hold text, which
+      # Codex sends back as the next prompt.
+      gaff remind 'HOLD TEXT' --at stop --session s-c1 > /dev/null || { echo "FAIL: remind"; exit 1; }
+      printf '{"session_id":"s-c1","turn_id":"t2","hook_event_name":"Stop","stop_hook_active":false}' | gaff hook --host codex > /dev/null 2>"$HOME/err"
+      [ "$?" = "2" ] || { echo "FAIL: a hold must refuse a codex stop"; exit 1; }
+      grep -q "HOLD TEXT" "$HOME/err" || { echo "FAIL: the hold text must reach stderr"; exit 1; }
+
+      # agy: no event name in the payload; --event supplies it.
+      OUT=$(printf '{"conversationId":"s-a1","workspacePaths":["%s"]}' "$PWD" | gaff hook --host agy --event SessionStart)
+      case "$(printf '%s' "$OUT" | jq -r '.injectSteps[0].systemMessage.systemMessage')" in
+        *"HOUSE RULES"*) ;;
+        *) echo "FAIL: agy session start: $OUT"; exit 1 ;;
+      esac
+      printf '{"conversationId":"s-a1","stepIdx":2,"error":"","toolCall":{"name":"run_command","args":{"CommandLine":"ls"}},"workspacePaths":["%s"]}' "$PWD" | gaff hook --host agy --event PostToolUse > /dev/null
+      OUT=$(printf '{"conversationId":"s-a1","invocationNum":1,"initialNumSteps":4,"workspacePaths":["%s"]}' "$PWD" | gaff hook --host agy --event PreInvocation)
+      case "$OUT" in *"CADENCE TEXT"*) ;; *) echo "FAIL: agy tool batch flush: $OUT"; exit 1 ;; esac
+      printf '{"conversationId":"s-a1","stepIdx":3,"toolCall":{"name":"run_command","args":{"CommandLine":"rm -rf x"}},"workspacePaths":["%s"]}' "$PWD" | gaff hook --host agy --event PreToolUse > /dev/null 2>&1
+      [ "$?" = "2" ] || { echo "FAIL: the agy guard must refuse"; exit 1; }
+      # agy runs a workspace hook inside `.agents/`. gaff moves to the
+      # workspace path from the payload, so the repo's sections arrive.
+      cp .gaff/gaff.yml "$HOME/repo-gaff.yml"
+      printf 'sections:\n  - name: repo-rules\n    file: repo.md\n' > .gaff/gaff.yml
+      printf 'REPO RULES\n' > .gaff/repo.md
+      OUT=$(cd .agents && printf '{"conversationId":"s-a2","workspacePaths":["%s"]}' "$OLDPWD" | gaff hook --host agy --event SessionStart)
+      cp "$HOME/repo-gaff.yml" .gaff/gaff.yml
+      rm -f .gaff/repo.md
+      case "$OUT" in *"REPO RULES"*) ;; *) echo "FAIL: an agy hook run from .agents/ must read the repo config: $OUT"; exit 1 ;; esac
+      # A gaff fault on agy never refuses a tool call.
+      printf 'not json' | gaff hook --host agy --event PreToolUse > /dev/null 2>&1
+      [ "$?" = "0" ] || { echo "FAIL: an agy fault must exit 0"; exit 1; }
+
+      # Uninstall leaves nothing of gaff's behind.
+      gaff init --host codex --uninstall > "$HOME/init.out"
+      if grep -q 'only after you trust it' "$HOME/init.out"; then echo "FAIL: uninstall must not print the trust step"; exit 1; fi
+      gaff init --host agy --uninstall > /dev/null
+      [ "$(jq -c . .codex/hooks.json)" = "{}" ] || { echo "FAIL: codex uninstall"; exit 1; }
+      [ "$(jq -c . .agents/hooks.json)" = "{}" ] || { echo "FAIL: agy uninstall"; exit 1; }
+
+      rm -rf home .gaff-state .codex .agents
+      echo HOSTED_OK
+    target: ../hosted-registered
+    stdout: "HOSTED_OK\n"

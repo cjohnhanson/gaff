@@ -11,10 +11,17 @@
 //! refusal and the child's stderr as the reason, and a host that blocks
 //! on another code, or drops the child's stderr, breaks that contract.
 //!
-//! Two adapters ship. Claude Code is the host a person installs against.
-//! The generic host speaks gaff's own normalized vocabulary, for a host
-//! such as an agent runner that calls `gaff hook` itself. It reads only
-//! gaff's field names, so it is not a guess at a real host's payload.
+//! Four adapters ship. Claude Code is the host a person installs
+//! against. Codex sends Claude Code's payload shape, has no batch event,
+//! and fails a `Stop` hook that prints context. agy, the Antigravity
+//! CLI, sends no event name, so its registration passes the event on
+//! the command line. The generic host speaks gaff's own normalized
+//! vocabulary, for a host such as an agent runner that calls `gaff hook`
+//! itself. It reads only gaff's field names, so it is not a guess at a
+//! real host's payload.
+//!
+//! A host that refuses a tool call on any non-zero exit sets
+//! `failure_code` to 0, so a gaff fault still never blocks there.
 //! gaff does not guess a payload shape. A guessed schema fails at run
 //! time, inside a live session.
 //!
@@ -72,6 +79,33 @@ pub struct Adapter {
     /// that name to a payload key belongs to the adapter, because a
     /// host may nest its tool input anywhere.
     pub tool_field: fn(&Value, &str) -> Option<String>,
+    /// The flush points this host can carry. A flush kind outside this
+    /// set reaches gaff but has no context channel on this host, so gaff
+    /// keeps the pending entries for the next flush point that does.
+    /// Each kind here must come from an event in `hook_events`.
+    pub flush_kinds: &'static [Kind],
+    /// The settings key that holds the event map. Claude Code and Codex
+    /// use `hooks`. agy keys each hook by a name, and gaff owns the one
+    /// named `gaff`.
+    pub hooks_key: &'static str,
+    /// The command that one event's registration runs. A host that
+    /// sends no event name, or a payload another host also sends, needs
+    /// the command itself to say which host and event it is.
+    pub registered_command: fn(event: &str, command: &str) -> String,
+    /// One registration entry for an event, in this host's shape.
+    pub hook_entry: fn(event: &str, command: &str) -> Value,
+    /// The exit code for a gaff fault on the hook path. A host that
+    /// reads exit 1 as non-blocking gets 1. A host that refuses a tool
+    /// call on any non-zero code gets 0, because a gaff fault must never
+    /// block a session.
+    pub failure_code: u8,
+    /// A line `gaff init` prints after it registers the hooks, for a
+    /// step the host needs before the hooks run. Empty for none.
+    pub install_note: &'static str,
+    /// Whether the payload's working directory is the session's, in
+    /// place of the hook process's own. agy runs a hook in the
+    /// directory that holds its hook file, not in the workspace.
+    pub cwd_from_payload: bool,
 }
 
 /// The events gaff needs on Claude Code: the prime and flush points,
@@ -95,14 +129,37 @@ pub const CLAUDE_CODE: Adapter = Adapter {
     self_registers: true,
     parse: from_claude_code,
     context_output: claude_code_context_output,
-    sniff: |json| json.get("hook_event_name").is_some(),
+    // Codex sends the same field names, plus `turn_id` on every event
+    // inside a turn. A payload with `turn_id` is not Claude Code's.
+    sniff: |json| json.get("hook_event_name").is_some() && json.get("turn_id").is_none(),
     settings_path: ".claude/settings.local.json",
     repo_settings_path: ".claude/settings.json",
     user_settings_path: ".claude/settings.json",
     session_env: "CLAUDE_CODE_SESSION_ID",
     hook_events: CLAUDE_CODE_EVENTS,
     tool_field: claude_code_tool_field,
+    flush_kinds: ALL_FLUSH_KINDS,
+    hooks_key: "hooks",
+    registered_command: |_, command| command.to_string(),
+    hook_entry: matcher_group_entry,
+    failure_code: 1,
+    install_note: "",
+    cwd_from_payload: false,
 };
+
+/// Every flush point, for a host whose events carry them all.
+pub const ALL_FLUSH_KINDS: &[Kind] = &[
+    Kind::SessionStart,
+    Kind::Prompt,
+    Kind::ToolBatch,
+    Kind::Stop,
+];
+
+/// A matcher group that runs one command, with no matcher, so it fires
+/// for every tool. Claude Code and Codex share this shape.
+fn matcher_group_entry(_event: &str, command: &str) -> Value {
+    serde_json::json!({"hooks": [{"type": "command", "command": command}]})
+}
 
 /// The events a generic host subscribes to, in gaff's own normalized
 /// vocabulary. A host that speaks the vocabulary needs no per-host names.
@@ -135,7 +192,270 @@ pub const GENERIC: Adapter = Adapter {
     session_env: "GAFF_SESSION_ID",
     hook_events: GENERIC_EVENTS,
     tool_field: claude_code_tool_field,
+    flush_kinds: ALL_FLUSH_KINDS,
+    // A generic host keeps its own registration. These fields only keep
+    // the adapter total.
+    hooks_key: "hooks",
+    registered_command: |_, command| command.to_string(),
+    hook_entry: matcher_group_entry,
+    failure_code: 1,
+    install_note: "",
+    cwd_from_payload: false,
 };
+
+/// The events gaff needs on Codex.
+///
+/// Source: <https://developers.openai.com/codex/hooks>, confirmed by
+/// real `codex exec` runs with codex-cli 0.153.4. Codex has no batch
+/// event. `Stop` is registered for holds: exit 2 on `Stop` is a
+/// documented block, and Codex feeds the reason back as the next
+/// prompt. `Stop` is not a flush point on Codex, because Codex fails a
+/// `Stop` hook that prints `hookSpecificOutput`.
+pub const CODEX_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "Stop",
+];
+
+pub const CODEX: Adapter = Adapter {
+    name: "codex",
+    event_key: "hook_event_name",
+    self_registers: true,
+    // Codex sends Claude Code's field names and event names, and reads
+    // context from the same `hookSpecificOutput` JSON.
+    parse: from_codex,
+    context_output: claude_code_context_output,
+    // `SessionStart` has no `turn_id`, so this matches only events
+    // inside a turn. The registered command names the host for the rest.
+    sniff: |json| json.get("hook_event_name").is_some() && json.get("turn_id").is_some(),
+    // Codex loads `.codex/hooks.json` from a trusted project, and the
+    // user file from `$CODEX_HOME/hooks.json`. It has no local scope.
+    settings_path: ".codex/hooks.json",
+    repo_settings_path: ".codex/hooks.json",
+    user_settings_path: ".codex/hooks.json",
+    // Codex exports the session id to a tool's process as
+    // `CODEX_THREAD_ID`, equal to the hook payload's `session_id`.
+    session_env: "CODEX_THREAD_ID",
+    hook_events: CODEX_EVENTS,
+    tool_field: codex_tool_field,
+    flush_kinds: &[Kind::SessionStart, Kind::Prompt],
+    hooks_key: "hooks",
+    // A `SessionStart` payload has no `turn_id`, so the shape alone
+    // reads as Claude Code. The command names the host instead.
+    registered_command: |_, command| format!("{command} --host codex"),
+    hook_entry: codex_hook_entry,
+    failure_code: 1,
+    install_note: "Codex runs a project hook only after you trust it. Open codex in this repo and approve the gaff hooks in /hooks.",
+    // Codex runs a hook in the session's working directory.
+    cwd_from_payload: false,
+};
+
+/// Codex's matcher group, with Codex's own size limit turned off.
+///
+/// Codex saves `additionalContext` over about 2,500 tokens to a file and
+/// gives the model a preview. A session-start flush of real sections
+/// sits near that size, and a preview would hide the sections. gaff
+/// already caps every flush at `max_inject_bytes`, so that cap is the
+/// one limit, as on the other hosts. `0` passes the text through. The
+/// limit goes only on the flush events: Codex warns on every session
+/// about a limit set on `Stop`.
+fn codex_hook_entry(event: &str, command: &str) -> Value {
+    match event {
+        "SessionStart" | "UserPromptSubmit" => serde_json::json!({"hooks": [{
+            "type": "command",
+            "command": command,
+            "additionalContextLimit": 0,
+        }]}),
+        _ => matcher_group_entry(event, command),
+    }
+}
+
+/// Codex sends Claude Code's payload, with one difference that reaches a
+/// guard: a file edit arrives as `apply_patch`. Codex's own matcher
+/// treats `apply_patch` as `Edit` and `Write`. gaff names it `Edit`, so
+/// a guard on `Edit` reaches it, and `codex_tool_field` reads the paths
+/// out of the patch.
+fn from_codex(json: Value) -> Envelope {
+    let mut env = from_claude_code(json);
+    if env.tool_name.as_deref() == Some("apply_patch") {
+        env.tool_name = Some("Edit".to_string());
+    }
+    env
+}
+
+/// Codex's tool input is Claude Code's, except for a patch. A patch has
+/// no `file_path`, so the field is the path of each file the patch
+/// adds, updates, deletes, or moves a file to, one per line, in patch
+/// order.
+///
+/// The headers follow Codex's patch grammar
+/// (`codex-rs/core/assets/tools/apply_patch.lark` in openai/codex), and
+/// each line is trimmed first, as Codex's parser does. A header the
+/// parser applies and this reader misses lets a write pass a guard.
+fn codex_tool_field(raw: &Value, field: &str) -> Option<String> {
+    if field == "file_path" && raw.get("tool_name").and_then(Value::as_str) == Some("apply_patch") {
+        let patch = raw.pointer("/tool_input/command")?.as_str()?;
+        let paths: Vec<&str> = patch
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                [
+                    "*** Add File: ",
+                    "*** Update File: ",
+                    "*** Delete File: ",
+                    "*** Move to: ",
+                ]
+                .iter()
+                .find_map(|head| line.strip_prefix(head))
+                .map(str::trim)
+            })
+            .collect();
+        return (!paths.is_empty()).then(|| paths.join("\n"));
+    }
+    claude_code_tool_field(raw, field)
+}
+
+/// The events gaff needs on agy, the Antigravity CLI.
+///
+/// Source: <https://antigravity.google/docs/hooks>, confirmed by real
+/// `agy -p` runs with agy 1.4.8. `PreInvocation` fires before each
+/// model call, and gaff reads it as a prompt or a tool batch. agy reads
+/// a refusal at `Stop` only as a JSON decision, so gaff does not
+/// register `Stop`, and a hold does not run on agy.
+pub const AGY_EVENTS: &[&str] = &["SessionStart", "PreToolUse", "PostToolUse", "PreInvocation"];
+
+pub const AGY: Adapter = Adapter {
+    name: "agy",
+    // agy sends no event name. `gaff hook --event` writes it under this
+    // key, so the key is gaff's own and not an agy field.
+    event_key: "hookEventName",
+    self_registers: true,
+    parse: from_agy,
+    context_output: agy_context_output,
+    sniff: |json| json.get("conversationId").is_some(),
+    settings_path: ".agents/hooks.json",
+    repo_settings_path: ".agents/hooks.json",
+    user_settings_path: ".gemini/config/hooks.json",
+    session_env: "ANTIGRAVITY_CONVERSATION_ID",
+    hook_events: AGY_EVENTS,
+    tool_field: agy_tool_field,
+    flush_kinds: &[Kind::SessionStart, Kind::Prompt, Kind::ToolBatch],
+    hooks_key: "gaff",
+    registered_command: |event, command| format!("{command} --host agy --event {event}"),
+    hook_entry: agy_hook_entry,
+    // agy refuses a tool call on any non-zero exit from `PreToolUse`.
+    failure_code: 0,
+    install_note: "",
+    // A real run showed a workspace hook's working directory is
+    // `.agents`, so the repo's `.gaff/` is found from the workspace path.
+    cwd_from_payload: true,
+};
+
+/// agy nests a tool event's handlers under a matcher. Every other event
+/// takes the handler directly.
+fn agy_hook_entry(event: &str, command: &str) -> Value {
+    let handler = serde_json::json!({"type": "command", "command": command});
+    match event {
+        "PreToolUse" | "PostToolUse" => serde_json::json!({"matcher": "*", "hooks": [handler]}),
+        _ => handler,
+    }
+}
+
+/// agy reads injected context as steps added to the trajectory. A
+/// `systemMessage` step stays in the conversation, as context does on
+/// the other hosts.
+fn agy_context_output(_event: &str, context: &str) -> String {
+    serde_json::json!({
+        "injectSteps": [{"systemMessage": {"systemMessage": context}}]
+    })
+    .to_string()
+}
+
+/// agy's tool names, mapped onto the names a guard uses. A name not in
+/// this list stays as agy sends it, and a guard can name it directly.
+fn agy_tool_name(name: &str) -> &str {
+    match name {
+        "run_command" => "Bash",
+        "read_file" => "Read",
+        "write_file" => "Write",
+        "edit_file" => "Edit",
+        other => other,
+    }
+}
+
+/// agy puts the tool input under `toolCall.args`, with its own keys.
+fn agy_tool_field(raw: &Value, field: &str) -> Option<String> {
+    let key = match field {
+        "command" => "CommandLine",
+        "file_path" => "Path",
+        _ => return None,
+    };
+    raw.pointer("/toolCall/args")?
+        .get(key)?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Build an envelope from an agy hook payload.
+///
+/// The event name comes from `hookEventName`, which `gaff hook --event`
+/// adds. The session is `conversationId`, and the working directory is
+/// the first workspace path. A tool event gets a `tool_use_id` built
+/// from `stepIdx`, because the counter keys a tool call on that field
+/// and agy sends no id of its own.
+fn from_agy(mut json: Value) -> Envelope {
+    let get = |json: &Value, key: &str| json.get(key).and_then(Value::as_str).map(str::to_string);
+    let event = get(&json, "hookEventName").unwrap_or_else(|| "Unknown".to_string());
+    let kind = match event.as_str() {
+        "SessionStart" => Kind::SessionStart,
+        "PreToolUse" => Kind::PreToolCall,
+        "PostToolUse" => Kind::ToolCall,
+        // The first model call of a turn follows the user's prompt.
+        // Every later one follows a batch of tool results.
+        "PreInvocation" => match json.get("invocationNum").and_then(Value::as_u64) {
+            Some(0) => Kind::Prompt,
+            Some(_) => Kind::ToolBatch,
+            None => Kind::Other(event.clone()),
+        },
+        other => Kind::Other(other.to_string()),
+    };
+    if let (Some(step), Some(map)) = (
+        json.get("stepIdx").and_then(Value::as_u64),
+        json.as_object_mut(),
+    ) {
+        map.entry("tool_use_id")
+            .or_insert_with(|| Value::String(format!("step-{step}")));
+    }
+    Envelope {
+        gaff_schema: SCHEMA_VERSION,
+        kind,
+        session_id: safe_session(get(&json, "conversationId")),
+        cwd: json
+            .pointer("/workspacePaths/0")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        tool_name: json
+            .pointer("/toolCall/name")
+            .and_then(Value::as_str)
+            .map(|n| agy_tool_name(n).to_string()),
+        event,
+        raw: json,
+    }
+}
+
+/// Drop an unsafe session id at the boundary. The id names a state
+/// directory, and it arrives from the host payload.
+fn safe_session(id: Option<String>) -> Option<String> {
+    id.filter(|id| {
+        let ok = crate::state::valid_session_id(id);
+        if !ok {
+            eprintln!("gaff: refusing an unsafe session id. Passing through.");
+        }
+        ok
+    })
+}
 
 /// Claude Code reads injected context from this exact JSON on stdout.
 ///
@@ -202,7 +522,7 @@ fn shell_quote(arg: &str) -> String {
 /// `CLAUDE_CODE` stays first: `gaff init` with no `--host` uses the first
 /// entry as the default target, and Claude Code is the host a person
 /// installs against. A new adapter is appended, never prepended.
-pub const ADAPTERS: &[&Adapter] = &[&CLAUDE_CODE, &GENERIC];
+pub const ADAPTERS: &[&Adapter] = &[&CLAUDE_CODE, &GENERIC, &CODEX, &AGY];
 
 /// Build an envelope from a Claude Code hook payload.
 fn from_claude_code(json: Value) -> Envelope {
@@ -277,21 +597,48 @@ fn claude_code_kind(event: &str) -> Kind {
 }
 
 /// The session id for a command run inside a session: the flag, then
-/// gaff's own `GAFF_SESSION_ID`, then whichever host variable is set.
+/// gaff's own `GAFF_SESSION_ID`, then the host variable that is set.
 /// Nothing above the adapter knows what any host calls it.
 #[must_use]
 pub fn session_from_env(flag: Option<&str>) -> Option<String> {
+    let set = |name: &str| std::env::var(name).ok().filter(|s| !s.is_empty());
+    let hosts: Vec<(&str, String)> = ADAPTERS
+        .iter()
+        .filter(|a| a.session_env != "GAFF_SESSION_ID")
+        .filter_map(|a| set(a.session_env).map(|v| (a.session_env, v)))
+        .collect();
+    resolve_session(flag, set("GAFF_SESSION_ID"), &hosts)
+}
+
+/// Choose the session from the flag, gaff's variable, and the host
+/// variables that are set.
+///
+/// A host started inside another host inherits the outer host's
+/// variable, so two host variables with different values name two
+/// sessions. gaff cannot tell which one is this session, and a guess
+/// writes a reminder or a hold into the other one. It refuses to guess,
+/// says why, and the caller asks for `--session`.
+fn resolve_session(
+    flag: Option<&str>,
+    gaff: Option<String>,
+    hosts: &[(&str, String)],
+) -> Option<String> {
     if let Some(f) = flag {
         return Some(f.to_string());
     }
-    if let Ok(s) = std::env::var("GAFF_SESSION_ID")
-        && !s.is_empty()
-    {
-        return Some(s);
+    if gaff.is_some() {
+        return gaff;
     }
-    ADAPTERS
-        .iter()
-        .find_map(|a| std::env::var(a.session_env).ok().filter(|s| !s.is_empty()))
+    let first = hosts.first()?;
+    if hosts.iter().any(|(_, v)| v != &first.1) {
+        let names: Vec<&str> = hosts.iter().map(|(n, _)| *n).collect();
+        eprintln!(
+            "gaff: {} name different sessions, so gaff cannot tell which session this is. Pass --session or set GAFF_SESSION_ID.",
+            names.join(" and ")
+        );
+        return None;
+    }
+    Some(first.1.clone())
 }
 
 /// The one-line hint for a missing session, naming every host's variable.
@@ -358,6 +705,38 @@ pub fn detect(explicit: Option<&str>, payload: &Value) -> &'static Adapter {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn two_host_sessions_that_disagree_resolve_to_none() {
+        // A real agy hook ran with CLAUDE_CODE_SESSION_ID inherited from
+        // the Claude Code session that started it. Taking the first
+        // variable wrote the agy session's reminder into the parent.
+        let nested = [
+            ("CLAUDE_CODE_SESSION_ID", "parent".to_string()),
+            ("ANTIGRAVITY_CONVERSATION_ID", "child".to_string()),
+        ];
+        assert_eq!(resolve_session(None, None, &nested), None);
+        // The flag and gaff's own variable still decide.
+        assert_eq!(
+            resolve_session(Some("f"), None, &nested).as_deref(),
+            Some("f")
+        );
+        assert_eq!(
+            resolve_session(None, Some("g".into()), &nested).as_deref(),
+            Some("g")
+        );
+        // One host variable, or two that agree, name one session.
+        assert_eq!(
+            resolve_session(None, None, &nested[..1]).as_deref(),
+            Some("parent")
+        );
+        let same = [
+            ("CODEX_THREAD_ID", "s".to_string()),
+            ("CLAUDE_CODE_SESSION_ID", "s".to_string()),
+        ];
+        assert_eq!(resolve_session(None, None, &same).as_deref(), Some("s"));
+        assert_eq!(resolve_session(None, None, &[]), None);
+    }
 
     #[test]
     fn an_explicit_name_wins_over_the_shape() {
@@ -483,31 +862,50 @@ mod contract_tests {
     #[test]
     fn every_flush_point_is_a_subscribed_event() {
         for adapter in ADAPTERS {
+            // An event can map to more than one kind by its payload, as
+            // agy's `PreInvocation` does by `invocationNum`, so each
+            // event is parsed with both values.
             let subscribed_kinds: Vec<crate::event::Kind> = adapter
                 .hook_events
                 .iter()
-                .map(|event| {
-                    let payload = serde_json::json!({
-                        adapter.event_key: event,
-                        "session_id": "s",
-                    });
-                    (adapter.parse)(payload).kind
+                .flat_map(|event| {
+                    [0, 1].map(|n| {
+                        let payload = serde_json::json!({
+                            adapter.event_key: event,
+                            "session_id": "s",
+                            "invocationNum": n,
+                        });
+                        (adapter.parse)(payload).kind
+                    })
                 })
                 .collect();
-            for kind in [
-                crate::event::Kind::SessionStart,
-                crate::event::Kind::Prompt,
-                crate::event::Kind::ToolBatch,
-                crate::event::Kind::Stop,
-            ] {
+            assert!(
+                !adapter.flush_kinds.is_empty(),
+                "adapter `{}` declares no flush point",
+                adapter.name
+            );
+            for kind in adapter.flush_kinds {
                 assert!(kind.is_flush(), "{kind:?} is a flush point");
                 assert!(
-                    subscribed_kinds.contains(&kind),
+                    subscribed_kinds.contains(kind),
                     "adapter `{}` flushes on {kind:?} but never subscribes to it, so that flush point is dead on this host",
                     adapter.name
                 );
             }
         }
+    }
+
+    /// The full flush set on the hosts whose events carry it. A host
+    /// that loses one must say why in its adapter.
+    #[test]
+    fn the_flush_sets_match_what_each_host_carries() {
+        assert_eq!(CLAUDE_CODE.flush_kinds, ALL_FLUSH_KINDS);
+        assert_eq!(GENERIC.flush_kinds, ALL_FLUSH_KINDS);
+        assert_eq!(CODEX.flush_kinds, &[Kind::SessionStart, Kind::Prompt]);
+        assert_eq!(
+            AGY.flush_kinds,
+            &[Kind::SessionStart, Kind::Prompt, Kind::ToolBatch]
+        );
     }
 
     /// Guards gate on `Kind::PreToolCall`, and an unrecognized event
@@ -541,12 +939,20 @@ mod contract_tests {
     #[test]
     fn every_adapter_can_read_a_tool_field() {
         for adapter in ADAPTERS {
-            let payload = serde_json::json!({
-                "hook_event_name": adapter.hook_events[0],
-                "session_id": "s",
-                "tool_name": "Bash",
-                "tool_input": {"command": "git status"},
-            });
+            // Each host nests the tool input in its own shape.
+            let payload = if adapter.name == AGY.name {
+                serde_json::json!({
+                    "conversationId": "s",
+                    "toolCall": {"name": "run_command", "args": {"CommandLine": "git status"}},
+                })
+            } else {
+                serde_json::json!({
+                    "hook_event_name": adapter.hook_events[0],
+                    "session_id": "s",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git status"},
+                })
+            };
             assert_eq!(
                 (adapter.tool_field)(&payload, "command").as_deref(),
                 Some("git status"),
@@ -564,7 +970,9 @@ mod contract_tests {
 
     #[test]
     fn an_argv_shaped_field_reads_as_the_command_line_it_stands_for() {
-        for adapter in ADAPTERS {
+        // agy sends `CommandLine` as one string, so only the hosts that
+        // read `tool_input` can send argv.
+        for adapter in [&CLAUDE_CODE, &GENERIC, &CODEX] {
             let payload = serde_json::json!({
                 "tool_input": {"command": ["git", "add", "release notes.md"]},
             });
@@ -579,5 +987,309 @@ mod contract_tests {
             let mixed = serde_json::json!({"tool_input": {"command": ["git", 7]}});
             assert_eq!((adapter.tool_field)(&mixed, "command"), None);
         }
+    }
+
+    /// The command each registration runs must still read as `gaff
+    /// hook`, or `doctor` and `uninstall` lose it.
+    #[test]
+    fn every_registered_command_still_runs_gaff_hook() {
+        for adapter in ADAPTERS {
+            for event in adapter.hook_events {
+                let cmd = (adapter.registered_command)(event, "gaff hook");
+                assert!(cmd.starts_with("gaff hook"), "{}: {cmd}", adapter.name);
+            }
+        }
+    }
+}
+
+/// Tests built from payloads that real host sessions sent during QA.
+/// Paths are shortened, and every field name and value shape is as the
+/// host sent it.
+#[cfg(test)]
+mod host_payload_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `codex exec`, codex-cli 0.153.4.
+    fn codex_pre_tool_use() -> Value {
+        json!({
+            "session_id": "01a1fc73-9253-7280-b888-d256837fd62e",
+            "turn_id": "01a1fc73-935c-7393-9cff-bc42b423f180",
+            "transcript_path": "/tmp/t.jsonl",
+            "cwd": "/private/tmp/gaffqa",
+            "hook_event_name": "PreToolUse",
+            "model": "gpt-6-astra",
+            "permission_mode": "default",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo hi"},
+            "tool_use_id": "exec-455cadc1-c408-49c3-81c0-3b143653de83"
+        })
+    }
+
+    /// `codex exec`: `SessionStart` carries no `turn_id`.
+    fn codex_session_start() -> Value {
+        json!({
+            "session_id": "01a1fc73-9253-7280-b888-d256837fd62e",
+            "transcript_path": "/tmp/t.jsonl",
+            "cwd": "/private/tmp/gaffqa",
+            "hook_event_name": "SessionStart",
+            "model": "gpt-6-astra",
+            "permission_mode": "default",
+            "source": "startup"
+        })
+    }
+
+    /// `agy -p`, agy 1.4.8, after `gaff hook --event PreToolUse`
+    /// added `hookEventName`.
+    fn agy_pre_tool_use() -> Value {
+        json!({
+            "hookEventName": "PreToolUse",
+            "artifactDirectoryPath": "/tmp/brain/69348f19-f6b5-44b1-8eab-8c19e937f6d0",
+            "conversationId": "69348f19-f6b5-44b1-8eab-8c19e937f6d0",
+            "lastUserInput": "Run the shell command 'echo hi' and then reply DONE.",
+            "modelName": "gemini-4-argon-medium",
+            "stepIdx": 2,
+            "toolCall": {
+                "args": {"CommandLine": "echo hi", "WaitMsBeforeAsync": 5000, "toolSummary": "Echo hi"},
+                "name": "run_command"
+            },
+            "transcriptPath": "/tmp/brain/transcript_full.jsonl",
+            "workspacePaths": ["/tmp/gaffqa"]
+        })
+    }
+
+    /// `agy -p`: the same call's `PostToolUse` carries `error`.
+    fn agy_post_tool_use() -> Value {
+        json!({
+            "hookEventName": "PostToolUse",
+            "conversationId": "d7ef1b97-fbf0-4bb4-87f7-0f49c927aefb",
+            "error": "",
+            "stepIdx": 6,
+            "toolCall": {"args": {"Path": "/tmp/gaffqa/note.txt"}, "name": "read_file"},
+            "workspacePaths": ["/tmp/gaffqa"]
+        })
+    }
+
+    /// `agy -p`: `PreInvocation` before the first and the second model
+    /// call of one turn.
+    fn agy_pre_invocation(n: u64) -> Value {
+        json!({
+            "hookEventName": "PreInvocation",
+            "conversationId": "d7ef1b97-fbf0-4bb4-87f7-0f49c927aefb",
+            "initialNumSteps": 1 + 3 * n,
+            "invocationNum": n,
+            "lastUserInput": "Read note.txt and reply with its content.",
+            "modelName": "gemini-4-argon-medium",
+            "workspacePaths": ["/tmp/gaffqa"]
+        })
+    }
+
+    #[test]
+    fn a_codex_payload_selects_codex_by_shape() {
+        assert_eq!(detect(None, &codex_pre_tool_use()).name, "codex");
+        // A Claude Code payload has no `turn_id`, so it stays Claude Code.
+        let claude = json!({"hook_event_name": "PreToolUse", "session_id": "s"});
+        assert_eq!(detect(None, &claude).name, "claude-code");
+        // `SessionStart` has no `turn_id`; the registered command names
+        // the host, and an explicit name wins.
+        assert_eq!(detect(Some("codex"), &codex_session_start()).name, "codex");
+    }
+
+    #[test]
+    fn a_codex_payload_parses_to_the_normalized_envelope() {
+        let env = (CODEX.parse)(codex_pre_tool_use());
+        assert_eq!(env.kind, Kind::PreToolCall);
+        assert_eq!(
+            env.session_id.as_deref(),
+            Some("01a1fc73-9253-7280-b888-d256837fd62e")
+        );
+        assert_eq!(env.cwd.as_deref(), Some("/private/tmp/gaffqa"));
+        assert_eq!(env.tool_name.as_deref(), Some("Bash"));
+        assert_eq!(
+            (CODEX.tool_field)(&env.raw, "command").as_deref(),
+            Some("echo hi")
+        );
+        assert_eq!(
+            (CODEX.parse)(codex_session_start()).kind,
+            Kind::SessionStart
+        );
+        for (event, kind) in [
+            ("UserPromptSubmit", Kind::Prompt),
+            ("PostToolUse", Kind::ToolCall),
+            ("Stop", Kind::Stop),
+        ] {
+            let mut p = codex_pre_tool_use();
+            p["hook_event_name"] = json!(event);
+            assert_eq!((CODEX.parse)(p).kind, kind, "{event}");
+        }
+    }
+
+    #[test]
+    fn a_codex_patch_reaches_an_edit_guard_with_its_paths() {
+        // Real `codex exec` payload for an `apply_patch` edit.
+        let mut p = codex_pre_tool_use();
+        p["tool_name"] = json!("apply_patch");
+        p["tool_input"] = json!({
+            "command": "*** Begin Patch\n*** Update File: /private/tmp/gaffqa/patched.txt\n@@\n-alpha\n+beta\n*** Add File: /private/tmp/gaffqa/new.txt\n+x\n*** End Patch"
+        });
+        let env = (CODEX.parse)(p);
+        assert_eq!(env.tool_name.as_deref(), Some("Edit"));
+        assert_eq!(
+            (CODEX.tool_field)(&env.raw, "file_path").as_deref(),
+            Some("/private/tmp/gaffqa/patched.txt\n/private/tmp/gaffqa/new.txt")
+        );
+        // A shell call has no file path, patch or not.
+        assert_eq!((CODEX.tool_field)(&codex_pre_tool_use(), "file_path"), None);
+        // Codex trims a header line before it matches it, and an update
+        // can move the file. The destination is a path the patch writes,
+        // so a guard must see it.
+        let mut moved = codex_pre_tool_use();
+        moved["tool_name"] = json!("apply_patch");
+        moved["tool_input"] = json!({
+            "command": "*** Begin Patch\n  *** Update File: a.txt\n*** Move to: /x/secret.txt  \n@@\n-a\n+b\n*** End Patch"
+        });
+        assert_eq!(
+            (CODEX.tool_field)(&moved, "file_path").as_deref(),
+            Some("a.txt\n/x/secret.txt")
+        );
+        // A patch with no file header names no path.
+        let mut bare = codex_pre_tool_use();
+        bare["tool_name"] = json!("apply_patch");
+        bare["tool_input"] = json!({"command": "*** Begin Patch\n*** End Patch"});
+        assert_eq!((CODEX.tool_field)(&bare, "file_path"), None);
+    }
+
+    #[test]
+    fn codex_reads_context_in_the_hook_specific_shape() {
+        // A real `codex exec` run quoted back a marker sent in exactly
+        // this JSON on `SessionStart` and `UserPromptSubmit`.
+        assert_eq!(
+            (CODEX.context_output)("SessionStart", "hello"),
+            r#"{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"hello"}}"#
+        );
+    }
+
+    #[test]
+    fn codex_registers_the_host_on_the_command_and_nests_a_matcher_group() {
+        assert_eq!(
+            (CODEX.registered_command)("SessionStart", "gaff hook"),
+            "gaff hook --host codex"
+        );
+        assert_eq!(
+            (CODEX.hook_entry)("SessionStart", "gaff hook --host codex"),
+            json!({"hooks": [{
+                "type": "command",
+                "command": "gaff hook --host codex",
+                "additionalContextLimit": 0
+            }]})
+        );
+        // Reminders reach Codex at the prompt, so the prompt event lifts
+        // the limit too.
+        assert_eq!(
+            (CODEX.hook_entry)("UserPromptSubmit", "c")["hooks"][0]["additionalContextLimit"],
+            0
+        );
+        // A real run warned on a limit set on `Stop`.
+        assert_eq!(
+            (CODEX.hook_entry)("Stop", "c"),
+            json!({"hooks": [{"type": "command", "command": "c"}]})
+        );
+    }
+
+    #[test]
+    fn an_agy_payload_parses_to_the_normalized_envelope() {
+        let env = (AGY.parse)(agy_pre_tool_use());
+        assert_eq!(env.kind, Kind::PreToolCall);
+        assert_eq!(env.event, "PreToolUse");
+        assert_eq!(
+            env.session_id.as_deref(),
+            Some("69348f19-f6b5-44b1-8eab-8c19e937f6d0")
+        );
+        assert_eq!(env.cwd.as_deref(), Some("/tmp/gaffqa"));
+        assert_eq!(
+            env.tool_name.as_deref(),
+            Some("Bash"),
+            "run_command is Bash"
+        );
+        assert_eq!(
+            (AGY.tool_field)(&env.raw, "command").as_deref(),
+            Some("echo hi")
+        );
+        assert_eq!((AGY.tool_field)(&env.raw, "file_path"), None);
+        assert_eq!(env.raw["tool_use_id"], "step-2");
+    }
+
+    #[test]
+    fn an_agy_tool_result_counts_once_by_its_step() {
+        let env = (AGY.parse)(agy_post_tool_use());
+        assert_eq!(env.kind, Kind::ToolCall);
+        assert_eq!(env.tool_name.as_deref(), Some("Read"));
+        assert_eq!(
+            (AGY.tool_field)(&env.raw, "file_path").as_deref(),
+            Some("/tmp/gaffqa/note.txt")
+        );
+        assert_eq!(env.raw["tool_use_id"], "step-6");
+    }
+
+    #[test]
+    fn agy_maps_its_real_tool_names_onto_the_guard_names() {
+        for (agy, guard) in [
+            ("run_command", "Bash"),
+            ("read_file", "Read"),
+            ("write_file", "Write"),
+            ("edit_file", "Edit"),
+            ("grep_search", "grep_search"),
+        ] {
+            let mut p = agy_pre_tool_use();
+            p["toolCall"]["name"] = json!(agy);
+            assert_eq!((AGY.parse)(p).tool_name.as_deref(), Some(guard), "{agy}");
+        }
+    }
+
+    #[test]
+    fn agy_reads_the_first_model_call_as_a_prompt_and_later_ones_as_a_batch() {
+        assert_eq!((AGY.parse)(agy_pre_invocation(0)).kind, Kind::Prompt);
+        assert_eq!((AGY.parse)(agy_pre_invocation(1)).kind, Kind::ToolBatch);
+        let mut bare = agy_pre_invocation(0);
+        bare.as_object_mut().unwrap().remove("invocationNum");
+        assert!(!(AGY.parse)(bare).kind.is_flush(), "no count, no flush");
+    }
+
+    #[test]
+    fn an_agy_payload_without_an_event_name_is_never_a_guard_point() {
+        // agy sends no event name. Without `--event`, the payload maps
+        // to no kind, so it neither refuses nor flushes.
+        let mut p = agy_pre_tool_use();
+        p.as_object_mut().unwrap().remove("hookEventName");
+        let env = (AGY.parse)(p);
+        assert!(matches!(env.kind, Kind::Other(_)));
+        assert_eq!(detect(None, &agy_pre_tool_use()).name, "agy");
+    }
+
+    #[test]
+    fn agy_reads_context_as_an_injected_system_message() {
+        // A real `agy -p` run quoted back a marker sent in this shape.
+        assert_eq!(
+            (AGY.context_output)("SessionStart", "hello"),
+            r#"{"injectSteps":[{"systemMessage":{"systemMessage":"hello"}}]}"#
+        );
+    }
+
+    #[test]
+    fn agy_registers_the_event_on_the_command_in_its_own_shape() {
+        assert_eq!(
+            (AGY.registered_command)("PreInvocation", "gaff hook"),
+            "gaff hook --host agy --event PreInvocation"
+        );
+        assert_eq!(
+            (AGY.hook_entry)("PreToolUse", "c"),
+            json!({"matcher": "*", "hooks": [{"type": "command", "command": "c"}]})
+        );
+        assert_eq!(
+            (AGY.hook_entry)("SessionStart", "c"),
+            json!({"type": "command", "command": "c"})
+        );
+        assert_eq!(AGY.hooks_key, "gaff");
+        assert_eq!(AGY.failure_code, 0, "any non-zero exit refuses on agy");
     }
 }

@@ -67,7 +67,8 @@ Options:
   -h, --help       Print this help
   -V, --version    Print the version
 
-A hook exits 0 or 1, so a gaff fault never blocks a session. A guard
+A hook exits 0 or 1, so a gaff fault never blocks a session. On a host
+that refuses a tool call on any non-zero code, a fault exits 0. A guard
 refuses a tool call with 2, a hold refuses a stop with 2, run refuses
 with 2, and githook returns the failing command's own code.
 

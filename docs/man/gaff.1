@@ -14,6 +14,7 @@ manages session context for a coding agent through the harness hook
 system: counters, cadence reminders, one-shot reminders, and prime
 sections.
 A hook exits 0 or 1, so a gaff fault never blocks a session.
+On agy, which refuses a tool call on any non-zero code, a fault exits 0.
 A guard refuses a tool call with 2, a hold or a blocking handler
 refuses a stop with 2,
 .Cm run
@@ -22,9 +23,18 @@ refuses with 2, and
 returns the failing command's own code.
 .Sh COMMANDS
 .Bl -tag -width "remind <text>"
-.It Cm hook
+.It Cm hook Oo Fl -host Ar name Oc Op Fl -event Ar name
 Handle one hook event from stdin.
 The harness calls this; it is not for interactive use.
+.Fl -host Ar name
+selects the adapter, ahead of
+.Ev GAFF_HOST
+and the payload shape.
+.Fl -event Ar name
+supplies the event name for a host whose payload carries none;
+a payload that names its own event keeps that name.
+.Cm gaff init
+writes both flags where a host needs them.
 .It Cm remind Ar text Po Fl -after Ar n | Fl -at Cm stop Pc Op Fl -times Ar n
 Schedule a one-shot reminder.
 With
@@ -56,8 +66,16 @@ Show the counters, the pending entries, and the one-shots.
 selects the session.
 .It Cm init Oo Fl -host Ar name Oc Op Fl -uninstall
 Register the agent hooks in the host's settings file.
-Two hosts are implemented, Claude Code and
-.Ic generic ;
+Four hosts are implemented:
+.Ic claude-code
+.Pq Pa .claude/settings.local.json ,
+.Ic codex
+.Pq Pa .codex/hooks.json ,
+.Ic agy
+.Pq Pa .agents/hooks.json ,
+and
+.Ic generic ,
+which registers nothing;
 Claude Code is the default.
 .It Cm init Fl -git Op Fl -uninstall
 Write one script in
