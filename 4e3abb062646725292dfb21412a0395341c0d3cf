@@ -1,0 +1,8 @@
+signoff[review-tests] PASS 4e3abb0 mutated all three new guards in merge (<= to <, size guard to true, write_pending removed) and each killed a named test; every goal behavior maps to a named test across Claude Code, Codex and agy; minor: write-failure stderr line and user-section ordering untested
+signoff[review-docs] PASS 4e3abb0 swept configuration, how-it-works, getting-started, cli-reference, man page, README, CONTRIBUTING, help text and commit messages; isolated end-to-end run confirmed one stderr line, status pending b,c, declared-order delivery, check rejecting an oversized section
+signoff[review-code] PASS 4e3abb0 read flush, merge, select and the pending store functions; the held prime reuses the existing pending-marker path with no second pattern; cargo test --lib engine 22 pass and clippy clean
+signoff[review-deps] PASS 4e3abb0 Cargo.toml and Cargo.lock unchanged against origin/main; no new spawn; cargo-audit advisories all sit in a lockfile identical to trunk
+signoff[review-usability] PASS 4e3abb0 ran the binary in scratch HOME across session start, compaction and profile switch, exact-cap, one-over and oversized sections; held sections showed pending and arrived in declared order; docs matched
+
+Round notes: round one FAIL (review-tests: no exact-cap boundary test) fixed in 4e3abb0 with a test that fails on the < mutant, plus a profile-switch test, an armed-write failure line, and doc wording; all five re-ran on 4e3abb0.
+Declined (minor): stderr cap line does not name each held entry (gaff status lists them; pre-existing wording); check measures raw bytes while the engine measures the trimmed body (harmless, pre-existing); cargo-audit advisories on trunk lockfile belong to a separate bump.
