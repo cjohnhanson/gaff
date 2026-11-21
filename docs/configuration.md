@@ -118,7 +118,7 @@ from the other. The user's names come first, then the repository's.
 
 Where the repository states none, the command exits 1 and the user's
 list does not stand in. That holds for a repository config that is
-missing, empty, unparseable, or without the key. Gate policy belongs
+missing, empty, unparsable, or without the key. Gate policy belongs
 to the repository. A truncated config beside a user config would
 otherwise read as a policy the repository never wrote.
 
@@ -292,11 +292,16 @@ A repo cannot declare a handler.
 
 ### A hold: the condition is text the model judges
 
-An agent sets this for itself, mid-session:
+An agent sets this for itself, mid-session, where the host supplies the
+session id:
 
-```
-gaff remind "The goal is X, and it is not reached yet." --at stop --id goal
-gaff remind --clear --id goal
+```console
+$ gaff remind "The goal is X, and it is not reached yet." --at stop --id goal
+holding the stop as `goal`. Release it with `gaff remind --clear --id goal`.
+
+$ gaff remind --clear --id goal
+released
+
 ```
 
 gaff refuses the stop and delivers the text. The model reads it and
@@ -312,8 +317,10 @@ still held refuses the stop.
 through on its own. That is "push back this many times, then let me
 stop", as against a hard hold that lasts until cleared.
 
-```
-gaff remind "Are you sure every reviewer converged?" --at stop --times 2 --id sure
+```console
+$ gaff remind "Are you sure every reviewer converged?" --at stop --times 2 --id sure
+holding the stop as `sure` for 2 refusal(s). Release it early with `gaff remind --clear --id sure`.
+
 ```
 
 ### Neither can wedge a session
@@ -408,10 +415,14 @@ A handler's command inherits the working directory gaff was called in,
 and many ordinary tools read executable settings from there. `git` honors
 `core.pager` and `core.fsmonitor` from `.git/config`. `make`, `just`,
 and `npm` read their own repo files. gaff cannot close that, so handlers
-are deny-by-default:
+are deny-by-default. Run `gaff trust` in the directory you want to
+allow:
 
-```
-gaff trust          # in the directory you want to allow
+```console
+$ gaff trust
+this directory may now run handlers: [CWD]
+consent is per directory. Another directory needs its own `gaff trust`.
+
 ```
 
 Consent is recorded in `$HOME/.config/gaff/trusted`, outside every repo
@@ -546,10 +557,12 @@ does not, and that exact gap let a private key reach a public repo.
 ### Letting one call through: `gaff allow`
 
 To let one specific call go through without editing the config, run
-`gaff allow`:
+`gaff allow`. With the guards above in the user config:
 
-```
-!gaff allow no-mass-stage
+```console
+$ gaff allow no-mass-stage
+the next call `no-mass-stage` would refuse is allowed, once.
+
 ```
 
 The next call that guard would refuse passes instead, once, with a note
@@ -559,8 +572,9 @@ on stderr saying so. The call after that is refused again.
 run the command, or write that directory, and arm the one-shot itself.
 The grant is visible. It is not a sandbox.
 
-The `!` prefix runs the command in the harness's own shell, which keeps
-the call out of the hook.
+In Claude Code, type it as `!gaff allow no-mass-stage`. The `!` prefix
+runs the command in the harness's own shell, which keeps the call out
+of the hook.
 
 ### A guard exits 2 on purpose
 

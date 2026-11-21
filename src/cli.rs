@@ -71,37 +71,60 @@ pub fn run(args: &[String]) -> ExitCode {
 /// prints it, and a test holds the two byte-equal.
 pub const ABOUT: &str = "a context-lifecycle handler for coding agents";
 
+// The help for every command: only `trust` prints help of its own
+// (`run_trust`). docs/cli-reference.md is generated from this text, so
+// each line states what its handler in this file does:
+// remind: `parse_remind` and `run_remind` (`--clear` calls
+//   `Store::clear_hold`, which drops every hold when no id is given);
+// status: `run_status` prints JSON;
+// init: `run_init`, `run_init_git` (`--uninstall`), `run_init_github`;
+// check: `run_check` loads the layered config, and `check_handlers`
+//   reads the user layer alone;
+// profile: `run_profile` shows the active profile with no subcommand;
+// docs: `run_docs` hands `search <word>` to diataxis;
+// --session: `session_from` in remind, status, allow, profile, and log.
 const USAGE: &str = "gaff — a context-lifecycle handler for coding agents
 
 Usage: gaff <command> [options]
 
 Commands:
   hook             Handle one hook event from stdin (the harness calls this)
-  remind <text>    Schedule a one-shot reminder N tool calls ahead
-                   (--at stop holds the stop; --times N lets go after N)
-  status           Show counters, pending entries, and one-shots
+  remind <text> --after N [--id ID]
+                   Schedule a one-shot reminder N tool calls ahead
+  remind <text> --at stop [--times N] [--id ID]
+                   Hold the stop until the hold is cleared, or for N stops
+  remind --clear [--id ID]
+                   Release one hold, or every hold when no id is given
+  status           Print the counters, pending entries, and one-shots as JSON
   init [--host H]  Register the agent hooks in the host's settings file
+                   (--uninstall removes them)
   init --git       Write the git hook scripts declared in the config
+                   (--uninstall removes them)
   init --github    Generate the workflows declared in the config
   githook <name>   Run one git hook (the installed scripts call this)
-  check            Validate .gaff/gaff.yml
-                   (--handlers checks the user config;
+  check            Validate the user config and .gaff/gaff.yml together
+                   (--handlers checks the user config alone;
                     --github reports a workflow that drifted)
-  trust            Allow handlers in this directory
+  trust            Allow handlers in this directory (--help says more)
   allow <guard>    Let the next call that guard would refuse through,
                    once
   doctor           Show what is live in this clone
-  profile          Show, list, or set the active profile
+  profile          Show the active profile
+                   (list: the declared profiles; set <name>: switch)
   run <agent>      Dispatch a hook agent through its runner and map its
                    verdict to an exit code (0 admits, 2 refuses)
   log              Show the injection audit trail for a session
   docs [page]      Print the bundled documentation
+                   (search <word>: the pages that hold the word)
   ci [--hook H]    Run the declared git gates against HEAD, as CI does
   reviews          Print the reviews a change must pass, one to a line
   reviews check    Refuse a push whose tips name no review (reads stdin)
   prime            Print what gaff is and how to use it, for an agent's context
 
 Options:
+  --session ID     The session for remind, status, allow, profile, and log.
+                   Without it, GAFF_SESSION_ID or the host's variable
+                   names the session.
   -h, --help       Print this help
   -V, --version    Print the version
 

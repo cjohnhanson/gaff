@@ -1,0 +1,11 @@
+sections:
+  - name: conventions
+    file: sections/conventions.md
+    refresh:
+      tool_calls: 25
+
+reminders:
+  - name: scratch
+    every:
+      tool_calls: 20
+    text: "Update your working notes before they go stale."

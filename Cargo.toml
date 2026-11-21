@@ -35,6 +35,11 @@ exclude = [
     # the crate's own suite panicked on a missing file rather than on
     # the prose disagreement it exists to catch.
     "tests/trust_vocabulary.rs",
+    # The docs test copies fixture repos holding `.gaff/`, which the
+    # line below drops from every depth, so it cannot run from the
+    # tarball either.
+    "tests/docs.rs",
+    "tests/docs/",
     ".tisket/",
     "tisket.yml",
     ".zettel/",
@@ -119,6 +124,13 @@ nix = { version = "0.31", default-features = false, features = ["signal"] }
 strip = "symbols"
 lto = "thin"
 codegen-units = 1
+
+# tests/docs.rs runs every `console` block in the docs with trycmd and
+# compares docs/cli-reference.md with the binary's help through snapbox.
+[dev-dependencies]
+snapbox = "1.2"
+tempfile = "3.27"
+trycmd = "1.2"
 
 [build-dependencies]
 diataxis = { version = "0.1", default-features = false, features = ["build"] }
