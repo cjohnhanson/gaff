@@ -25,7 +25,8 @@ Use this when you notice something that matters later but not now:
 The reminder fires once, about 10 counted tool calls later, at the next
 safe injection point. gaff resolves the session from --session, then
 GAFF_SESSION_ID, then the host's own variable (CLAUDE_CODE_SESSION_ID
-under Claude Code). Use it when you start something slow such as CI, a
+under Claude Code, CODEX_THREAD_ID under Codex,
+ANTIGRAVITY_CONVERSATION_ID under agy). Use it when you start something slow such as CI, a
 build, or a deploy, when you defer a cleanup, or when a task has a step
 you may forget under context pressure.
 

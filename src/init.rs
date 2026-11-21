@@ -3,14 +3,15 @@
 //! removes exactly what `gaff init` added, and nothing else.
 //!
 //! gaff owns no dispatch here. This module writes ordinary entries into
-//! `.claude/settings.local.json`, a local file that git ignores. The
-//! entries sit beside whatever else the file holds, and gaff keeps every
-//! unknown key. The rewrite writes a temporary file and renames it, so a
+//! the host's hook file: `.claude/settings.local.json`, a local file
+//! that git ignores, `.codex/hooks.json` for Codex, or
+//! `.agents/hooks.json` for agy. The entries sit beside whatever else
+//! the file holds, and gaff keeps every unknown key. The rewrite writes a temporary file and renames it, so a
 //! crash never leaves a truncated file.
 
 use std::path::Path;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 /// The default settings path. `gaff init --host <name>` uses the named
 /// adapter's path instead.
@@ -40,8 +41,8 @@ pub fn install_for(
     root: &Path,
     command: &str,
 ) -> std::io::Result<Outcome> {
-    edit_settings(adapter.settings_path, root, |settings| {
-        let hooks = hooks_map(settings);
+    edit_settings(adapter.settings_path, adapter.hooks_key, root, |settings| {
+        let hooks = hooks_map(settings, adapter.hooks_key);
         let mut changed = false;
         for event in adapter.hook_events {
             let entries = hooks
@@ -57,8 +58,9 @@ pub fn install_for(
                 );
                 continue;
             };
-            if !entries.iter().any(|e| has_command(e, command)) {
-                entries.push(json!({"hooks": [{"type": "command", "command": command}]}));
+            let cmd = (adapter.registered_command)(event, command);
+            if !entries.iter().any(|e| has_command(e, &cmd)) {
+                entries.push((adapter.hook_entry)(event, &cmd));
                 changed = true;
             }
         }
@@ -78,16 +80,22 @@ pub fn uninstall_for(
     root: &Path,
     command: &str,
 ) -> std::io::Result<Outcome> {
-    edit_settings(adapter.settings_path, root, |settings| {
-        let hooks = hooks_map(settings);
+    edit_settings(adapter.settings_path, adapter.hooks_key, root, |settings| {
+        let hooks = hooks_map(settings, adapter.hooks_key);
         let mut changed = false;
-        hooks.retain(|_, entries| {
+        hooks.retain(|event, entries| {
+            let command = &(adapter.registered_command)(event, command);
             if let Value::Array(list) = entries {
                 // Filter the inner hooks array, then drop an entry only
                 // once it is empty. A matcher group may hold another
-                // tool's hook beside gaff's.
+                // tool's hook beside gaff's. A host that takes the
+                // handler as the entry itself loses the whole entry.
                 let mut emptied = Vec::new();
                 for (index, entry) in list.iter_mut().enumerate() {
+                    if runs_command(&entry["command"], command) {
+                        emptied.push(index);
+                        continue;
+                    }
                     let Some(inner) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
                         continue;
                     };
@@ -118,30 +126,31 @@ pub fn uninstall_for(
         if hooks.is_empty() {
             // `remove` is `swap_remove` under `preserve_order`, so it
             // moves the last key into this slot and reorders the file.
-            settings.shift_remove("hooks");
+            settings.shift_remove(adapter.hooks_key);
         }
         changed
     })
 }
 
-/// The `hooks` object.
+/// The object that holds the event map, under the adapter's key.
 ///
-/// `edit_settings` refuses a file whose `hooks` key holds anything
-/// else, so the key is either absent or an object by the time this
-/// runs.
-fn hooks_map(settings: &mut Map<String, Value>) -> &mut Map<String, Value> {
+/// `edit_settings` refuses a file whose key holds anything else, so the
+/// key is either absent or an object by the time this runs.
+fn hooks_map<'a>(settings: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<String, Value> {
     settings
-        .entry("hooks".to_string())
+        .entry(key.to_string())
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
         .expect("edit_settings refuses a non-object hooks key")
 }
 
-/// True when a matcher-group entry holds a hook that runs this command.
+/// True when an entry runs this command: a matcher group whose nested
+/// `hooks` array holds it, or a handler entry that is the command.
 fn has_command(entry: &Value, command: &str) -> bool {
-    entry["hooks"]
-        .as_array()
-        .is_some_and(|hooks| hooks.iter().any(|h| runs_command(&h["command"], command)))
+    runs_command(&entry["command"], command)
+        || entry["hooks"]
+            .as_array()
+            .is_some_and(|hooks| hooks.iter().any(|h| runs_command(&h["command"], command)))
 }
 
 /// Whether a registered hook command is this command, by any path.
@@ -170,6 +179,7 @@ fn runs_command(registered: &Value, command: &str) -> bool {
 /// rewrite an unchanged file.
 fn edit_settings(
     settings_path: &str,
+    hooks_key: &str,
     root: &Path,
     mutate: impl FnOnce(&mut Map<String, Value>) -> bool,
 ) -> std::io::Result<Outcome> {
@@ -221,11 +231,11 @@ fn edit_settings(
 
     // gaff keeps every key it does not own, so it refuses a non-object
     // `hooks` value rather than replace what the user put there.
-    if settings.get("hooks").is_some_and(|h| !h.is_object()) {
+    if settings.get(hooks_key).is_some_and(|h| !h.is_object()) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "{}: the `hooks` key is not an object. Refusing to rewrite the file, because that would drop what is there.",
+                "{}: the `{hooks_key}` key is not an object. Refusing to rewrite the file, because that would drop what is there.",
                 path.display()
             ),
         ));
@@ -611,5 +621,98 @@ mod path_match_tests {
             &serde_json::json!("  /a/b/gaff   hook "),
             "gaff hook"
         ));
+    }
+}
+
+#[cfg(test)]
+mod host_registration_tests {
+    use super::*;
+    use crate::adapter::{AGY, CODEX};
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("gaff-hostreg-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn read(path: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn codex_registration_names_the_host_and_round_trips() {
+        let d = scratch("codex");
+        let path = d.join(".codex/hooks.json");
+        assert_eq!(
+            install_for(&CODEX, &d, "gaff hook").unwrap(),
+            Outcome::Changed
+        );
+        assert_eq!(
+            install_for(&CODEX, &d, "gaff hook").unwrap(),
+            Outcome::Unchanged
+        );
+        let v = read(&path);
+        for event in CODEX.hook_events {
+            assert_eq!(
+                v["hooks"][event][0]["hooks"][0]["command"], "gaff hook --host codex",
+                "{event}"
+            );
+        }
+        assert!(
+            v["hooks"].get("PostToolBatch").is_none(),
+            "Codex has no batch event"
+        );
+        uninstall_for(&CODEX, &d, "gaff hook").unwrap();
+        assert!(read(&path).get("hooks").is_none(), "{}", read(&path));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn agy_registration_owns_one_named_hook_and_keeps_the_others() {
+        let d = scratch("agy");
+        let path = d.join(".agents/hooks.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let foreign = r#"{"my-linter":{"PostToolUse":[{"matcher":"run_command","hooks":[{"type":"command","command":"./lint.sh"}]}]}}"#;
+        std::fs::write(&path, foreign).unwrap();
+        install_for(&AGY, &d, "gaff hook").unwrap();
+        assert_eq!(
+            install_for(&AGY, &d, "gaff hook").unwrap(),
+            Outcome::Unchanged
+        );
+        let v = read(&path);
+        assert_eq!(
+            v["my-linter"]["PostToolUse"][0]["hooks"][0]["command"],
+            "./lint.sh"
+        );
+        assert_eq!(
+            v["gaff"]["PreToolUse"][0],
+            serde_json::json!({"matcher": "*", "hooks": [{"type": "command", "command": "gaff hook --host agy --event PreToolUse"}]})
+        );
+        assert_eq!(
+            v["gaff"]["PreInvocation"][0],
+            serde_json::json!({"type": "command", "command": "gaff hook --host agy --event PreInvocation"})
+        );
+        assert!(
+            v["gaff"].get("Stop").is_none(),
+            "a hold does not run on agy"
+        );
+        uninstall_for(&AGY, &d, "gaff hook").unwrap();
+        let after = read(&path);
+        assert!(after.get("gaff").is_none(), "{after}");
+        assert_eq!(after, serde_json::from_str::<Value>(foreign).unwrap());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn agy_uninstall_finds_an_absolute_path_registration() {
+        let d = scratch("agyabs");
+        install_for(&AGY, &d, "/nix/store/x/bin/gaff hook").unwrap();
+        assert_eq!(
+            uninstall_for(&AGY, &d, "gaff hook").unwrap(),
+            Outcome::Changed
+        );
+        assert!(read(&d.join(".agents/hooks.json")).get("gaff").is_none());
+        std::fs::remove_dir_all(&d).ok();
     }
 }

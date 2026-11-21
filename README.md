@@ -148,13 +148,32 @@ Every feature and every command listed above is built and runs. The
 version is below 1.0, so the config keys and the output formats can
 still change.
 
-Two host adapters ship: Claude Code, and `generic`, which reads gaff's
-own normalized field names for a host that speaks them. A host declares its
-payload mapping, its event names, and its settings path in
-`src/adapter.rs`, and nothing else in gaff changes. gaff ships no
-guessed schema for a host nobody has tested.
+Four host adapters ship. `gaff init` defaults to `claude-code`.
+Use `gaff init --host codex` or `gaff init --host agy` for another host.
 
-A missouri state-graph suite of 28 paths and the cargo unit tests cover
+| Host | `gaff init` writes | Session start | Guards | Reminders | Holds |
+|------|--------------------|---------------|--------|-----------|-------|
+| `claude-code` | `.claude/settings.local.json` | Yes | Yes | All four flush points | Yes |
+| `codex` | `.codex/hooks.json` | Yes | Yes | Next user prompt | Yes |
+| `agy` | `.agents/hooks.json` | Yes | Yes | Mid-turn, before the next model call | No |
+| `generic` | No registration | With caller events | With caller support | With caller events | With caller support |
+
+Claude Code supports all four context flush points: session start,
+user prompt, tool batch, and stop. Other hosts have these limits:
+
+- Codex runs project hooks only after the user trusts them in `/hooks`.
+  Codex has no tool-batch event and cannot receive context at stop.
+  A reminder armed during one `codex exec` turn waits for the next
+  user prompt.
+- `agy` does not run holds or blocking stop handlers.
+- `generic` does not self-register. Its caller must send events,
+  deliver context, and honor refusals.
+
+A host declares its payload mapping, its event names, and its settings
+path in `src/adapter.rs`, and nothing else in gaff changes. gaff ships
+no guessed schema for a host nobody has tested.
+
+A missouri state-graph suite of 29 paths and the cargo unit tests cover
 this. The suite's error-surface path checks that a gaff failure exits 0
 or 1, never the blocking code 2. Exit 2 belongs to a guard that refuses
 a tool call, a stop hook that refuses a stop, `gaff run` reporting an

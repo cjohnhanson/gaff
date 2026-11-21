@@ -172,28 +172,111 @@ fn session_from(flag: Option<&str>) -> Option<String> {
 
 /// Read one hook payload from stdin. Write the response to stdout.
 ///
-/// Unreadable stdin and unparseable stdin exit 1. Claude Code treats
-/// exit 1 as a non-blocking error. Every later failure degrades to a
-/// silent passthrough at exit 0.
+/// Unreadable stdin, unparseable stdin, and a bad argument exit with the
+/// host's failure code: 1, which most hosts read as a non-blocking
+/// error, or 0 on a host that refuses a tool call on any non-zero code. Every later failure degrades to a silent passthrough
+/// at exit 0.
+///
+/// `--host` names the adapter, ahead of `GAFF_HOST` and the payload
+/// shape. `--event` supplies the event name for a host whose payload
+/// carries none.
 fn run_hook(args: &[String]) -> ExitCode {
-    // Every other subcommand rejects a flag it does not know. `hook`
-    // took its whole input from stdin and ignored the rest, so a typo
-    // read as a working invocation.
-    if let Some(unexpected) = args.first() {
-        return fail(&format!(
-            "unexpected argument `{unexpected}`. `gaff hook` reads its payload from stdin."
-        ));
+    // The host decides what a gaff fault exits with, so read `--host`
+    // before anything can fail. Every fault below, a panic included,
+    // exits with that host's failure code.
+    let named = args
+        .windows(2)
+        .find(|w| w[0] == "--host")
+        .map(|w| w[1].clone())
+        .or_else(|| std::env::var("GAFF_HOST").ok().filter(|h| !h.is_empty()));
+    let code = named
+        .as_deref()
+        .and_then(crate::adapter::by_name)
+        .map_or(1, |a| a.failure_code);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_hook_inner(args, named.as_deref(), code)
+    }));
+    outcome.unwrap_or_else(|_| {
+        eprintln!("gaff: the hook handler panicked. Passing through.");
+        ExitCode::from(code)
+    })
+}
+
+/// A gaff fault on the hook path, with the host's failure code.
+fn hook_fail(msg: &str, code: u8) -> ExitCode {
+    eprintln!("gaff: {msg}");
+    ExitCode::from(code)
+}
+
+/// Read the hook arguments and the payload, and choose the adapter.
+///
+/// Every other subcommand rejects a flag it does not know. `hook` once
+/// took its whole input from stdin and ignored the rest, so a typo read
+/// as a working invocation.
+fn read_hook_input(
+    args: &[String],
+    named: Option<&str>,
+    code: u8,
+) -> Result<(&'static crate::adapter::Adapter, crate::event::Envelope), ExitCode> {
+    let mut event: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--host" => {
+                if it.next().is_none() {
+                    return Err(hook_fail("--host requires a value", code));
+                }
+            }
+            "--event" => match it.next() {
+                Some(v) => event = Some(v.clone()),
+                None => return Err(hook_fail("--event requires a value", code)),
+            },
+            unexpected => {
+                return Err(hook_fail(
+                    &format!(
+                        "unexpected argument `{unexpected}`. `gaff hook` reads its payload from stdin."
+                    ),
+                    code,
+                ));
+            }
+        }
     }
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
-        return fail("cannot read stdin");
+        return Err(hook_fail("cannot read stdin", code));
     }
-    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&input) else {
-        return fail("invalid JSON on stdin");
+    let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&input) else {
+        return Err(hook_fail("invalid JSON on stdin", code));
     };
-    let adapter = crate::adapter::detect(std::env::var("GAFF_HOST").ok().as_deref(), &payload);
-    let envelope = (adapter.parse)(payload);
+    let adapter = crate::adapter::detect(named, &payload);
+    // A host that sends no event name gets it from its registration. A
+    // payload that names its own event keeps that name.
+    if let (Some(event), Some(map)) = (event, payload.as_object_mut()) {
+        map.entry(adapter.event_key.to_string())
+            .or_insert(serde_json::Value::String(event));
+    }
+    Ok((adapter, (adapter.parse)(payload)))
+}
 
+fn run_hook_inner(args: &[String], named: Option<&str>, code: u8) -> ExitCode {
+    let (adapter, envelope) = match read_hook_input(args, named, code) {
+        Ok(read) => read,
+        Err(exit) => return exit,
+    };
+
+    // A host that runs its hook outside the session's directory names
+    // that directory in the payload. Move there first: the repo config,
+    // a handler's child, and the default state root all key on the
+    // working directory, and `gaff remind` inside the session runs from
+    // the session's directory.
+    if adapter.cwd_from_payload
+        && let Some(dir) = envelope.cwd.as_deref()
+        && std::env::set_current_dir(dir).is_err()
+    {
+        eprintln!(
+            "gaff: cannot enter the session directory {dir}. Staying in the hook's directory."
+        );
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let loaded = config::load_layered(&cwd);
     let degraded = matches!(loaded, Loaded::Broken(_) | Loaded::Degraded(_));
@@ -286,6 +369,13 @@ fn run_hook(args: &[String]) -> ExitCode {
         if let Some(code) = refuse_stop(&handlers, &store, sid, &cwd) {
             return code;
         }
+    }
+
+    // A flush point the host has no context channel for. Delivering here
+    // would consume the pending entries while the host drops the text,
+    // so they wait for the next flush point the host can carry.
+    if envelope.kind.is_flush() && !adapter.flush_kinds.contains(&envelope.kind) {
+        return ExitCode::SUCCESS;
     }
 
     if let Some(context) =
@@ -654,6 +744,9 @@ fn run_init(args: &[String]) -> ExitCode {
                 "registered in"
             };
             println!("gaff hooks {verb} {}", adapter.settings_path);
+            if !uninstall && !adapter.install_note.is_empty() {
+                println!("{}", adapter.install_note);
+            }
             ExitCode::SUCCESS
         }
         Ok(init::Outcome::Unchanged) => {
@@ -1083,8 +1176,14 @@ fn doctor_hooks_for(adapter: &crate::adapter::Adapter, cwd: &std::path::Path) {
     // registration broken.
     let mut union: Vec<String> = Vec::new();
     let mut per_scope: Vec<String> = Vec::new();
+    let mut read: Vec<std::path::PathBuf> = Vec::new();
     for (label, path) in scopes.into_iter().filter_map(|(l, p)| p.map(|p| (l, p))) {
-        let events = registered_events(&path);
+        // A host whose repo and local scopes are one file is read once.
+        if read.contains(&path) {
+            continue;
+        }
+        read.push(path.clone());
+        let events = registered_events(&path, adapter.hooks_key);
         if events.is_empty() {
             continue;
         }
@@ -1095,6 +1194,15 @@ fn doctor_hooks_for(adapter: &crate::adapter::Adapter, cwd: &std::path::Path) {
             }
         }
     }
+    // The default host keeps the plain label. Another host is named, and
+    // it is reported only where it is registered, because a repo that
+    // never uses that host is not missing anything.
+    let default = std::ptr::eq(adapter, crate::adapter::ADAPTERS[0]);
+    let label = if default {
+        "hooks:  ".to_string()
+    } else {
+        format!("hooks ({}):", adapter.name)
+    };
     let found = !union.is_empty();
     if found {
         let missing: Vec<&str> = adapter
@@ -1105,19 +1213,36 @@ fn doctor_hooks_for(adapter: &crate::adapter::Adapter, cwd: &std::path::Path) {
             .collect();
         if missing.is_empty() {
             println!(
-                "hooks:   registered ({}), all {} events",
+                "{label} registered ({}), all {} events",
                 per_scope.join(" + "),
                 union.len()
             );
         } else {
             println!(
-                "hooks:   PARTIAL ({}); missing {}",
+                "{label} PARTIAL ({}); missing {}",
                 per_scope.join(" + "),
                 missing.join(", ")
             );
         }
+        let lost: Vec<&str> = [
+            crate::event::Kind::SessionStart,
+            crate::event::Kind::Prompt,
+            crate::event::Kind::ToolBatch,
+            crate::event::Kind::Stop,
+        ]
+        .iter()
+        .filter(|k| !adapter.flush_kinds.contains(k))
+        .map(crate::event::Kind::as_str)
+        .collect();
+        if !lost.is_empty() {
+            println!(
+                "         {} has no context channel at: {}",
+                adapter.name,
+                lost.join(", ")
+            );
+        }
     }
-    if !found {
+    if !found && default {
         println!("hooks:   NOT registered (run `gaff init`)");
     }
 }
@@ -1144,28 +1269,33 @@ fn is_gaff_hook_command(command: &str) -> bool {
 ///
 /// This walks the structure rather than searching the text, so a file
 /// that only mentions the command does not read as a registration.
-fn registered_events(path: &std::path::Path) -> Vec<String> {
+fn registered_events(path: &std::path::Path, hooks_key: &str) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
         return Vec::new();
     };
-    let Some(hooks) = json.get("hooks").and_then(|h| h.as_object()) else {
+    let Some(hooks) = json.get(hooks_key).and_then(|h| h.as_object()) else {
         return Vec::new();
+    };
+    let runs_gaff = |h: &serde_json::Value| {
+        h.get("command")
+            .and_then(|c| c.as_str())
+            .is_some_and(is_gaff_hook_command)
     };
     hooks
         .iter()
         .filter(|(_, groups)| {
             groups.as_array().is_some_and(|gs| {
+                // An entry is a matcher group with a nested `hooks`
+                // array, or, on a host that allows it, the handler
+                // itself.
                 gs.iter().any(|g| {
-                    g.get("hooks").and_then(|h| h.as_array()).is_some_and(|hs| {
-                        hs.iter().any(|h| {
-                            h.get("command")
-                                .and_then(|c| c.as_str())
-                                .is_some_and(is_gaff_hook_command)
-                        })
-                    })
+                    runs_gaff(g)
+                        || g.get("hooks")
+                            .and_then(|h| h.as_array())
+                            .is_some_and(|hs| hs.iter().any(runs_gaff))
                 })
             })
         })
@@ -2003,6 +2133,9 @@ mod tests {
             vec!["profile", "set"],
             vec!["log", "--session"],
             vec!["log", "--bogus"],
+            vec!["hook", "--bogus"],
+            vec!["hook", "--event"],
+            vec!["hook", "--host", "claude-code", "--bogus"],
         ];
         for case in bad {
             let code = run(&args(&case));
@@ -2013,6 +2146,28 @@ mod tests {
                 case.join(" ")
             );
         }
+    }
+
+    /// A host that refuses a tool call on any non-zero exit declares
+    /// failure code 0, and a gaff fault on its hook path exits 0,
+    /// whatever the fault and wherever `--host` sits.
+    #[test]
+    fn a_hook_fault_exits_with_the_host_failure_code() {
+        for adapter in crate::adapter::ADAPTERS {
+            let want = format!("{:?}", ExitCode::from(adapter.failure_code));
+            for case in [
+                vec!["hook", "--host", adapter.name, "--bogus"],
+                vec!["hook", "--host", adapter.name, "--event"],
+                vec!["hook", "--bogus", "--host", adapter.name],
+            ] {
+                let code = run(&args(&case));
+                assert_eq!(format!("{code:?}"), want, "`gaff {}`", case.join(" "));
+            }
+        }
+        assert!(
+            crate::adapter::ADAPTERS.iter().any(|a| a.failure_code == 0),
+            "the case this test guards exists"
+        );
     }
 
     #[test]
