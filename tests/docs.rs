@@ -184,6 +184,12 @@ fn page_env(fixtures: &Path) -> Vec<String> {
 /// directory.
 fn write_wrapper(bin: &Path, name: &str, target: &Path, extra: &[String]) -> PathBuf {
     let wrapper = bin.join(name);
+    // The wrapper quotes the path in single quotes.
+    assert!(
+        !target.to_string_lossy().contains('\''),
+        "cannot wrap a path holding a single quote: {}",
+        target.display()
+    );
     std::fs::write(
         &wrapper,
         format!(
@@ -339,9 +345,10 @@ fn help_paths() -> Vec<Vec<String>> {
 
 /// The generated part of the CLI reference: one section per command
 /// with help of its own, as a `console` transcript. A `text` fence would
-/// do, but help lines open with `gaff`, and the family fence lint reads
-/// such a line in a `text` fence as a command; the transcript also runs
-/// in `console_examples`.
+/// do, but help lines open with `gaff`, and the fence lint shared by the
+/// eng.rip tools (`scripts/family/check-fences.py` in cjohnhanson/eng.rip)
+/// reads such a line in a `text` fence as a command; the transcript also
+/// runs in `console_examples`.
 fn generated_reference() -> String {
     use std::fmt::Write as _;
     let mut text = String::new();
@@ -401,6 +408,19 @@ fn the_help_lists_the_commands_and_trust_has_its_own_help() {
     assert!(own_help("doctor").is_none());
     assert!(own_help("prime").is_none());
     assert_eq!(help_paths(), [vec![], vec!["trust".to_string()]]);
+    assert_eq!(
+        listed,
+        [
+            "hook", "remind", "status", "init", "githook", "check", "trust", "allow", "doctor",
+            "profile", "run", "log", "docs", "ci", "reviews", "prime"
+        ]
+    );
+    // README.md runs first, then every page in docs/.
+    let pages = pages();
+    assert!(
+        pages[0].ends_with("README.md") && pages.len() > 4,
+        "{pages:?}"
+    );
 }
 
 /// The harness itself: a page whose output differs from the binary fails,
@@ -455,6 +475,42 @@ fn commands_lists_what_trycmd_runs() {
     assert_eq!(names, ["bare", "gaff", "git", "tagged"]);
 }
 
+/// Only the opening backtick run closes a fence. A shorter run inside a
+/// longer fence is text, so the `$ y` after it is not a command.
+#[test]
+fn a_shorter_fence_inside_a_longer_one_does_not_close_it() {
+    let page = "````markdown\n```console\nx\n```\n$ y\n````\n";
+    assert!(commands(Path::new("p.md"), page).is_empty());
+}
+
+/// Every flag the help names appears in the man page, which the CLI
+/// reference sends readers to for each command's options.
+#[test]
+fn the_man_page_names_every_flag_the_help_names() {
+    let (ok, help) = run_isolated(&["--help"]);
+    assert!(ok);
+    let man = std::fs::read_to_string(root().join("docs/man/gaff.1")).unwrap();
+    let flags: std::collections::BTreeSet<&str> = help
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter_map(|w| w.strip_prefix("--"))
+        .filter(|f| !f.is_empty() && *f != "help" && *f != "version")
+        .collect();
+    assert!(
+        flags.contains("session") && flags.contains("clear"),
+        "{flags:?}"
+    );
+    for flag in flags {
+        assert!(
+            man.contains(&format!("Fl -{flag}")),
+            "docs/man/gaff.1 does not name --{flag}"
+        );
+    }
+    assert!(
+        man.contains(".It Cm docs search"),
+        "the man page omits docs search"
+    );
+}
+
 #[test]
 fn a_page_running_an_unknown_command_fails() {
     let (_guard, scratch) = scratch();
@@ -465,41 +521,81 @@ fn a_page_running_an_unknown_command_fails() {
     assert!(message.contains("not on PATH"), "{message}");
 }
 
-/// A YAML fixture is the config a page's examples run against, so the
-/// page must show that same text in a `yaml` fence.
-#[test]
-fn every_yaml_fixture_is_shown_on_its_page() {
-    fn yaml_files(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                yaml_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "yml") {
-                out.push(path);
-            }
+/// Every file under `dir`, depth first.
+fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files_under(&path, out);
+        } else {
+            out.push(path);
         }
     }
+}
+
+/// The files in a page's `work/` and `home/` fixtures that the page does
+/// not show. A reader following the page has only what it shows, so each
+/// such file must appear in a fence named for its kind: `yaml` for
+/// `.yml`, `markdown` for `.md`. Returns how many files it checked and
+/// the ones missing.
+fn unshown_fixtures(text: &str, fixtures: &Path) -> (usize, Vec<PathBuf>) {
+    let mut files = Vec::new();
+    files_under(&fixtures.join("work"), &mut files);
+    files_under(&fixtures.join("home"), &mut files);
+    let checked = files.len();
+    let missing = files
+        .into_iter()
+        .filter(|file| {
+            let lang = match file.extension().and_then(|e| e.to_str()) {
+                Some("yml") => "yaml",
+                Some("md") => "markdown",
+                _ => panic!("{}: no fence language for this fixture", file.display()),
+            };
+            let body = std::fs::read_to_string(file).unwrap();
+            !text.contains(&format!("```{lang}\n{body}```"))
+        })
+        .collect();
+    (checked, missing)
+}
+
+/// The fixtures are the files a page's examples run against, so the page
+/// must show each one.
+#[test]
+fn every_fixture_file_is_shown_on_its_page() {
     let mut checked = 0;
     for page in pages() {
         let stem = page.file_stem().unwrap().to_string_lossy().into_owned();
-        let mut fixtures = Vec::new();
-        yaml_files(&root().join("tests/docs").join(&stem), &mut fixtures);
         let text = std::fs::read_to_string(&page).unwrap();
-        for fixture in fixtures {
-            let yaml = std::fs::read_to_string(&fixture).unwrap();
-            assert!(
-                text.contains(&format!("```yaml\n{yaml}```")),
-                "{} does not show {}",
-                page.display(),
-                fixture.display()
-            );
-            checked += 1;
-        }
+        let (count, missing) = unshown_fixtures(&text, &root().join("tests/docs").join(&stem));
+        assert!(
+            missing.is_empty(),
+            "{} does not show {missing:?}",
+            page.display()
+        );
+        checked += count;
     }
-    assert!(checked > 0, "no YAML fixture was checked");
+    assert!(checked > 0, "no fixture file was checked");
+}
+
+/// A section file the page never shows is caught, and so is a config
+/// shown with different text.
+#[test]
+fn a_fixture_the_page_does_not_show_is_reported() {
+    let (_guard, scratch) = scratch();
+    let section = scratch.join("work/.gaff/sections/a.md");
+    std::fs::create_dir_all(section.parent().unwrap()).unwrap();
+    std::fs::write(&section, "Keep this.\n").unwrap();
+    std::fs::write(scratch.join("work/.gaff/gaff.yml"), "sections: []\n").unwrap();
+    let page = "```yaml\nsections: []\n```\n";
+    let (checked, missing) = unshown_fixtures(page, &scratch);
+    assert_eq!(checked, 2);
+    assert_eq!(missing, [section]);
+    let page = "```yaml\nsections: [x]\n```\n\n```markdown\nKeep this.\n```\n";
+    let (_, missing) = unshown_fixtures(page, &scratch);
+    assert_eq!(missing, [scratch.join("work/.gaff/gaff.yml")]);
 }
 
 #[test]

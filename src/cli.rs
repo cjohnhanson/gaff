@@ -80,7 +80,8 @@ pub const ABOUT: &str = "a context-lifecycle handler for coding agents";
 // init: `run_init`, `run_init_git` (`--uninstall`), `run_init_github`;
 // check: `run_check` loads the layered config, and `check_handlers`
 //   reads the user layer alone;
-// profile: `run_profile` shows the active profile with no subcommand;
+// profile: `run_profile` shows the active profile with no subcommand
+//   or `show`, and reads `--session` only after the subcommand;
 // docs: `run_docs` hands `search <word>` to diataxis;
 // --session: `session_from` in remind, status, allow, profile, and log.
 const USAGE: &str = "gaff — a context-lifecycle handler for coding agents
@@ -103,14 +104,16 @@ Commands:
   init --github    Generate the workflows declared in the config
   githook <name>   Run one git hook (the installed scripts call this)
   check            Validate the user config and .gaff/gaff.yml together
-                   (--handlers checks the user config alone;
+                   (--handlers checks the user guards and handlers.yml;
                     --github reports a workflow that drifted)
   trust            Allow handlers in this directory (--help says more)
   allow <guard>    Let the next call that guard would refuse through,
                    once
   doctor           Show what is live in this clone
-  profile          Show the active profile
-                   (list: the declared profiles; set <name>: switch)
+  profile [show]   Show the active profile
+  profile list     List the declared profiles and who may set each
+  profile set <name>
+                   Switch this session to a profile
   run <agent>      Dispatch a hook agent through its runner and map its
                    verdict to an exit code (0 admits, 2 refuses)
   log              Show the injection audit trail for a session
@@ -495,7 +498,7 @@ fn parse_remind(args: &[String]) -> Result<RemindArgs, String> {
 }
 
 /// `gaff remind <text> (--after <N> | --at stop) [--times <N>] [--id <id>] [--session <sid>]`
-/// and `gaff remind --clear --id <id>`.
+/// and `gaff remind --clear [--id <id>]`.
 ///
 /// Schedule a one-shot reminder N tool calls ahead, or at the stop.
 fn run_remind(args: &[String]) -> ExitCode {
@@ -1516,8 +1519,9 @@ fn run_trust(args: &[String]) -> ExitCode {
 
 /// Validate the user-scoped handler config.
 ///
-/// This is separate from `gaff check`, which stays repo-only so it
-/// behaves the same in CI as it does locally.
+/// Plain `gaff check` validates the layered config (`run_check` calls
+/// `config::load_layered`). This reads the user layer alone: the guards
+/// in the user `gaff.yml` and the handlers in `handlers.yml`.
 fn check_handlers() -> ExitCode {
     let mut bad_guards = false;
     // Guards live only in the user config, so this subcommand validates

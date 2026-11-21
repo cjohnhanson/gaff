@@ -51,7 +51,7 @@ recurring entries), and `oneshots` (with their `fired` flags).
 ## Set up a repo
 
     gaff init          # register the hooks in .claude/settings.local.json
-    gaff check         # validate .gaff/gaff.yml
+    gaff check         # validate the user config and .gaff/gaff.yml
     gaff doctor        # what is live in this clone
 
 The repo config `.gaff/gaff.yml` holds data only. It declares sections,

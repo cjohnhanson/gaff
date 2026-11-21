@@ -158,6 +158,12 @@ github:
       - use_git: fmt
 ```
 
+The section's text lives in `.gaff/sections/conventions.md`:
+
+```markdown
+Stage files by name. Run the tests before every commit.
+```
+
 Register the agent hooks, write the git hook and the workflow, and
 check the result:
 

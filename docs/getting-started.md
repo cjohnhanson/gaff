@@ -46,7 +46,15 @@ reminders:
     text: "Update your working notes before they go stale."
 ```
 
-A section is a file under `.gaff/`. gaff injects the whole file at
+A section is a file under `.gaff/`. Create
+`.gaff/sections/conventions.md` with the text the agent must keep in
+view:
+
+```markdown
+Stage files by name. Run the tests before every commit.
+```
+
+gaff injects the whole file at
 session start, and again when its refresh cadence crosses. A reminder is
 one line of text on a cadence. Everything a hook reads from this file is
 data; a `git:` or `github:` entry names a command, and that runs only

@@ -43,12 +43,15 @@ docs/*.md against the built binary and fails on any difference in
 output. Each page runs in its own scratch directory, with its own
 `HOME`; fixtures for a page live in `tests/docs/<page>/` (see the top of
 `tests/docs.rs`). The same test fails when docs/cli-reference.md differs
-from the binary's help. The eng.rip family fence lint refuses a gaff
-command in any other kind of fence, except under an Install section. The README
-example needs `git` on `PATH`.
+from the binary's help. The README example needs `git` on `PATH`.
+
+Write a gaff command in a `console` block, so the test runs it. A
+command in any other kind of block is never checked. Install sections
+are the exception, because their commands change the reader's machine.
 
 After changing a command's output or the help text in `src/cli.rs`,
-write the new output into the docs and read the diff:
+write the new output into the docs and read the diff. The first command
+rewrites the examples, and the second rewrites the CLI reference:
 
 ```sh
 TRYCMD=overwrite cargo test --test docs

@@ -37,14 +37,16 @@ Commands:
   init --github    Generate the workflows declared in the config
   githook <name>   Run one git hook (the installed scripts call this)
   check            Validate the user config and .gaff/gaff.yml together
-                   (--handlers checks the user config alone;
+                   (--handlers checks the user guards and handlers.yml;
                     --github reports a workflow that drifted)
   trust            Allow handlers in this directory (--help says more)
   allow <guard>    Let the next call that guard would refuse through,
                    once
   doctor           Show what is live in this clone
-  profile          Show the active profile
-                   (list: the declared profiles; set <name>: switch)
+  profile [show]   Show the active profile
+  profile list     List the declared profiles and who may set each
+  profile set <name>
+                   Switch this session to a profile
   run <agent>      Dispatch a hook agent through its runner and map its
                    verdict to an exit code (0 admits, 2 refuses)
   log              Show the injection audit trail for a session
