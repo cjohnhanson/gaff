@@ -1,0 +1,5 @@
+signoff[review-tests] PASS a6f0ad4 not applicable: diff only flips the cyb0 tisket status to done; no code, guard, or test changed; checked that 026f500 on trunk removed the built-in guard and no tracked source still references it
+signoff[review-docs] PASS a6f0ad4 swept README, docs, man page, skills, scripts and src error text for built-in or privileged guard remnants and found none outside tisket; minor: the closed cyb0 body names an unbuilt fix with no resolution note, and open sgt3 still describes the built-in guard
+signoff[review-code] PASS a6f0ad4 not applicable: the diff only renames one tisket issue into .closed and sets status done, matching the 10 existing closed issues; checked for code, skill-body or suppression changes and found none
+signoff[review-deps] PASS a6f0ad4 not applicable: the diff only changes front matter in one closed tisket issue; no manifest, lockfile, code, external program call or install step changed
+signoff[review-usability] PASS a6f0ad4 not applicable: the diff only moves one tisket issue to .closed and sets it done; no CLI, help, error or doc surface changed
