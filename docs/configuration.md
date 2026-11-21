@@ -260,6 +260,15 @@ line separates each entry, and the total stays under `max_inject_bytes`.
 An entry that does not fit stays armed for the next flush, and gaff
 appends `[gaff:truncated]`.
 
+This rule also holds for a section at a prime: a session start, a
+compaction, or a profile switch. A section that the cap holds back gets
+a pending marker. The next flush point that the host can carry delivers
+it, in declared order with any other held sections. On Codex, that is
+the next prompt. A section that is larger than `max_inject_bytes` by
+itself never fits, so gaff does not arm it, and `gaff check` reports it.
+A flush that holds an entry back prints one line on stderr.
+`gaff status` lists the held sections as pending.
+
 
 ## Refusing a stop
 
