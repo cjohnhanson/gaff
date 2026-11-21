@@ -43,7 +43,9 @@ docs/*.md against the built binary and fails on any difference in
 output. Each page runs in its own scratch directory, with its own
 `HOME`; fixtures for a page live in `tests/docs/<page>/` (see the top of
 `tests/docs.rs`). The same test fails when docs/cli-reference.md differs
-from the binary's help. The README example needs `git` on `PATH`.
+from the binary's help, and when a `yaml` config example fails `gaff
+check` (`gaff check --handlers` for a `handlers:` example). The README
+example needs `git` on `PATH`.
 
 Write a gaff command in a `console` block, so the test runs it. A
 command in any other kind of block is never checked. Install sections

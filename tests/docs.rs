@@ -521,6 +521,149 @@ fn a_page_running_an_unknown_command_fails() {
     assert!(message.contains("not on PATH"), "{message}");
 }
 
+/// The body of every top-level ```` ```yaml ```` fence on a page.
+fn yaml_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut open: Option<String> = None;
+    for line in text.lines() {
+        match open.as_mut() {
+            Some(body) if line == "```" => {
+                blocks.push(std::mem::take(body));
+                open = None;
+            }
+            Some(body) => {
+                body.push_str(line);
+                body.push('\n');
+            }
+            None if line == "```yaml" => open = Some(String::new()),
+            None => {}
+        }
+    }
+    blocks
+}
+
+/// Run the built binary in `work` with `home` as `HOME` and a cleared
+/// environment. Returns the exit status and the combined output.
+fn run_in(work: &Path, home: &Path, program: &str, args: &[&str]) -> (bool, String) {
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(work)
+        .env_clear()
+        .env("HOME", home)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    (
+        out.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// Whether a page's config examples validate. The blocks other than
+/// `handlers.yml` blocks join into one user config, since each declares
+/// different top-level keys, and an example may lean on an earlier one
+/// (a workflow's `use_git` names a git entry). gaff writes the git hooks
+/// and workflows they declare, as a reader would, then `gaff check`
+/// must pass. Each `handlers:` block is a `handlers.yml` of its own and
+/// must pass `gaff check --handlers`. An indented block is a fragment of
+/// a larger file and is skipped. Returns how many blocks it checked.
+fn validate_yaml_examples(page: &Path, text: &str) -> usize {
+    let (handlers, config): (Vec<String>, Vec<String>) = yaml_blocks(text)
+        .into_iter()
+        .filter(|b| !b.starts_with(' '))
+        .partition(|b| b.starts_with("handlers:"));
+    let mut keys = std::collections::BTreeSet::new();
+    for line in config.iter().flat_map(|b| b.lines()) {
+        if let Some((key, _)) = line.split_once(':')
+            && !line.starts_with([' ', '#'])
+        {
+            assert!(
+                keys.insert(key.to_string()),
+                "{}: two config examples declare `{key}`",
+                page.display()
+            );
+        }
+    }
+    let checked = handlers.len() + config.len();
+    let (_guard, scratch) = scratch();
+    let home = scratch.join("home");
+    let user = home.join(".config/gaff");
+    let work = scratch.join("work");
+    std::fs::create_dir_all(&user).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    let config = config.concat();
+    if !config.is_empty() {
+        // A section resolves against the user config directory.
+        for line in config.lines() {
+            if let Some(file) = line.trim_start().strip_prefix("file: ") {
+                let path = user.join(file.trim());
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, "text\n").unwrap();
+            }
+        }
+        std::fs::write(user.join("gaff.yml"), &config).unwrap();
+        let (ok, out) = run_in(&work, &home, "git", &["init", "-q"]);
+        assert!(ok, "git init: {out}");
+        for (key, flag) in [("git:", "--git"), ("github:", "--github")] {
+            if config.lines().any(|l| l == key) {
+                let (ok, out) = run_in(&work, &home, BIN, &["init", flag]);
+                assert!(ok, "{}: gaff init {flag}: {out}", page.display());
+            }
+        }
+        let (ok, out) = run_in(&work, &home, BIN, &["check"]);
+        assert!(
+            ok,
+            "{}: its config examples fail `gaff check`:\n{out}\n{config}",
+            page.display()
+        );
+    }
+    for block in handlers {
+        let path = user.join("handlers.yml");
+        std::fs::write(&path, &block).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let (ok, out) = run_in(&work, &home, BIN, &["check", "--handlers"]);
+        assert!(
+            ok,
+            "{}: a handlers example fails `gaff check --handlers`:\n{out}\n{block}",
+            page.display()
+        );
+    }
+    checked
+}
+
+#[test]
+fn every_yaml_example_validates() {
+    let checked: usize = pages()
+        .iter()
+        .map(|page| validate_yaml_examples(page, &std::fs::read_to_string(page).unwrap()))
+        .sum();
+    assert!(checked >= 10, "only {checked} YAML examples were checked");
+}
+
+/// A config example gaff refuses fails the test, and so does a handler
+/// with a relative command.
+#[test]
+fn an_invalid_yaml_example_fails() {
+    let page = Path::new("p.md");
+    let bad =
+        "```yaml\nreminders:\n  - name: r\n    every: {tool_calls: never}\n    text: x\n```\n";
+    assert!(std::panic::catch_unwind(|| validate_yaml_examples(page, bad)).is_err());
+    let bad = "```yaml\nhandlers:\n  - name: h\n    events: [session_start]\n    every: {tool_calls: 1}\n    command: [\"git\", \"status\"]\n```\n";
+    assert!(std::panic::catch_unwind(|| validate_yaml_examples(page, bad)).is_err());
+    let good = "```yaml\nreminders:\n  - name: r\n    every: {tool_calls: 5}\n    text: x\n```\n\n```yaml\n    env_passthrough: [X]\n```\n";
+    assert_eq!(validate_yaml_examples(page, good), 1);
+}
+
 /// Every file under `dir`, depth first.
 fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
