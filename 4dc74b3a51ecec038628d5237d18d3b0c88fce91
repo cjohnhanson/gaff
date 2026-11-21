@@ -1,0 +1,7 @@
+signoff[review-tests] PASS 4dc74b3 cargo test --workspace --all-features passes (18 suites ok, tests/docs.rs 17/17), missouri passes 29/29, and the merge adds only main's changes plus one regenerated docs line
+signoff[review-docs] PASS 4dc74b3 the merge has parents f587ee2 and 56969ad; 4d8ba45..4dc74b3 changes only docs/cli-reference.md, its new footer matches gaff --help word for word; cargo test --test docs passes 17/17; feature docs agree with main's new docs
+signoff[review-code] PASS 4dc74b3 the feature's src diff against main's tip 56969ad has the same patch-id as git diff f3a359a f587ee2 -- src; fmt check passes, clippy with -D warnings prints nothing, and cargo test passes in every binary
+signoff[review-deps] PASS 4dc74b3 git diff 56969ad 4dc74b3 on Cargo.toml and Cargo.lock is empty, so no dependency is added; the diff adds no spawn; the merge brings in no source of its own; release build and cargo test pass
+signoff[review-usability] PASS 4dc74b3 built and ran with HOME in mktemp: gaff --help and cli-reference carry the agy fault-exits-0 footer; init codex and agy, doctor, hook faults, captured payloads, and the nested-session refusal behave as judged at f587ee2
+
+Prior sign-offs: all five reviews passed f587ee2 (note on that commit). 4d8ba45 merges origin/main 56969ad without conflicts; 4dc74b3 regenerates docs/cli-reference.md for the CI docs test.
