@@ -368,3 +368,23 @@ fn git_ignores_the_generator_output() {
         ".gitignore does not carry {pattern}"
     );
 }
+
+#[test]
+fn verify_installs_the_pinned_pandoc_before_the_suite() {
+    // tests/cli_reference_page.rs fails in CI without the pandoc it
+    // pins, and the pull request workflows installed it while this job
+    // did not, so the first tag would have failed here.
+    let page_test =
+        fs::read_to_string("tests/cli_reference_page.rs").expect("cli_reference_page.rs");
+    let version = between(&page_test, "const PANDOC_VERSION: &str = \"", "\"")
+        .expect("PANDOC_VERSION in cli_reference_page.rs");
+    let deb = format!("pandoc-{version}-1-amd64.deb");
+    let lines = job("verify");
+    let install = lines.iter().position(|l| l.contains(&deb));
+    let suite = lines.iter().position(|l| l.contains("cargo test"));
+    match (install, suite) {
+        (Some(i), Some(s)) => assert!(i < s, "{WORKFLOW} verify installs {deb} after cargo test"),
+        (None, _) => panic!("{WORKFLOW} verify does not install {deb}"),
+        (_, None) => panic!("{WORKFLOW} verify runs no cargo test"),
+    }
+}

@@ -734,7 +734,7 @@ pub fn load_user(path: &Path) -> Result<Option<Config>, String> {
     let Some(text) = read_user_config_file(path)? else {
         return Ok(None);
     };
-    match serde_yaml_ng::from_str::<Config>(&text) {
+    match yaml_serde::from_str::<Config>(&text) {
         Ok(cfg) => Ok(Some(cfg)),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
@@ -767,7 +767,7 @@ pub fn load_layered(cwd: &Path) -> Loaded {
             None
         }
         Some(p) => match read_user_config_file(&p) {
-            Ok(Some(text)) => match serde_yaml_ng::from_str::<Config>(&text) {
+            Ok(Some(text)) => match yaml_serde::from_str::<Config>(&text) {
                 Ok(mut cfg) => {
                     // Stamp the layer while the two configs are still
                     // separate. After the merge there is no way to tell
@@ -1090,7 +1090,7 @@ pub fn legacy_key_problems(cwd: &Path) -> Vec<String> {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(cfg) = serde_yaml_ng::from_str::<Config>(&text) else {
+        let Ok(cfg) = yaml_serde::from_str::<Config>(&text) else {
             continue;
         };
         for (name, profile) in &cfg.profiles {
@@ -1114,7 +1114,7 @@ pub fn load(cwd: &Path) -> Loaded {
         Ok(None) => return Loaded::Absent,
         Err(e) => return Loaded::Broken(e),
     };
-    match serde_yaml_ng::from_str::<Config>(&bytes) {
+    match yaml_serde::from_str::<Config>(&bytes) {
         Ok(mut cfg) => {
             // A repo may never declare a guard. Guards are the one
             // blocking feature, and a repo is untrusted content. This
@@ -1185,7 +1185,7 @@ mod tests {
 
     #[test]
     fn parses_reminders_and_cap() {
-        let cfg: Config = serde_yaml_ng::from_str(
+        let cfg: Config = yaml_serde::from_str(
             "max_inject_bytes: 64\nreminders:\n  - name: a\n    every:\n      tool_calls: 3\n    text: hi\n",
         )
         .unwrap();
@@ -1197,7 +1197,7 @@ mod tests {
 
     #[test]
     fn cap_defaults_when_absent() {
-        let cfg: Config = serde_yaml_ng::from_str("reminders: []\n").unwrap();
+        let cfg: Config = yaml_serde::from_str("reminders: []\n").unwrap();
         assert_eq!(cfg.max_inject_bytes, DEFAULT_MAX_INJECT_BYTES);
     }
 
@@ -1216,7 +1216,7 @@ mod profile_tests {
     use super::*;
 
     fn base() -> Config {
-        serde_yaml_ng::from_str(
+        yaml_serde::from_str(
             "reminders:\n  - name: a\n    every: {tool_calls: 5}\n    text: A\n  - name: b\n    every: {tool_calls: 7}\n    text: B\nsections:\n  - name: s\n    file: s.md\n    refresh: {prompts: 3}\nprofiles:\n  focus:\n    base: false\n    reminders:\n      - name: a\n        every: {tool_calls: 2}\n        text: A2\n  quiet:\n    disable: [a, b, s]\n    max_inject_bytes: 100\ndefault_profile: focus\ntransitions:\n  agent_may_set: [focus]\n",
         )
         .expect("the fixture config must parse")
@@ -1241,7 +1241,7 @@ mod profile_tests {
 
     #[test]
     fn a_bundle_composes_over_the_base_when_base_is_true() {
-        let cfg: Config = serde_yaml_ng::from_str(
+        let cfg: Config = yaml_serde::from_str(
             "reminders:\n  - name: a\n    every: {tool_calls: 5}\n    text: A\nprofiles:\n  add:\n    reminders:\n      - name: c\n        every: {tool_calls: 3}\n        text: C\n",
         )
         .unwrap();
@@ -1252,7 +1252,7 @@ mod profile_tests {
 
     #[test]
     fn guards_always_compose_base_plus_bundle() {
-        let cfg: Config = serde_yaml_ng::from_str(
+        let cfg: Config = yaml_serde::from_str(
             "guards:\n  - name: base-g\n    tool: Bash\n    message: no\nprofiles:\n  strict:\n    base: false\n    guards:\n      - name: bundle-g\n        tool: Read\n        message: no\n",
         )
         .unwrap();
@@ -1264,7 +1264,7 @@ mod profile_tests {
 
     #[test]
     fn a_repo_bundle_loses_guards_and_stop_and_cannot_silence_the_base() {
-        let repo: Config = serde_yaml_ng::from_str(
+        let repo: Config = yaml_serde::from_str(
             "profiles:\n  ci:\n    base: false\n    disable: [user-r]\n    guards:\n      - name: repo-g\n        tool: Bash\n        message: no\n    stop:\n      hold: block\n",
         )
         .unwrap();
@@ -1290,10 +1290,9 @@ mod profile_tests {
 
     #[test]
     fn a_profile_with_a_removed_key_is_dropped_at_load() {
-        let mut cfg: Config = serde_yaml_ng::from_str(
-            "profiles:\n  legacy:\n    only: [a]\n  good:\n    base: false\n",
-        )
-        .unwrap();
+        let mut cfg: Config =
+            yaml_serde::from_str("profiles:\n  legacy:\n    only: [a]\n  good:\n    base: false\n")
+                .unwrap();
         assert!(
             drop_legacy_profiles(&mut cfg),
             "the legacy profile is dropped"
@@ -1327,7 +1326,7 @@ mod profile_tests {
     fn the_env_gate_refuses_a_bundle_that_carries_law() {
         // A bundle with a guard is law, human-only, even with no
         // transitions declared.
-        let mut cfg: Config = serde_yaml_ng::from_str(
+        let mut cfg: Config = yaml_serde::from_str(
             "profiles:\n  reviewer:\n    guards:\n      - name: g\n        tool: Bash\n        message: no\n",
         )
         .unwrap();
@@ -1410,7 +1409,7 @@ mod layer_tests {
     use super::*;
 
     fn cfg(yaml: &str) -> Config {
-        serde_yaml_ng::from_str(yaml).expect("the fixture must parse")
+        yaml_serde::from_str(yaml).expect("the fixture must parse")
     }
 
     #[test]
@@ -1576,7 +1575,7 @@ mod guard_layering_tests {
     use super::*;
 
     fn user_with_guard() -> Config {
-        serde_yaml_ng::from_str(
+        yaml_serde::from_str(
             "guards:\n  - name: no-mass-stage\n    tool: Bash\n    matches: 'git add -A'\n    message: Stage by name.\n",
         )
         .expect("the user fixture must parse")
@@ -1586,7 +1585,7 @@ mod guard_layering_tests {
     fn a_repo_cannot_declare_a_guard() {
         // A cloned repo is untrusted content. A repo-declared guard
         // would let it refuse any tool call its reader makes.
-        let repo: Config = serde_yaml_ng::from_str(
+        let repo: Config = yaml_serde::from_str(
             "guards:\n  - name: repo-owns-you\n    tool: '.*'\n    message: blocked\n",
         )
         .unwrap();
@@ -1597,7 +1596,7 @@ mod guard_layering_tests {
 
     #[test]
     fn a_repo_cannot_remove_a_user_guard() {
-        let repo: Config = serde_yaml_ng::from_str("guards: []\n").unwrap();
+        let repo: Config = yaml_serde::from_str("guards: []\n").unwrap();
         let merged = user_with_guard().overlaid_with(repo);
         assert_eq!(merged.guards.len(), 1);
     }
@@ -1606,7 +1605,7 @@ mod guard_layering_tests {
     fn a_repo_cannot_shadow_a_user_guard_by_name() {
         // A same-name guard with a pattern that matches nothing would
         // otherwise defuse the user's rule.
-        let repo: Config = serde_yaml_ng::from_str(
+        let repo: Config = yaml_serde::from_str(
             "guards:\n  - name: no-mass-stage\n    tool: Bash\n    matches: 'zzz'\n    message: neutered\n",
         )
         .unwrap();
@@ -1621,7 +1620,7 @@ mod transition_layering_tests {
     use super::*;
 
     fn cfg(y: &str) -> Config {
-        serde_yaml_ng::from_str(y).expect("fixture must parse")
+        yaml_serde::from_str(y).expect("fixture must parse")
     }
 
     #[test]
@@ -1669,7 +1668,7 @@ mod repo_silencing_tests {
     use super::*;
 
     fn cfg(y: &str) -> Config {
-        serde_yaml_ng::from_str(y).expect("fixture must parse")
+        yaml_serde::from_str(y).expect("fixture must parse")
     }
 
     fn user() -> Config {
@@ -1757,7 +1756,7 @@ mod boundary_tests {
     use super::*;
 
     fn user_cfg(yaml: &str) -> Config {
-        let mut c: Config = serde_yaml_ng::from_str(yaml).expect("the fixture must parse");
+        let mut c: Config = yaml_serde::from_str(yaml).expect("the fixture must parse");
         for s in &mut c.sections {
             s.user = true;
         }
@@ -1767,7 +1766,7 @@ mod boundary_tests {
         c
     }
     fn repo_cfg(yaml: &str) -> Config {
-        serde_yaml_ng::from_str(yaml).expect("the fixture must parse")
+        yaml_serde::from_str(yaml).expect("the fixture must parse")
     }
 
     #[test]

@@ -241,7 +241,7 @@ pub fn load_checked() -> Result<HandlersConfig, String> {
             path.display()
         ));
     }
-    serde_yaml_ng::from_str::<HandlersConfig>(&text)
+    yaml_serde::from_str::<HandlersConfig>(&text)
         .map_err(|e| format!("{} is not valid: {e}", path.display()))
 }
 

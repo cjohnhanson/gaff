@@ -27,6 +27,11 @@ cargo install --locked --git https://github.com/cjohnhanson/gaff
 `node` drives the npm wrapper tests, `missouri` runs the state suite,
 and `gaff` runs the merge-gate tests.
 
+The CLI reference test needs `pandoc` 3.7.0.2 exactly, from
+<https://github.com/jgm/pandoc/releases/tag/3.7.0.2>, because another
+version renders the page differently. Without it the test skips; CI
+installs it and fails when it is missing.
+
 ## Before a large change
 
 Open a GitHub issue first. A small fix needs none.

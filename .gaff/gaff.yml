@@ -60,6 +60,11 @@ github:
         uses: Swatinem/rust-cache@v2
       - name: install missouri
         uses: cjohnhanson/missouri@main
+      # tests/cli_reference_page.rs renders docs/cli-reference.md from the
+      # man page with pandoc, and pins the version, because another
+      # version renders it differently. The hash is the release's.
+      - name: install pandoc
+        command: [sh, -c, "curl -fsSL -o /tmp/pandoc.deb https://github.com/jgm/pandoc/releases/download/3.7.0.2/pandoc-3.7.0.2-1-amd64.deb && echo '4db8bad3d9f8451a3d52171664f3c58b08af6450fbd54a28dd05f6b00b0bbb04  /tmp/pandoc.deb' | sha256sum -c - && sudo dpkg -i /tmp/pandoc.deb"]
       - name: install gaff from tree
         command: [sh, -c, "cargo install --path . --locked --root \"$HOME/.gaff-tools\" gaff && echo \"$HOME/.gaff-tools/bin\" >> \"$GITHUB_PATH\""]
       - name: gaff ci
@@ -81,6 +86,9 @@ github:
         uses: Swatinem/rust-cache@v2
       - name: install missouri
         uses: cjohnhanson/missouri@main
+      # The same pinned pandoc as the gate, for tests/cli_reference_page.rs.
+      - name: install pandoc
+        command: [sh, -c, "curl -fsSL -o /tmp/pandoc.deb https://github.com/jgm/pandoc/releases/download/3.7.0.2/pandoc-3.7.0.2-1-amd64.deb && echo '4db8bad3d9f8451a3d52171664f3c58b08af6450fbd54a28dd05f6b00b0bbb04  /tmp/pandoc.deb' | sha256sum -c - && sudo dpkg -i /tmp/pandoc.deb"]
       - name: install gaff from tree
         command: [sh, -c, "cargo install --path . --locked --root \"$HOME/.gaff-tools\" gaff && echo \"$HOME/.gaff-tools/bin\" >> \"$GITHUB_PATH\""]
       - name: formatting

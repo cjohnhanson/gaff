@@ -708,7 +708,7 @@ mod newline_tests {
     use super::*;
 
     fn wf(yaml: &str) -> Workflow {
-        serde_yaml_ng::from_str(yaml).expect("the fixture must parse")
+        yaml_serde::from_str(yaml).expect("the fixture must parse")
     }
 
     #[test]
@@ -782,7 +782,7 @@ mod newline_tests {
     #[test]
     fn a_uses_step_parses_from_yaml_and_round_trips_the_drift_check() {
         let yaml = "name: gate\non: [push]\nsteps:\n  - name: gaff\n    uses: cjohnhanson/gaff@main\n    with:\n      ref: main\n";
-        let w: Workflow = serde_yaml_ng::from_str(yaml).unwrap();
+        let w: Workflow = yaml_serde::from_str(yaml).unwrap();
         assert_eq!(w.steps[0].uses.as_deref(), Some("cjohnhanson/gaff@main"));
         assert_eq!(w.steps[0].with.get("ref").map(String::as_str), Some("main"));
         let d = std::env::temp_dir().join(format!("gaff-uses-{}", std::process::id()));
