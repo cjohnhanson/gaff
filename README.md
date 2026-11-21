@@ -30,6 +30,42 @@ npm install -g gaffr
 
 Prebuilt binaries are on the [GitHub releases page](https://github.com/cjohnhanson/gaff/releases); see the [installation guide](https://gaff.eng.rip/getting-started/installation/) for every method.
 
+| Package manager | Package | Command |
+| --- | --- | --- |
+| [Nix](https://nixos.org) | [github:cjohnhanson/gaff](https://github.com/cjohnhanson/gaff) | `nix profile install github:cjohnhanson/gaff` |
+
+On Debian or Ubuntu, download the `.deb` from the [releases
+page](https://github.com/cjohnhanson/gaff/releases) and install it:
+
+```sh
+wget https://github.com/cjohnhanson/gaff/releases/download/v0.1.4/gaff_0.1.4-1_amd64.deb
+sudo dpkg -i gaff_0.1.4-1_amd64.deb
+```
+
+To run it once without installing anything:
+
+```sh
+uvx gaffr doctor
+npx gaffr doctor
+nix run github:cjohnhanson/gaff -- doctor
+```
+
+### Building
+
+gaff is written in Rust, so you need a [Rust
+installation](https://www.rust-lang.org/) to compile it. gaff compiles
+with Rust 1.88 or newer. A C compiler is needed as well, which
+`aws-lc-sys` uses for its cryptography.
+
+To build gaff:
+
+```sh
+git clone https://github.com/cjohnhanson/gaff
+cd gaff
+cargo build --release
+./target/release/gaff --version
+```
+
 ## Example
 
 Declare project instructions, Git hooks, and required review skills in the repository's `.gaff/gaff.yml`:
