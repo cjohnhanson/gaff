@@ -238,9 +238,13 @@ enum EntryKind {
     /// pending marker to retry with. It truncates to fit rather than
     /// disappearing.
     Handler,
-    /// Nothing to consume. gaff emits this entry whenever it selects
-    /// the entry. A session-start section with no pending refresh is one.
-    Unconditional,
+    /// A section that a prime delivers with no pending refresh. A prime
+    /// is a session start, a compaction, or a profile switch. When the
+    /// cap holds this entry back, gaff writes a pending marker for it,
+    /// so the next flush delivers it.
+    Prime {
+        name: String,
+    },
     Recurring {
         name: String,
         multiple: u64,
@@ -307,10 +311,15 @@ fn flush(ctx: &FlushCtx<'_>) -> Option<String> {
         };
         entries.push(Entry {
             text: format!("[gaff:{}]\n{}", section.name, body.trim_end()),
-            kind: pending.map_or(EntryKind::Unconditional, |multiple| EntryKind::Recurring {
-                name: section.name.clone(),
-                multiple,
-            }),
+            kind: pending.map_or_else(
+                || EntryKind::Prime {
+                    name: section.name.clone(),
+                },
+                |multiple| EntryKind::Recurring {
+                    name: section.name.clone(),
+                    multiple,
+                },
+            ),
             user: section.user,
         });
     }
@@ -380,12 +389,21 @@ fn merge(entries: Vec<Entry>, config: &Config, store: &Store, session: &str) -> 
     let mut out = String::new();
     for (index, entry) in ordered.iter().enumerate() {
         let Some(text) = plan.texts.get(&index) else {
+            // A held-back prime section waits for the next flush, which
+            // delivers pending sections in declared order. A section
+            // larger than the cap alone can never fit, so gaff does not
+            // arm it. The marker would retry it on every flush.
+            if let EntryKind::Prime { name } = &entry.kind
+                && entry.text.len() <= config.max_inject_bytes
+            {
+                store.write_pending(session, name, 0).ok();
+            }
             continue;
         };
         // Consume the entry before you emit it. A one-shot that loses a
         // race stays silent.
         let consumed = match &entry.kind {
-            EntryKind::Unconditional | EntryKind::Handler => true,
+            EntryKind::Prime { .. } | EntryKind::Handler => true,
             EntryKind::Recurring { name, multiple } => {
                 store.consume_pending(session, name, *multiple).is_ok()
             }
@@ -752,6 +770,125 @@ mod tests {
         }
     }
 
+    /// Three sections. Only the first fits under the cap at a prime, and
+    /// the other two fit together.
+    fn overflow_config(dir: &Path) -> Config {
+        std::fs::create_dir_all(dir).unwrap();
+        let mut sections = Vec::new();
+        for (name, len) in [("a", 51), ("b", 16), ("c", 16)] {
+            std::fs::write(dir.join(format!("{name}.md")), name.repeat(len)).unwrap();
+            sections.push(crate::config::Section {
+                name: name.to_string(),
+                file: format!("{name}.md"),
+                user: false,
+                refresh: Every::default(),
+            });
+        }
+        Config {
+            reminders: Vec::new(),
+            sections,
+            max_inject_bytes: 64,
+            ..Config::default()
+        }
+    }
+
+    /// One host's payload for a normalized event, parsed by that host's
+    /// adapter. The flush filter is the CLI's: a flush kind the host
+    /// cannot carry does not reach the engine.
+    fn host_event(
+        adapter: &crate::adapter::Adapter,
+        what: &str,
+        config: &Config,
+        store: &Store,
+        dir: &Path,
+    ) -> Option<String> {
+        let payload = match (adapter.name, what) {
+            ("agy", "start") => json!({"hookEventName": "SessionStart", "conversationId": "s"}),
+            ("agy", "compact") => {
+                json!({"hookEventName": "SessionStart", "conversationId": "s", "source": "compact"})
+            }
+            ("agy", "prompt") => {
+                json!({"hookEventName": "PreInvocation", "conversationId": "s", "invocationNum": 0})
+            }
+            ("agy", "batch") => {
+                json!({"hookEventName": "PreInvocation", "conversationId": "s", "invocationNum": 1})
+            }
+            (_, "start") => {
+                json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"})
+            }
+            (_, "compact") => {
+                json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "compact"})
+            }
+            (_, "prompt") => {
+                json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "x"})
+            }
+            (_, "batch") => json!({"hook_event_name": "PostToolBatch", "session_id": "s"}),
+            (_, "stop") => json!({"hook_event_name": "Stop", "session_id": "s"}),
+            _ => unreachable!("no payload for {what}"),
+        };
+        let envelope = (adapter.parse)(payload);
+        if envelope.kind.is_flush() && !adapter.flush_kinds.contains(&envelope.kind) {
+            return None;
+        }
+        handle(&envelope, config, store, dir)
+    }
+
+    #[test]
+    fn a_section_the_cap_holds_back_at_a_prime_arrives_at_the_next_flush() {
+        let a = format!("[gaff:a]\n{}", "a".repeat(51));
+        let b = format!("[gaff:b]\n{}", "b".repeat(16));
+        let c = format!("[gaff:c]\n{}", "c".repeat(16));
+        let held = format!("{b}{SEPARATOR}{c}");
+        for adapter in [
+            &crate::adapter::CLAUDE_CODE,
+            &crate::adapter::CODEX,
+            &crate::adapter::AGY,
+        ] {
+            let host = adapter.name;
+            let store = temp_store(&format!("prime-overflow-{host}"));
+            let dir = std::env::temp_dir()
+                .join(format!("gaff-prime-overflow-{host}-{}", std::process::id()));
+            let config = overflow_config(&dir);
+            let on = |what: &str| host_event(adapter, what, &config, &store, &dir);
+
+            for prime in ["start", "compact"] {
+                assert_eq!(on(prime).as_deref(), Some(a.as_str()), "{host} {prime}");
+                // Codex has no context channel at a stop, so the held
+                // sections must still be waiting after one.
+                if host == "codex" {
+                    assert_eq!(on("stop"), None, "{host}: a stop is not a flush");
+                }
+                assert_eq!(
+                    on("prompt").as_deref(),
+                    Some(held.as_str()),
+                    "{host} after {prime}: the held sections arrive in declared order"
+                );
+                assert_eq!(on("prompt"), None, "{host} after {prime}: delivered once");
+            }
+
+            // A tool batch is a flush point on every host that offers one.
+            if adapter.flush_kinds.contains(&Kind::ToolBatch) {
+                assert_eq!(on("start").as_deref(), Some(a.as_str()));
+                assert_eq!(on("batch").as_deref(), Some(held.as_str()), "{host} batch");
+            }
+        }
+    }
+
+    #[test]
+    fn a_section_larger_than_the_cap_alone_is_not_armed() {
+        // It can never fit, so a pending marker would retry it on every
+        // flush, and a user section would block every repo entry.
+        let store = temp_store("prime-oversized");
+        let dir = std::env::temp_dir().join(format!("gaff-prime-oversized-{}", std::process::id()));
+        let mut config = overflow_config(&dir);
+        config.max_inject_bytes = 40;
+        let start =
+            json!({"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"});
+        let out = handle(&event(start), &config, &store, &dir);
+        assert!(!out.unwrap_or_default().contains("[gaff:a]"));
+        assert_eq!(store.pending_multiple("s", "a"), None);
+    }
+
     #[test]
     fn sessionless_events_touch_nothing() {
         let store = temp_store("nosession");
@@ -825,7 +962,9 @@ mod budget_tests {
     fn entry(text: &str, user: bool) -> Entry {
         Entry {
             text: text.to_string(),
-            kind: EntryKind::Unconditional,
+            kind: EntryKind::Prime {
+                name: "entry".to_string(),
+            },
             user,
         }
     }
