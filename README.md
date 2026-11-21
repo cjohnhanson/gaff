@@ -148,7 +148,8 @@ Every feature and every command listed above is built and runs. The
 version is below 1.0, so the config keys and the output formats can
 still change.
 
-Four host adapters ship. `gaff init` defaults to `claude-code`.
+Four host adapters ship: Claude Code, the Codex CLI, `agy` (the
+Antigravity CLI), and `generic`. `gaff init` defaults to `claude-code`.
 Use `gaff init --host codex` or `gaff init --host agy` for another host.
 
 | Host | `gaff init` writes | Session start | Guards | Reminders | Holds |

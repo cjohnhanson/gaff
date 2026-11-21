@@ -105,7 +105,8 @@ Options:
   -h, --help       Print this help
   -V, --version    Print the version
 
-A hook exits 0 or 1, so a gaff fault never blocks a session. A guard
+A hook exits 0 or 1, so a gaff fault never blocks a session. On a host
+that refuses a tool call on any non-zero code, a fault exits 0. A guard
 refuses a tool call with 2, a hold refuses a stop with 2, run refuses
 with 2, and githook returns the failing command's own code.";
 
@@ -1150,14 +1151,21 @@ fn doctor_hooks(cwd: &std::path::Path) {
     // Only a self-registering host has hooks to report. A generic host
     // calls gaff directly and has no settings file, so reporting it as
     // "NOT registered" would tell the user to run a command gaff refuses.
+    let mut any = false;
     for adapter in crate::adapter::ADAPTERS {
         if adapter.self_registers {
-            doctor_hooks_for(adapter, cwd);
+            any |= doctor_hooks_for(adapter, cwd);
         }
+    }
+    // A repo registered for one host only is not missing the others. The
+    // advice to run `gaff init` applies only when no host is registered.
+    if !any {
+        println!("hooks:   NOT registered (run `gaff init --host <name>`)");
     }
 }
 
-fn doctor_hooks_for(adapter: &crate::adapter::Adapter, cwd: &std::path::Path) {
+/// Print one host's registration, and return whether it has one.
+fn doctor_hooks_for(adapter: &crate::adapter::Adapter, cwd: &std::path::Path) -> bool {
     let scopes = [
         (
             "user".to_string(),
@@ -1224,16 +1232,11 @@ fn doctor_hooks_for(adapter: &crate::adapter::Adapter, cwd: &std::path::Path) {
                 missing.join(", ")
             );
         }
-        let lost: Vec<&str> = [
-            crate::event::Kind::SessionStart,
-            crate::event::Kind::Prompt,
-            crate::event::Kind::ToolBatch,
-            crate::event::Kind::Stop,
-        ]
-        .iter()
-        .filter(|k| !adapter.flush_kinds.contains(k))
-        .map(crate::event::Kind::as_str)
-        .collect();
+        let lost: Vec<&str> = crate::adapter::ALL_FLUSH_KINDS
+            .iter()
+            .filter(|k| !adapter.flush_kinds.contains(k))
+            .map(crate::event::Kind::as_str)
+            .collect();
         if !lost.is_empty() {
             println!(
                 "         {} has no context channel at: {}",
@@ -1242,9 +1245,7 @@ fn doctor_hooks_for(adapter: &crate::adapter::Adapter, cwd: &std::path::Path) {
             );
         }
     }
-    if !found && default {
-        println!("hooks:   NOT registered (run `gaff init`)");
-    }
+    found
 }
 
 /// Whether a registered command invokes `gaff hook`.

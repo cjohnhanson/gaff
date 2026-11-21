@@ -17,15 +17,19 @@ event goes through up to three stages:
 2. **Arm.** When a cadence divides the new count, gaff writes a pending
    marker. gaff emits nothing here. The crossing usually happens on
    PostToolUse, whose output channel is unsafe to decorate.
-3. **Flush.** The safe events are SessionStart, UserPromptSubmit, Stop,
-   and PostToolBatch. At the next one, gaff merges the pending entries
-   under the byte cap and emits them as `additionalContext`. gaff
-   consumes an entry only when it emits that entry.
+3. **Flush.** The safe events are session start, the user prompt, the
+   stop, and the tool batch, where the host offers each one. On Claude
+   Code they are SessionStart, UserPromptSubmit, Stop, and
+   PostToolBatch. Codex offers SessionStart and UserPromptSubmit. agy
+   offers SessionStart and PreInvocation, which gaff reads as a prompt
+   or a tool batch. At the next safe event, gaff merges the pending
+   entries under the byte cap and emits them in the host's context
+   shape. gaff consumes an entry only when it emits that entry.
 
 ## Sessions
 
-The counters are per session. gaff reads the `session_id` from the event
-payload. A subagent has its own session and its own counters. `gaff
+The counters are per session. gaff reads the session id from the event
+payload: `session_id` on Claude Code and Codex, `conversationId` on agy. A subagent has its own session and its own counters. `gaff
 remind` runs inside a session and resolves the session from `--session`,
 then `GAFF_SESSION_ID`, then the host's own variable, which each adapter
 names (Claude Code exports `CLAUDE_CODE_SESSION_ID` to a shell

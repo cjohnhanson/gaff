@@ -35,6 +35,9 @@ transitions:
       [ "$(jq -r '.gaff.PreInvocation[0].command' .agents/hooks.json)" = "gaff hook --host agy --event PreInvocation" ] || { echo "FAIL: agy entry"; exit 1; }
       [ "$(jq -r '.gaff.PreToolUse[0].matcher' .agents/hooks.json)" = "*" ] || { echo "FAIL: agy matcher"; exit 1; }
       gaff doctor 2>/dev/null | grep -q 'hooks (agy): registered' || { echo "FAIL: doctor must read the agy file"; exit 1; }
+      # A repo registered for Codex and agy only is not missing Claude
+      # Code, so doctor must not send its user to a plain `gaff init`.
+      if gaff doctor 2>/dev/null | grep -q 'NOT registered'; then echo "FAIL: doctor must not call a registered repo unregistered"; exit 1; fi
 
       # Codex: Claude Code's context JSON at session start.
       OUT=$(printf '{"session_id":"s-c1","cwd":"%s","hook_event_name":"SessionStart","model":"m","source":"startup"}' "$PWD" | gaff hook --host codex)
@@ -49,6 +52,12 @@ transitions:
       # A Codex guard refuses with exit 2.
       printf '{"session_id":"s-c1","turn_id":"t2","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf x"},"tool_use_id":"u2"}' | gaff hook --host codex > /dev/null 2>&1
       [ "$?" = "2" ] || { echo "FAIL: the codex guard must refuse"; exit 1; }
+      # A hold refuses a Codex stop with exit 2 and the hold text, which
+      # Codex sends back as the next prompt.
+      gaff remind 'HOLD TEXT' --at stop --session s-c1 > /dev/null || { echo "FAIL: remind"; exit 1; }
+      printf '{"session_id":"s-c1","turn_id":"t2","hook_event_name":"Stop","stop_hook_active":false}' | gaff hook --host codex > /dev/null 2>"$HOME/err"
+      [ "$?" = "2" ] || { echo "FAIL: a hold must refuse a codex stop"; exit 1; }
+      grep -q "HOLD TEXT" "$HOME/err" || { echo "FAIL: the hold text must reach stderr"; exit 1; }
 
       # agy: no event name in the payload; --event supplies it.
       OUT=$(printf '{"conversationId":"s-a1","workspacePaths":["%s"]}' "$PWD" | gaff hook --host agy --event SessionStart)
@@ -61,6 +70,15 @@ transitions:
       case "$OUT" in *"CADENCE TEXT"*) ;; *) echo "FAIL: agy tool batch flush: $OUT"; exit 1 ;; esac
       printf '{"conversationId":"s-a1","stepIdx":3,"toolCall":{"name":"run_command","args":{"CommandLine":"rm -rf x"}},"workspacePaths":["%s"]}' "$PWD" | gaff hook --host agy --event PreToolUse > /dev/null 2>&1
       [ "$?" = "2" ] || { echo "FAIL: the agy guard must refuse"; exit 1; }
+      # agy runs a workspace hook inside `.agents/`. gaff moves to the
+      # workspace path from the payload, so the repo's sections arrive.
+      cp .gaff/gaff.yml "$HOME/repo-gaff.yml"
+      printf 'sections:\n  - name: repo-rules\n    file: repo.md\n' > .gaff/gaff.yml
+      printf 'REPO RULES\n' > .gaff/repo.md
+      OUT=$(cd .agents && printf '{"conversationId":"s-a2","workspacePaths":["%s"]}' "$OLDPWD" | gaff hook --host agy --event SessionStart)
+      cp "$HOME/repo-gaff.yml" .gaff/gaff.yml
+      rm -f .gaff/repo.md
+      case "$OUT" in *"REPO RULES"*) ;; *) echo "FAIL: an agy hook run from .agents/ must read the repo config: $OUT"; exit 1 ;; esac
       # A gaff fault on agy never refuses a tool call.
       printf 'not json' | gaff hook --host agy --event PreToolUse > /dev/null 2>&1
       [ "$?" = "0" ] || { echo "FAIL: an agy fault must exit 0"; exit 1; }

@@ -148,7 +148,7 @@ pub const CLAUDE_CODE: Adapter = Adapter {
 };
 
 /// Every flush point, for a host whose events carry them all.
-const ALL_FLUSH_KINDS: &[Kind] = &[
+pub const ALL_FLUSH_KINDS: &[Kind] = &[
     Kind::SessionStart,
     Kind::Prompt,
     Kind::ToolBatch,
@@ -1068,6 +1068,11 @@ mod host_payload_tests {
         );
         // A shell call has no file path, patch or not.
         assert_eq!((CODEX.tool_field)(&codex_pre_tool_use(), "file_path"), None);
+        // A patch with no file header names no path.
+        let mut bare = codex_pre_tool_use();
+        bare["tool_name"] = json!("apply_patch");
+        bare["tool_input"] = json!({"command": "*** Begin Patch\n*** End Patch"});
+        assert_eq!((CODEX.tool_field)(&bare, "file_path"), None);
     }
 
     #[test]
@@ -1093,6 +1098,12 @@ mod host_payload_tests {
                 "command": "gaff hook --host codex",
                 "additionalContextLimit": 0
             }]})
+        );
+        // Reminders reach Codex at the prompt, so the prompt event lifts
+        // the limit too.
+        assert_eq!(
+            (CODEX.hook_entry)("UserPromptSubmit", "c")["hooks"][0]["additionalContextLimit"],
+            0
         );
         // A real run warned on a limit set on `Stop`.
         assert_eq!(

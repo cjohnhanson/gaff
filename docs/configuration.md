@@ -791,7 +791,9 @@ start, user prompt, tool batch, and stop. It supports guards and holds.
 It registers `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
 `PostToolUse`, and `Stop`. Each entry runs `gaff hook --host codex`.
 Codex runs a project hook only after the user trusts it in `/hooks`.
-`gaff init` prints this step. Codex also loads `~/.codex/hooks.json`.
+`gaff init` prints this step. Codex also loads `$CODEX_HOME/hooks.json`,
+which is `~/.codex/hooks.json` by default. `gaff doctor` reads only the
+default path.
 
 Codex sends file edits as `apply_patch`. gaff maps this tool to `Edit`
 and extracts `file_path` from the patch headers, with one path per
