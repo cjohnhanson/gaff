@@ -715,4 +715,22 @@ mod host_registration_tests {
         assert!(read(&d.join(".agents/hooks.json")).get("gaff").is_none());
         std::fs::remove_dir_all(&d).ok();
     }
+
+    #[test]
+    fn a_non_object_agy_hook_key_is_refused_not_replaced() {
+        // The check reads the adapter's own key. Reading `hooks` here
+        // let a `gaff` key of another type reach a panic.
+        let d = scratch("agybad");
+        let path = d.join(".agents/hooks.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = r#"{"gaff":"legacy"}"#;
+        std::fs::write(&path, original).unwrap();
+        let err = install_for(&AGY, &d, "gaff hook").expect_err("refused");
+        assert!(
+            err.to_string().contains("`gaff` key is not an object"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        std::fs::remove_dir_all(&d).ok();
+    }
 }

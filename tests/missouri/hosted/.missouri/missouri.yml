@@ -29,7 +29,10 @@ transitions:
       printf 'HOUSE RULES\n' > "$HOME/.config/gaff/conv.md"
 
       # Registration: each host's file, each host's shape.
-      gaff init --host codex > /dev/null || { echo "FAIL: init codex"; exit 1; }
+      # Codex runs a project hook only after the user trusts it, so init
+      # must say so, or the hooks stay off and nothing tells the user.
+      gaff init --host codex > "$HOME/init.out" || { echo "FAIL: init codex"; exit 1; }
+      grep -q 'only after you trust it' "$HOME/init.out" || { echo "FAIL: init codex must print the trust step"; exit 1; }
       gaff init --host agy > /dev/null || { echo "FAIL: init agy"; exit 1; }
       [ "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' .codex/hooks.json)" = "gaff hook --host codex" ] || { echo "FAIL: codex entry"; exit 1; }
       [ "$(jq -r '.gaff.PreInvocation[0].command' .agents/hooks.json)" = "gaff hook --host agy --event PreInvocation" ] || { echo "FAIL: agy entry"; exit 1; }
@@ -84,7 +87,8 @@ transitions:
       [ "$?" = "0" ] || { echo "FAIL: an agy fault must exit 0"; exit 1; }
 
       # Uninstall leaves nothing of gaff's behind.
-      gaff init --host codex --uninstall > /dev/null
+      gaff init --host codex --uninstall > "$HOME/init.out"
+      if grep -q 'only after you trust it' "$HOME/init.out"; then echo "FAIL: uninstall must not print the trust step"; exit 1; fi
       gaff init --host agy --uninstall > /dev/null
       [ "$(jq -c . .codex/hooks.json)" = "{}" ] || { echo "FAIL: codex uninstall"; exit 1; }
       [ "$(jq -c . .agents/hooks.json)" = "{}" ] || { echo "FAIL: agy uninstall"; exit 1; }
