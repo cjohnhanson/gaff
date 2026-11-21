@@ -26,7 +26,7 @@ Commands:
   remind <text> --after N [--id ID]
                    Schedule a one-shot reminder N tool calls ahead
   remind <text> --at stop [--times N] [--id ID]
-                   Hold the stop until the hold is cleared, or for N stops
+                   Hold the stop until cleared, or for N refusals
   remind --clear [--id ID]
                    Release one hold, or every hold when no id is given
   status           Print the counters, pending entries, and one-shots as JSON
@@ -50,17 +50,19 @@ Commands:
   run <agent>      Dispatch a hook agent through its runner and map its
                    verdict to an exit code (0 admits, 2 refuses)
   log              Show the injection audit trail for a session
-  docs [page]      Print the bundled documentation
-                   (search <word>: the pages that hold the word)
+  docs [topic]     Print the bundled documentation
+                   (search <word>: the topics that hold the word)
   ci [--hook H]    Run the declared git gates against HEAD, as CI does
   reviews          Print the reviews a change must pass, one to a line
   reviews check    Refuse a push whose tips name no review (reads stdin)
   prime            Print what gaff is and how to use it, for an agent's context
 
 Options:
-  --session ID     The session for remind, status, allow, profile, and log.
-                   Without it, GAFF_SESSION_ID or the host's variable
-                   names the session.
+  --session ID     The session for remind, status, allow, profile, and log,
+                   after the command and any subcommand
+                   (gaff profile show --session ID). Without it,
+                   GAFF_SESSION_ID or the host's variable
+                   (CLAUDE_CODE_SESSION_ID for Claude Code) names it.
   -h, --help       Print this help
   -V, --version    Print the version
 

@@ -475,6 +475,39 @@ fn commands_lists_what_trycmd_runs() {
     assert_eq!(names, ["bare", "gaff", "git", "tagged"]);
 }
 
+/// The help and the man page say `remind --clear` with no id releases
+/// every hold and leaves a one-shot alone, and with an id releases that
+/// hold only.
+#[test]
+fn remind_clear_releases_holds_as_the_help_says() {
+    let (_guard, scratch) = scratch();
+    let state = scratch.join("state");
+    let gaff = |args: &[&str]| {
+        let out = Command::new(BIN)
+            .args(args)
+            .current_dir(&scratch)
+            .env_clear()
+            .env("HOME", &scratch)
+            .env("GAFF_STATE_DIR", &state)
+            .env("GAFF_SESSION_ID", "s")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "gaff {args:?}: {out:?}");
+    };
+    let store = gaff::state::Store::new(state.clone());
+    let hold_ids = || -> Vec<String> { store.holds("s").into_iter().map(|h| h.id).collect() };
+    gaff(&["remind", "later", "--after", "5", "--id", "soon"]);
+    for id in ["a", "b", "c"] {
+        gaff(&["remind", "wait", "--at", "stop", "--id", id]);
+    }
+    gaff(&["remind", "--clear", "--id", "a"]);
+    assert_eq!(hold_ids(), ["b", "c"]);
+    gaff(&["remind", "--clear"]);
+    assert!(hold_ids().is_empty());
+    assert_eq!(store.oneshots("s").len(), 1, "the one-shot was cleared");
+}
+
 /// Only the opening backtick run closes a fence. A shorter run inside a
 /// longer fence is text, so the `$ y` after it is not a command.
 #[test]
@@ -489,7 +522,23 @@ fn a_shorter_fence_inside_a_longer_one_does_not_close_it() {
 fn the_man_page_names_every_flag_the_help_names() {
     let (ok, help) = run_isolated(&["--help"]);
     assert!(ok);
-    let man = std::fs::read_to_string(root().join("docs/man/gaff.1")).unwrap();
+    let page = std::fs::read_to_string(root().join("docs/man/gaff.1")).unwrap();
+    // The COMMANDS section alone, as tests/man_page_covers_the_cli.rs
+    // reads it: a flag named only under FILES documents no command.
+    let start = page.find("\n.Sh COMMANDS\n").expect("a COMMANDS section") + 1;
+    let rest = &page[start..];
+    let man = rest[1..].find("\n.Sh ").map_or(rest, |end| &rest[..=end]);
+    // Whole flags, so `Fl -github` does not count for `--git`.
+    let documented: std::collections::BTreeSet<&str> = man
+        .split("Fl -")
+        .skip(1)
+        .map(|s| {
+            let end = s
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .unwrap_or(s.len());
+            &s[..end]
+        })
+        .collect();
     let flags: std::collections::BTreeSet<&str> = help
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
         .filter_map(|w| w.strip_prefix("--"))
@@ -501,8 +550,8 @@ fn the_man_page_names_every_flag_the_help_names() {
     );
     for flag in flags {
         assert!(
-            man.contains(&format!("Fl -{flag}")),
-            "docs/man/gaff.1 does not name --{flag}"
+            documented.contains(flag),
+            "the COMMANDS section of docs/man/gaff.1 does not name --{flag}"
         );
     }
     assert!(

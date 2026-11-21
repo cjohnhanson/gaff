@@ -225,8 +225,8 @@ no handlers declared
 
 ```
 
-`gaff docs` lists the bundled documentation, and `gaff docs <page>`
-prints a page:
+`gaff docs` lists the bundled documentation, and `gaff docs <topic>`
+prints a topic:
 
 ```console
 $ gaff docs

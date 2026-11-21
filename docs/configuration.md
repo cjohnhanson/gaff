@@ -557,7 +557,8 @@ does not, and that exact gap let a private key reach a public repo.
 ### Letting one call through: `gaff allow`
 
 To let one specific call go through without editing the config, run
-`gaff allow`. With the guards above in the user config:
+`gaff allow` inside the session, where the host supplies the session
+id. With the guards above in the user config:
 
 ```console
 $ gaff allow no-mass-stage

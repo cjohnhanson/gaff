@@ -54,11 +54,11 @@ view:
 Stage files by name. Run the tests before every commit.
 ```
 
-gaff injects the whole file at
-session start, and again when its refresh cadence crosses. A reminder is
-one line of text on a cadence. Everything a hook reads from this file is
-data; a `git:` or `github:` entry names a command, and that runs only
-after you run `gaff init --git` or `gaff init --github` yourself.
+gaff injects the whole section file at session start, and again when
+its refresh cadence crosses. A reminder is one line of text on a
+cadence. Everything a hook reads from `.gaff/gaff.yml` is data; a
+`git:` or `github:` entry names a command, and that runs only after you
+run `gaff init --git` or `gaff init --github` yourself.
 
 ## Schedule a one-shot from inside a session
 

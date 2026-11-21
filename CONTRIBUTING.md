@@ -44,8 +44,8 @@ output. Each page runs in its own scratch directory, with its own
 `HOME`; fixtures for a page live in `tests/docs/<page>/` (see the top of
 `tests/docs.rs`). The same test fails when docs/cli-reference.md differs
 from the binary's help, and when a `yaml` config example fails `gaff
-check` (`gaff check --handlers` for a `handlers:` example). The README
-example needs `git` on `PATH`.
+check` (`gaff check --handlers` for a `handlers:` example). The docs
+test needs `git`, `env`, and `/bin/sh`.
 
 Write a gaff command in a `console` block, so the test runs it. A
 command in any other kind of block is never checked. Install sections
@@ -53,7 +53,8 @@ are the exception, because their commands change the reader's machine.
 
 After changing a command's output or the help text in `src/cli.rs`,
 write the new output into the docs and read the diff. The first command
-rewrites the examples, and the second rewrites the CLI reference:
+rewrites the examples, and the second rewrites the CLI reference. Run
+them one at a time:
 
 ```sh
 TRYCMD=overwrite cargo test --test docs

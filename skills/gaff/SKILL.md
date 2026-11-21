@@ -81,7 +81,7 @@ cadence. Handlers are declared only in the operator's user-scoped config at
 `~/.config/gaff/handlers.yml`, never in a repo. They run only in a
 directory the operator trusted with `gaff trust`.
 
-    gaff check --handlers    # validate the handler config
+    gaff check --handlers    # validate the user guards and handlers
     gaff trust               # the operator runs this
 
 Do not run `gaff trust` or write the trusted file yourself. The grant
